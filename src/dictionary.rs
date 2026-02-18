@@ -1,5 +1,5 @@
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 use std::collections::HashMap;
 use std::fs;
 
@@ -8,7 +8,7 @@ pub struct JbovlasteSchema {
 }
 
 impl JbovlasteSchema {
-    /// Loads the jbovlaste XML export using a raw event stream to bypass 
+    /// Loads the jbovlaste XML export using a raw event stream to bypass
     /// strict schema constraints and cleanly handle nested HTML tags.
     pub fn load_from_file(filepath: &str) -> Self {
         let xml_data = fs::read_to_string(filepath)
@@ -36,7 +36,7 @@ impl JbovlasteSchema {
                         current_word.clear();
                         current_type.clear();
                         current_definition.clear();
-                        
+
                         // Extract @word and @type attributes
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"word" {
@@ -50,7 +50,7 @@ impl JbovlasteSchema {
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    // FIXED: By extracting utf8_lossy, we seamlessly capture "x", ignore the "<sub>" 
+                    // FIXED: By extracting utf8_lossy, we seamlessly capture "x", ignore the "<sub>"
                     // start event, capture "5", and ignore "</sub>". The output string naturally becomes "x5".
                     if in_definition {
                         current_definition.push_str(&String::from_utf8_lossy(e.as_ref()));
@@ -76,9 +76,9 @@ impl JbovlasteSchema {
         Self { arities }
     }
 
-/// Scans the flattened definition string for place structure markers.
+    /// Scans the flattened definition string for place structure markers.
     fn extract_arity(definition: &str) -> usize {
-        // Aggressively strip formatting noise (spaces, LaTeX, HTML) 
+        // Aggressively strip formatting noise (spaces, LaTeX, HTML)
         // so "x_{5}" or "x <sub> 5 </sub>" becomes a clean "x5"
         let def = definition
             .replace(" ", "")

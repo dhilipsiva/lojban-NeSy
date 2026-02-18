@@ -1,7 +1,7 @@
-use pest::Parser;
-use pest::iterators::Pair;
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
+use pest::Parser;
+use pest::iterators::Pair;
 
 #[derive(pest_derive::Parser)]
 #[grammar = "lojban.pest"]
@@ -13,16 +13,16 @@ pub struct LojbanParser;
 
 #[derive(Debug, PartialEq)]
 pub enum Sumti<'a> {
-    ProSumti(&'a str),                 // "mi", "do", "da" (Variables/Constants)
-    Description(Box<Selbri<'a>>),      // "lo gerku" (Entities satisfying a predicate)
-    Name(&'a str),                     // "la .alis."
-    QuotedLiteral(&'a str),            // Output of zo/zoi
+    ProSumti(&'a str),            // "mi", "do", "da" (Variables/Constants)
+    Description(Box<Selbri<'a>>), // "lo gerku" (Entities satisfying a predicate)
+    Name(&'a str),                // "la .alis."
+    QuotedLiteral(&'a str),       // Output of zo/zoi
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Selbri<'a> {
-    Root(&'a str),                     // Gismu (e.g., "klama")
-    Compound(BumpVec<'a, &'a str>),    // Lujvo components
+    Root(&'a str),                           // Gismu (e.g., "klama")
+    Compound(BumpVec<'a, &'a str>),          // Lujvo components
     Tanru(Box<Selbri<'a>>, Box<Selbri<'a>>), // Metaphorical modification (Modifier, Head)
 }
 
@@ -37,11 +37,14 @@ pub struct Bridi<'a> {
 // --------------------------------------------------
 
 /// Parses a sanitized Lojban string into an arena-allocated AST.
-pub fn parse_to_ast<'a>(input: &'a str, arena: &'a Bump) -> Result<BumpVec<'a, Bridi<'a>>, pest::error::Error<Rule>> {
+pub fn parse_to_ast<'a>(
+    input: &'a str,
+    arena: &'a Bump,
+) -> Result<BumpVec<'a, Bridi<'a>>, pest::error::Error<Rule>> {
     let mut ast = BumpVec::new_in(arena);
     let mut pairs = LojbanParser::parse(Rule::text, input)?;
 
-    // The parser returns an iterator containing the root Rule::text node. 
+    // The parser returns an iterator containing the root Rule::text node.
     // We must step inside it to iterate over the actual sentences.
     if let Some(text_pair) = pairs.next() {
         for pair in text_pair.into_inner() {
@@ -99,7 +102,7 @@ fn build_selbri<'a>(pair: Pair<'a, Rule>, _arena: &'a Bump) -> Selbri<'a> {
             let head = parts.next().unwrap().as_str();
             Selbri::Tanru(
                 Box::new(Selbri::Root(modifier)),
-                Box::new(Selbri::Root(head))
+                Box::new(Selbri::Root(head)),
             )
         }
         _ => unreachable!(),

@@ -35,7 +35,9 @@ pub fn preprocess<'a>(
                 // `sa` erases backward until a token of the same grammatical class is found.
                 // NOTE: Full `sa` resolution requires the `selma'o` dictionary lookup to be loaded.
                 // For V1 bare-metal execution, this is a deferred feature.
-                unimplemented!("'sa' (EraseClass) resolution requires the jbovlaste selma'o schema in V2.");
+                unimplemented!(
+                    "'sa' (EraseClass) resolution requires the jbovlaste selma'o schema in V2."
+                );
             }
 
             // --------------------------------------------------
@@ -50,7 +52,8 @@ pub fn preprocess<'a>(
             LojbanToken::QuoteDelimited => {
                 // `zoi` requires a delimiter, arbitrary text, and the same delimiter.
                 if let Some((_, delimiter)) = iter.next() {
-                    let start_ptr = delimiter.as_ptr() as usize - original_input.as_ptr() as usize + delimiter.len();
+                    let start_ptr = delimiter.as_ptr() as usize - original_input.as_ptr() as usize
+                        + delimiter.len();
                     let mut end_ptr = start_ptr;
 
                     // Consume until we hit the exact same delimiter token
@@ -58,9 +61,10 @@ pub fn preprocess<'a>(
                         if next_text == delimiter {
                             break;
                         }
-                        end_ptr = next_text.as_ptr() as usize - original_input.as_ptr() as usize + next_text.len();
+                        end_ptr = next_text.as_ptr() as usize - original_input.as_ptr() as usize
+                            + next_text.len();
                     }
-                    
+
                     // Extract the zero-copy payload slice from the original input
                     let payload = &original_input[start_ptr..end_ptr].trim();
                     output.push(NormalizedToken::Quoted(payload));

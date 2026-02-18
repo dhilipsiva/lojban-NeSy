@@ -6,30 +6,29 @@ pub enum LojbanToken {
     // --------------------------------------------------
     // Metalinguistic Operators (Must be intercepted)
     // --------------------------------------------------
-    
     #[token("si")]
     EraseWord,
-    
+
     #[token("sa")]
     EraseClass,
-    
+
     #[token("su")]
     EraseStream,
-    
+
     #[token("zo")]
     QuoteNext,
-    
+
     #[token("zoi")]
     QuoteDelimited,
-    
+
     #[token("zei")]
     GlueWords,
 
     // --------------------------------------------------
     // Morphological Classes
     // --------------------------------------------------
-    
-    // Gismu: CVCCV or CCVCV structure (simplified for demonstration, 
+
+    // Gismu: CVCCV or CCVCV structure (simplified for demonstration,
     // real phonotactics check for specific valid consonant clusters)
     #[regex(r"([bcdfghjklmnprstvxz][aeiou][bcdfghjklmnprstvxz][bcdfghjklmnprstvxz][aeiou])|([bcdfghjklmnprstvxz][bcdfghjklmnprstvxz][aeiou][bcdfghjklmnprstvxz][aeiou])")]
     Gismu,
@@ -52,10 +51,10 @@ pub enum LojbanToken {
 pub fn tokenize(input: &str) -> Vec<(LojbanToken, &str)> {
     let mut lex = LojbanToken::lexer(input);
     let mut tokens = Vec::new();
-    
+
     while let Some(Ok(token)) = lex.next() {
         tokens.push((token, lex.slice()));
     }
-    
+
     tokens
 }

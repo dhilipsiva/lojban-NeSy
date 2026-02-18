@@ -1,38 +1,38 @@
-use reedline::{DefaultPrompt, Reedline, Signal};
 use bumpalo::Bump;
+use reedline::{DefaultPrompt, Reedline, Signal};
 
+mod ast;
+mod dictionary;
+mod ir;
 mod lexer;
 mod preprocessor;
-mod ast;
-mod ir;
-mod dictionary;
-mod semantic;
 mod reasoning;
+mod semantic;
 
-use lexer::tokenize;
-use preprocessor::preprocess;
 use ast::parse_to_ast;
 use dictionary::JbovlasteSchema;
-use semantic::SemanticCompiler;
+use lexer::tokenize;
+use preprocessor::preprocess;
 use reasoning::ReasoningCore;
+use semantic::SemanticCompiler;
 
 fn main() {
     println!("==================================================");
     println!(" Lojban Neuro-Symbolic Engine - Bare-Metal V1 MVP ");
     println!("==================================================");
-    
+
     // 1. Load the dictionary schema
     println!("Loading jbovlaste dictionary schema...");
     let schema = JbovlasteSchema::load_from_file("jbovlaste-en.xml");
     println!("Loaded {} predicate arities.", schema.arities.len());
-    
+
     // 2. Initialize persistent state
     let mut reasoner = ReasoningCore::new(&schema);
     let mut compiler = SemanticCompiler::new(schema);
 
     let mut line_editor = Reedline::create();
     let prompt = DefaultPrompt::default();
-    
+
     println!("Type ':quit' to exit.");
 
     loop {
@@ -40,7 +40,7 @@ fn main() {
         match sig {
             Ok(Signal::Success(buffer)) => {
                 let input = buffer.trim();
-                
+
                 if input.is_empty() {
                     continue;
                 }
@@ -83,7 +83,7 @@ fn main() {
 
                             reasoner.assert_fact(&sexp);
                             println!("[5] Fact asserted into egglog Truth Relation.");
-                            
+
                             println!("[6] Verifying Graph Entailment...");
                             reasoner.query(&sexp);
                         }

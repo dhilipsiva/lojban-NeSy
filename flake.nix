@@ -26,6 +26,7 @@
       in
       {
         devShells.default = pkgs.mkShell {
+
           buildInputs = with pkgs; [
             # Core Compiler
             rustToolchain
@@ -33,7 +34,7 @@
             # WASI Preview 2 / Component Model Tooling
             wasm-tools          # Low-level WASM/WIT manipulation
             cargo-component     # Builds Rust crates as WASI components
-            wit-bindgen-cli     # Generates bindings from .wit files
+            wit-bindgen         # Generates bindings from .wit files
             wasmtime            # Executes the compiled WASI components
 
             # Helix Editor Ecosystem
@@ -41,11 +42,10 @@
             marksman            # Markdown Language Server
             lldb                # Debugger
 
-            # Native build dependencies (required by some nested parser/IR crates)
+            # Native build dependencies
             pkg-config
             openssl
           ];
-
           shellHook = ''
             echo "=================================================="
             echo " Lojban NeSy Engine - Nix Dev Environment Loaded  "

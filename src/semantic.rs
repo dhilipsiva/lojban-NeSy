@@ -1,12 +1,11 @@
 use crate::ast::{Bridi, Selbri, Sumti};
+use crate::dictionary::JbovlasteSchema;
 use crate::ir::{LogicalForm, LogicalTerm};
 use lasso::Rodeo;
-use crate::dictionary::JbovlasteSchema;
-
 
 pub struct SemanticCompiler {
     pub interner: Rodeo,
-    pub schema: JbovlasteSchema
+    pub schema: JbovlasteSchema,
 }
 
 impl SemanticCompiler {
@@ -20,7 +19,7 @@ impl SemanticCompiler {
     /// Compiles a parsed Bridi AST into an explicit First-Order Logic formula.
     pub fn compile_bridi(&mut self, bridi: &Bridi) -> LogicalForm {
         // 1. Resolve the Selbri (Relation)
-let (relation_str, target_arity): (&str, usize) = match &bridi.selbri {
+        let (relation_str, target_arity): (&str, usize) = match &bridi.selbri {
             Selbri::Root(gismu) => (gismu, self.schema.get_arity(gismu)),
             Selbri::Tanru(_modifier, head) => {
                 let head_str: &str = match head.as_ref() {
@@ -33,7 +32,7 @@ let (relation_str, target_arity): (&str, usize) = match &bridi.selbri {
                 // Very crude fallback for V1 lujvo handling
                 let head_str = parts.last().unwrap_or(&"unknown");
                 (head_str, self.schema.get_arity(head_str))
-            },
+            }
         };
         let relation_id = self.interner.get_or_intern(relation_str);
 
@@ -61,9 +60,7 @@ let (relation_str, target_arity): (&str, usize) = match &bridi.selbri {
                     };
                     LogicalTerm::Description(self.interner.get_or_intern(desc_str))
                 }
-                Sumti::QuotedLiteral(_) => {
-                    LogicalTerm::Unspecified 
-                }
+                Sumti::QuotedLiteral(_) => LogicalTerm::Unspecified,
             };
             args.push(logical_term);
         }
@@ -90,16 +87,23 @@ let (relation_str, target_arity): (&str, usize) = match &bridi.selbri {
             LogicalForm::Predicate { relation, args } => {
                 let raw_rel = self.interner.resolve(relation);
                 let rel_str = Self::sanitize_name(raw_rel);
-                
-                let args_str: Vec<String> = args.iter().map(|arg| {
-                    match arg {
-                        LogicalTerm::Variable(v) => format!("(Var \"{}\")", self.interner.resolve(v)),
-                        LogicalTerm::Constant(c) => format!("(Const \"{}\")", self.interner.resolve(c)),
-                        LogicalTerm::Description(d) => format!("(Desc \"{}\")", self.interner.resolve(d)),
+
+                let args_str: Vec<String> = args
+                    .iter()
+                    .map(|arg| match arg {
+                        LogicalTerm::Variable(v) => {
+                            format!("(Var \"{}\")", self.interner.resolve(v))
+                        }
+                        LogicalTerm::Constant(c) => {
+                            format!("(Const \"{}\")", self.interner.resolve(c))
+                        }
+                        LogicalTerm::Description(d) => {
+                            format!("(Desc \"{}\")", self.interner.resolve(d))
+                        }
                         LogicalTerm::Unspecified => "(Zoe)".to_string(),
-                    }
-                }).collect();
-                
+                    })
+                    .collect();
+
                 format!("({} {})", rel_str, args_str.join(" "))
             }
             LogicalForm::And(left, right) => {
