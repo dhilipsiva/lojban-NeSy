@@ -27,11 +27,20 @@ pron_clause = { "mi" | "do" | "ko'a" | "da" | "de" | "di" }
 
 name_clause = { "la" ~ cmevla ~ "ku"? }
 
-quoted_clause = { "zo" ~ ANY | "zoi" ~ ANY+ } // Fallback for any quotes that survived preprocessing
+quoted_clause = { "zo" ~ ANY | "zoi" ~ ANY+ } 
 
-// --- Lexical Primitives ---
-// Since the preprocessor already sanitized the stream, these rules 
-// just match the clean strings we feed into the parser.
-gismu = @{ ASCII_ALPHA+ }
-lujvo = @{ ASCII_ALPHA+ }
-cmevla = @{ ASCII_ALPHA+ ~ "."? }
+// --- Strict Morphological Primitives ---
+consonant = _{ "b"|"c"|"d"|"f"|"g"|"j"|"k"|"l"|"m"|"n"|"p"|"r"|"s"|"t"|"v"|"x"|"z" }
+vowel = _{ "a"|"e"|"i"|"o"|"u" }
+
+// Gismu strictly follow CVCCV or CCVCV patterns
+gismu = @{ 
+    (consonant ~ vowel ~ consonant ~ consonant ~ vowel) | 
+    (consonant ~ consonant ~ vowel ~ consonant ~ vowel) 
+}
+
+// For V1 MVP, a lujvo is constrained to longer predicate strings
+lujvo = @{ consonant ~ ASCII_ALPHA{5,} }
+
+// Names end in a consonant or explicit period
+cmevla = @{ ASCII_ALPHA+ ~ "." }

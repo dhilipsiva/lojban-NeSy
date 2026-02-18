@@ -10,7 +10,9 @@ lasso = "0.7.3"
 logos = "0.16.1"
 pest = "2.8.6"
 pest_derive = "2.8.6"
+quick-xml = { version = "0.39.1", features = ["serialize"] }
 reedline = "0.45.0"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [profile.release]
 opt-level = 3

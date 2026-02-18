@@ -1,17 +1,18 @@
 use reedline::{DefaultPrompt, Reedline, Signal};
 use bumpalo::Bump;
 
-// Assuming our modules are correctly exposed
 mod lexer;
 mod preprocessor;
 mod ast;
 mod ir;
+mod dictionary;
 mod semantic;
 mod reasoning;
 
 use lexer::tokenize;
 use preprocessor::preprocess;
 use ast::parse_to_ast;
+use dictionary::JbovlasteSchema;
 use semantic::SemanticCompiler;
 use reasoning::ReasoningCore;
 
@@ -19,14 +20,20 @@ fn main() {
     println!("==================================================");
     println!(" Lojban Neuro-Symbolic Engine - Bare-Metal V1 MVP ");
     println!("==================================================");
-    println!("Type ':quit' to exit.");
+    
+    // 1. Load the dictionary schema
+    println!("Loading jbovlaste dictionary schema...");
+    let schema = JbovlasteSchema::load_from_file("jbovlaste-en.xml");
+    println!("Loaded {} predicate arities.", schema.arities.len());
+    
+    // 2. Initialize persistent state
+    let mut reasoner = ReasoningCore::new(&schema);
+    let mut compiler = SemanticCompiler::new(schema);
 
     let mut line_editor = Reedline::create();
     let prompt = DefaultPrompt::default();
-
-    // Persistent state across REPL iterations
-    let mut compiler = SemanticCompiler::new();
-    let mut reasoner = ReasoningCore::new();
+    
+    println!("Type ':quit' to exit.");
 
     loop {
         let sig = line_editor.read_line(&prompt);
@@ -47,56 +54,45 @@ fn main() {
                 let raw_tokens = tokenize(input);
                 println!("[2] Lexed Tokens: {} items", raw_tokens.len());
 
-                // Phase 2: Preprocessing (Resolving si, sa, su, zo, zoi)
+                // Phase 2: Preprocessing
                 let normalized_tokens = preprocess(raw_tokens.into_iter(), input);
-                println!("[3] Normalized Tokens: {:?}", normalized_tokens);
 
-                // For the pest parser, we reconstruct the sanitized string.
-                // In a pure zero-copy pipeline, the preprocessor outputs a String
-                // or pest is fed a custom token stream. For V1, we join the normalized text.
+                // Phase 3: Reconstruct sanitized string for structural parsing
                 let sanitized_input = normalized_tokens
                     .iter()
                     .filter_map(|t| match t {
                         preprocessor::NormalizedToken::Standard(_, s) => Some(*s),
                         preprocessor::NormalizedToken::Quoted(s) => Some(*s),
-                        preprocessor::NormalizedToken::Glued(parts) => Some(parts[0]), // simplified
+                        preprocessor::NormalizedToken::Glued(parts) => Some(parts[0]),
                     })
                     .collect::<Vec<&str>>()
                     .join(" ");
 
-                // Phase 3: Structural Parsing (AST via Bump Arena)
+                // Phase 4: Structural Parsing (AST via Bump Arena)
                 let arena = Bump::new();
                 match parse_to_ast(&sanitized_input, &arena) {
                     Ok(ast) => {
-                        println!("[4] AST Generated: {} Bridi nodes", ast.len());
+                        println!("[3] AST Generated: {} Bridi nodes", ast.len());
 
-                        // Phase 4: Semantic Compilation & Reasoning
                         for bridi in ast.iter() {
-                            // Compile to Logical Intermediate Representation (LIR)
                             let lir = compiler.compile_bridi(bridi);
-                            println!("[5] Logical Form (LIR): {:?}", lir);
+                            println!("[4] Logical Form (LIR): {:?}", lir);
 
-                            // Phase 5: Assert into the E-Graph / Datalog engine
-                            reasoner.assert_fact(&lir);
-                            println!("[6] Fact asserted into egglog E-Graph.");
+                            // Dynamically generate the S-Expression
+                            let sexp = compiler.to_sexp(&lir);
+
+                            reasoner.assert_fact(&sexp);
+                            println!("[5] Fact asserted into egglog Truth Relation.");
                             
-                            // For demonstration, immediately query the exact fact back
-                            // In a real scenario, you would type specific query commands (e.g., "? mi klama")
-                            println!("[7] Verifying Graph Entailment...");
-                            
-                            // Constructing a naive query string based on the MVP's hardcoded klama path
-                            // This proves the Datalog engine absorbed the data.
-                            let query_str = format!("(Klama (Const \"mi\") (Desc \"lo_zarci\") (Zoe) (Zoe) (Zoe))");
-                            reasoner.query(&query_str);
+                            println!("[6] Verifying Graph Entailment...");
+                            reasoner.query(&sexp);
                         }
                     }
                     Err(e) => {
                         eprintln!("[!] Parser Error: {}", e);
                     }
                 }
-                
-                // The `arena` goes out of scope here and is instantly dropped.
-                // Zero garbage collection overhead.
+                // The `arena` goes out of scope and frees all AST memory instantly.
             }
             Ok(Signal::CtrlD) | Ok(Signal::CtrlC) => {
                 println!("Aborting.");

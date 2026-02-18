@@ -1,45 +1,40 @@
 use crate::ast::{Bridi, Selbri, Sumti};
 use crate::ir::{LogicalForm, LogicalTerm};
 use lasso::Rodeo;
+use crate::dictionary::JbovlasteSchema;
 
-/// A mock dictionary schema defining the exact arity of Lojban gismu.
-/// In production, this is generated from the jbovlaste XML exports.
-fn get_gismu_arity(predicate: &str) -> usize {
-    match predicate {
-        "klama" => 5, // agent, destination, origin, route, vehicle
-        "prami" => 2, // lover, loved
-        "gerku" => 1, // dog
-        "dunda" => 3, // donor, gift, recipient
-        _ => 2,       // Fallback for unknown tanru/lujvo in V1
-    }
-}
 
 pub struct SemanticCompiler {
     pub interner: Rodeo,
+    pub schema: JbovlasteSchema
 }
 
 impl SemanticCompiler {
-    pub fn new() -> Self {
+    pub fn new(schema: JbovlasteSchema) -> Self {
         Self {
             interner: Rodeo::new(),
+            schema,
         }
     }
 
     /// Compiles a parsed Bridi AST into an explicit First-Order Logic formula.
     pub fn compile_bridi(&mut self, bridi: &Bridi) -> LogicalForm {
         // 1. Resolve the Selbri (Relation)
-        let (relation_str, target_arity): (&str, usize) = match &bridi.selbri {
-            Selbri::Root(gismu) => (gismu, get_gismu_arity(gismu)),
+let (relation_str, target_arity): (&str, usize) = match &bridi.selbri {
+            Selbri::Root(gismu) => (gismu, self.schema.get_arity(gismu)),
             Selbri::Tanru(_modifier, head) => {
                 let head_str: &str = match head.as_ref() {
                     Selbri::Root(h) => h,
                     _ => "unknown",
                 };
-                (head_str, get_gismu_arity(head_str))
+                (head_str, self.schema.get_arity(head_str))
             }
-            Selbri::Compound(_) => ("lujvo", 2),
+            Selbri::Compound(parts) => {
+                // Very crude fallback for V1 lujvo handling
+                let head_str = parts.last().unwrap_or(&"unknown");
+                (head_str, self.schema.get_arity(head_str))
+            },
         };
-
         let relation_id = self.interner.get_or_intern(relation_str);
 
         // 2. Map Sumti to Logical Terms
@@ -87,5 +82,39 @@ impl SemanticCompiler {
             relation: relation_id,
             args,
         }
+    }
+
+    /// Converts the LIR into an egglog S-Expression by resolving interner IDs.
+    pub fn to_sexp(&self, form: &LogicalForm) -> String {
+        match form {
+            LogicalForm::Predicate { relation, args } => {
+                let raw_rel = self.interner.resolve(relation);
+                let rel_str = Self::sanitize_name(raw_rel);
+                
+                let args_str: Vec<String> = args.iter().map(|arg| {
+                    match arg {
+                        LogicalTerm::Variable(v) => format!("(Var \"{}\")", self.interner.resolve(v)),
+                        LogicalTerm::Constant(c) => format!("(Const \"{}\")", self.interner.resolve(c)),
+                        LogicalTerm::Description(d) => format!("(Desc \"{}\")", self.interner.resolve(d)),
+                        LogicalTerm::Unspecified => "(Zoe)".to_string(),
+                    }
+                }).collect();
+                
+                format!("({} {})", rel_str, args_str.join(" "))
+            }
+            LogicalForm::And(left, right) => {
+                format!("(And {} {})", self.to_sexp(left), self.to_sexp(right))
+            }
+            _ => unimplemented!("Other forms deferred for V1 MVP"),
+        }
+    }
+
+    /// egglog datatypes must be capitalized and avoid special characters.
+    pub fn sanitize_name(word: &str) -> String {
+        let mut s = word.replace('\'', "_").replace('.', "");
+        if let Some(r) = s.get_mut(0..1) {
+            r.make_ascii_uppercase();
+        }
+        s
     }
 }

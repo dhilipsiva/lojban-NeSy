@@ -39,11 +39,15 @@ pub struct Bridi<'a> {
 /// Parses a sanitized Lojban string into an arena-allocated AST.
 pub fn parse_to_ast<'a>(input: &'a str, arena: &'a Bump) -> Result<BumpVec<'a, Bridi<'a>>, pest::error::Error<Rule>> {
     let mut ast = BumpVec::new_in(arena);
-    let pairs = LojbanParser::parse(Rule::text, input)?;
+    let mut pairs = LojbanParser::parse(Rule::text, input)?;
 
-    for pair in pairs {
-        if pair.as_rule() == Rule::sentence {
-            ast.push(build_bridi(pair, arena));
+    // The parser returns an iterator containing the root Rule::text node. 
+    // We must step inside it to iterate over the actual sentences.
+    if let Some(text_pair) = pairs.next() {
+        for pair in text_pair.into_inner() {
+            if pair.as_rule() == Rule::sentence {
+                ast.push(build_bridi(pair, arena));
+            }
         }
     }
 
