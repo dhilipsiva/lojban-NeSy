@@ -112,12 +112,20 @@ fn main() -> Result<()> {
                     println!("[Host] Logical Form: {}", sexp);
 
                     // --- Phase 3: WASM Reasoning ---
-                    reasoning_inst
+                    if let Err(e) = reasoning_inst
                         .lojban_nesy_reasoning()
-                        .call_assert_fact(&mut store, &sexp)?;
-                    reasoning_inst
+                        .call_assert_fact(&mut store, &sexp)
+                    {
+                        eprintln!("[Host] Reasoning call_assert_fact error: {}", e);
+                        continue;
+                    }
+                    if let Err(e) = reasoning_inst
                         .lojban_nesy_reasoning()
-                        .call_query_entailment(&mut store, &sexp)?;
+                        .call_query_entailment(&mut store, &sexp)
+                    {
+                        eprintln!("[Host] Reasoning call_assert_fact error: {}", e);
+                        continue;
+                    }
                 }
             }
             Ok(Signal::CtrlD) | Ok(Signal::CtrlC) => break,
