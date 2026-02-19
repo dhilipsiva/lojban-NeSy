@@ -1,0 +1,14 @@
+[package]
+name = "orchestrator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[package.metadata.component]
+package = "lojban:nesy"
+# The orchestrator targets the composed world [cite: 8]
+target = "lojban:nesy/engine-pipeline@0.1.0"
+
+[package.metadata.component.dependencies]
+"lojban:nesy" = { path = "../wit" }
