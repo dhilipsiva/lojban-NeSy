@@ -33,8 +33,10 @@ pub enum LojbanToken {
     #[regex(r"([bcdfghjklmnprstvxz][aeiou][bcdfghjklmnprstvxz][bcdfghjklmnprstvxz][aeiou])|([bcdfghjklmnprstvxz][bcdfghjklmnprstvxz][aeiou][bcdfghjklmnprstvxz][aeiou])")]
     Gismu,
 
-    // Cmevla (Names): Must end in a consonant
-    #[regex(r"[a-zA-Z'\.]+[^aeiouy \t\n\f\.]")]
+    // Cmevla (Names): Must end in a consonant.
+    // No dots in body — dots are pause tokens and must not be consumed as part of a word.
+    // Final character is explicitly a Lojban consonant, not a negated vowel class.
+    #[regex(r"[a-zA-Z']+[bcdfghjklmnprstvxzBCDFGHJKLMNPRSTVXZ]")]
     Cmevla,
 
     // Cmavo (Structure words): 1-to-many vowels, optionally preceded by one consonant
