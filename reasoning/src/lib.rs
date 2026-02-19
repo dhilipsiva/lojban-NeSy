@@ -58,7 +58,7 @@ impl Guest for ReasoningComponent {
         let egraph_mutex = get_egraph();
         let mut egraph = egraph_mutex.lock().unwrap();
 
-        let command = format!("(let f1 {})\n(IsTrue f1)\n(run 10)", sexp);
+        let command = format!("(IsTrue {})\n(run 10)", sexp);
         egraph
             .parse_and_run_program(None, &command)
             .expect("Failed to assert fact");
