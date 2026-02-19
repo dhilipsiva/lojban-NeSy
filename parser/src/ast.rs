@@ -1,27 +1,25 @@
 use crate::lexer::LojbanToken;
 use crate::preprocessor::NormalizedToken;
-use bumpalo::Bump;
-use bumpalo::collections::Vec as BumpVec;
 
 #[derive(Debug, PartialEq)]
-pub enum Sumti<'a> {
-    ProSumti(&'a str),
-    Description(Box<Selbri<'a>>),
-    Name(&'a str),
-    QuotedLiteral(&'a str),
+pub enum Sumti {
+    ProSumti(String),
+    Description(Box<Selbri>),
+    Name(String),
+    QuotedLiteral(String),
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Selbri<'a> {
-    Root(&'a str),
-    Compound(BumpVec<'a, &'a str>),
-    Tanru(Box<Selbri<'a>>, Box<Selbri<'a>>),
+pub enum Selbri {
+    Root(String),
+    Compound(Vec<String>),
+    Tanru(Box<Selbri>, Box<Selbri>),
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Bridi<'a> {
-    pub selbri: Selbri<'a>,
-    pub terms: BumpVec<'a, Sumti<'a>>,
+pub struct Bridi {
+    pub selbri: Selbri,
+    pub terms: Vec<Sumti>,
 }
 
 struct TokenCursor<'a> {
@@ -43,15 +41,12 @@ impl<'a> TokenCursor<'a> {
     }
 }
 
-pub fn parse_tokens_to_ast<'a>(
-    tokens: &'a [NormalizedToken<'a>],
-    arena: &'a Bump,
-) -> Result<BumpVec<'a, Bridi<'a>>, String> {
+pub fn parse_tokens_to_ast(tokens: &[NormalizedToken]) -> Result<Vec<Bridi>, String> {
     let mut cursor = TokenCursor { tokens, pos: 0 };
-    let mut bridi_list = BumpVec::new_in(arena);
+    let mut bridi_list = Vec::new();
 
     // Sentence structure: [Sumti]* [cu]? [Selbri] [Sumti]*
-    let mut terms = BumpVec::new_in(arena);
+    let mut terms = Vec::new();
     let mut selbri = None;
 
     while let Some(token) = cursor.peek() {
@@ -59,19 +54,19 @@ pub fn parse_tokens_to_ast<'a>(
             NormalizedToken::Standard(LojbanToken::Cmavo, "lo") => {
                 cursor.next(); // consume 'lo'
                 if let Some(NormalizedToken::Standard(LojbanToken::Gismu, s)) = cursor.next() {
-                    terms.push(Sumti::Description(Box::new(Selbri::Root(s))));
+                    terms.push(Sumti::Description(Box::new(Selbri::Root(s.to_string()))));
                 }
             }
             NormalizedToken::Standard(LojbanToken::Cmavo, s) if *s == "mi" || *s == "do" => {
                 cursor.next();
-                terms.push(Sumti::ProSumti(s));
+                terms.push(Sumti::ProSumti(s.to_string()));
             }
             NormalizedToken::Standard(LojbanToken::Cmavo, "cu") => {
                 cursor.next(); // consume 'cu' separator
             }
             NormalizedToken::Standard(LojbanToken::Gismu, s) => {
                 cursor.next();
-                selbri = Some(Selbri::Root(s));
+                selbri = Some(Selbri::Root(s.to_string()));
             }
             _ => {
                 cursor.next();
