@@ -25,18 +25,18 @@ impl SemanticCompiler {
         let selbri_node = &selbris[bridi.relation as usize];
 
         let (relation_str, target_arity): (&str, usize) = match selbri_node {
-            Selbri::Root(gismu) => (gismu, JbovlasteSchema::get_arity(gismu)),
+            Selbri::Root(gismu) => (gismu, JbovlasteSchema::get_arity_or_default(gismu)),
             Selbri::Tanru((modifier_id, head_id)) => {
                 let head_node = &selbris[*head_id as usize];
                 let head_str: &str = match head_node {
                     Selbri::Root(h) => h,
                     _ => "unknown",
                 };
-                (head_str, JbovlasteSchema::get_arity(head_str))
+                (head_str, JbovlasteSchema::get_arity_or_default(head_str))
             }
             Selbri::Compound(parts) => {
                 let head_str = parts.last().map(|s| s.as_str()).unwrap_or("unknown");
-                (head_str, JbovlasteSchema::get_arity(head_str))
+                (head_str, JbovlasteSchema::get_arity_or_default(head_str))
             }
         };
         let relation_id = self.interner.get_or_intern(relation_str);
