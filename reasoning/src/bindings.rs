@@ -17,47 +17,143 @@ pub mod exports {
                 pub unsafe fn _export_assert_fact_cabi<T: Guest>(
                     arg0: *mut u8,
                     arg1: usize,
-                ) {
+                ) -> *mut u8 {
                     #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
                     let len0 = arg1;
                     let bytes0 = _rt::Vec::from_raw_parts(arg0.cast(), len0, len0);
-                    T::assert_fact(_rt::string_lift(bytes0));
+                    let result1 = T::assert_fact(_rt::string_lift(bytes0));
+                    let ptr2 = (&raw mut _RET_AREA.0).cast::<u8>();
+                    match result1 {
+                        Ok(_) => {
+                            *ptr2.add(0).cast::<u8>() = (0i32) as u8;
+                        }
+                        Err(e) => {
+                            *ptr2.add(0).cast::<u8>() = (1i32) as u8;
+                            let vec3 = (e.into_bytes()).into_boxed_slice();
+                            let ptr3 = vec3.as_ptr().cast::<u8>();
+                            let len3 = vec3.len();
+                            ::core::mem::forget(vec3);
+                            *ptr2
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>() = len3;
+                            *ptr2
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>() = ptr3.cast_mut();
+                        }
+                    };
+                    ptr2
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn __post_return_assert_fact<T: Guest>(arg0: *mut u8) {
+                    let l0 = i32::from(*arg0.add(0).cast::<u8>());
+                    match l0 {
+                        0 => {}
+                        _ => {
+                            let l1 = *arg0
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l2 = *arg0
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            _rt::cabi_dealloc(l1, l2, 1);
+                        }
+                    }
                 }
                 #[doc(hidden)]
                 #[allow(non_snake_case)]
                 pub unsafe fn _export_query_entailment_cabi<T: Guest>(
                     arg0: *mut u8,
                     arg1: usize,
-                ) -> i32 {
+                ) -> *mut u8 {
                     #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
                     let len0 = arg1;
                     let bytes0 = _rt::Vec::from_raw_parts(arg0.cast(), len0, len0);
                     let result1 = T::query_entailment(_rt::string_lift(bytes0));
+                    let ptr2 = (&raw mut _RET_AREA.0).cast::<u8>();
                     match result1 {
-                        true => 1,
-                        false => 0,
+                        Ok(e) => {
+                            *ptr2.add(0).cast::<u8>() = (0i32) as u8;
+                            *ptr2
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<u8>() = (match e {
+                                true => 1,
+                                false => 0,
+                            }) as u8;
+                        }
+                        Err(e) => {
+                            *ptr2.add(0).cast::<u8>() = (1i32) as u8;
+                            let vec3 = (e.into_bytes()).into_boxed_slice();
+                            let ptr3 = vec3.as_ptr().cast::<u8>();
+                            let len3 = vec3.len();
+                            ::core::mem::forget(vec3);
+                            *ptr2
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>() = len3;
+                            *ptr2
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>() = ptr3.cast_mut();
+                        }
+                    };
+                    ptr2
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn __post_return_query_entailment<T: Guest>(arg0: *mut u8) {
+                    let l0 = i32::from(*arg0.add(0).cast::<u8>());
+                    match l0 {
+                        0 => {}
+                        _ => {
+                            let l1 = *arg0
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l2 = *arg0
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            _rt::cabi_dealloc(l1, l2, 1);
+                        }
                     }
                 }
                 pub trait Guest {
-                    fn assert_fact(sexp: _rt::String) -> ();
-                    fn query_entailment(sexp: _rt::String) -> bool;
+                    fn assert_fact(sexp: _rt::String) -> Result<(), _rt::String>;
+                    fn query_entailment(sexp: _rt::String) -> Result<bool, _rt::String>;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_lojban_nesy_reasoning_0_1_0_cabi {
                     ($ty:ident with_types_in $($path_to_types:tt)*) => {
                         const _ : () = { #[unsafe (export_name =
                         "lojban:nesy/reasoning@0.1.0#assert-fact")] unsafe extern "C" fn
-                        export_assert_fact(arg0 : * mut u8, arg1 : usize,) { unsafe {
-                        $($path_to_types)*:: _export_assert_fact_cabi::<$ty > (arg0,
-                        arg1) } } #[unsafe (export_name =
+                        export_assert_fact(arg0 : * mut u8, arg1 : usize,) -> * mut u8 {
+                        unsafe { $($path_to_types)*:: _export_assert_fact_cabi::<$ty >
+                        (arg0, arg1) } } #[unsafe (export_name =
+                        "cabi_post_lojban:nesy/reasoning@0.1.0#assert-fact")] unsafe
+                        extern "C" fn _post_return_assert_fact(arg0 : * mut u8,) { unsafe
+                        { $($path_to_types)*:: __post_return_assert_fact::<$ty > (arg0) }
+                        } #[unsafe (export_name =
                         "lojban:nesy/reasoning@0.1.0#query-entailment")] unsafe extern
                         "C" fn export_query_entailment(arg0 : * mut u8, arg1 : usize,) ->
-                        i32 { unsafe { $($path_to_types)*::
-                        _export_query_entailment_cabi::<$ty > (arg0, arg1) } } };
+                        * mut u8 { unsafe { $($path_to_types)*::
+                        _export_query_entailment_cabi::<$ty > (arg0, arg1) } } #[unsafe
+                        (export_name =
+                        "cabi_post_lojban:nesy/reasoning@0.1.0#query-entailment")] unsafe
+                        extern "C" fn _post_return_query_entailment(arg0 : * mut u8,) {
+                        unsafe { $($path_to_types)*::
+                        __post_return_query_entailment::<$ty > (arg0) } } };
                     };
                 }
                 #[doc(hidden)]
                 pub(crate) use __export_lojban_nesy_reasoning_0_1_0_cabi;
+                #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                struct _RetArea(
+                    [::core::mem::MaybeUninit<
+                        u8,
+                    >; 3 * ::core::mem::size_of::<*const u8>()],
+                );
+                static mut _RET_AREA: _RetArea = _RetArea(
+                    [::core::mem::MaybeUninit::uninit(); 3
+                        * ::core::mem::size_of::<*const u8>()],
+                );
             }
         }
     }
@@ -77,8 +173,16 @@ mod _rt {
             String::from_utf8_unchecked(bytes)
         }
     }
+    pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
+        if size == 0 {
+            return;
+        }
+        let layout = alloc::Layout::from_size_align_unchecked(size, align);
+        alloc::dealloc(ptr, layout);
+    }
     pub use alloc_crate::string::String;
     extern crate alloc as alloc_crate;
+    pub use alloc_crate::alloc;
 }
 /// Generates `#[unsafe(no_mangle)]` functions to export the specified type as
 /// the root implementation of all generated traits.
@@ -116,13 +220,13 @@ pub(crate) use __export_reasoning_component_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 280] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x8e\x01\x01A\x02\x01\
-A\x02\x01B\x04\x01@\x01\x04sexps\x01\0\x04\0\x0bassert-fact\x01\0\x01@\x01\x04se\
-xps\0\x7f\x04\0\x10query-entailment\x01\x01\x04\0\x1blojban:nesy/reasoning@0.1.0\
-\x05\0\x04\0%lojban:nesy/reasoning-component@0.1.0\x04\0\x0b\x19\x01\0\x13reason\
-ing-component\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
-0.227.1\x10wit-bindgen-rust\x060.41.0";
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 291] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x99\x01\x01A\x02\x01\
+A\x02\x01B\x06\x01j\0\x01s\x01@\x01\x04sexps\0\0\x04\0\x0bassert-fact\x01\x01\x01\
+j\x01\x7f\x01s\x01@\x01\x04sexps\0\x02\x04\0\x10query-entailment\x01\x03\x04\0\x1b\
+lojban:nesy/reasoning@0.1.0\x05\0\x04\0%lojban:nesy/reasoning-component@0.1.0\x04\
+\0\x0b\x19\x01\0\x13reasoning-component\x03\0\0\0G\x09producers\x01\x0cprocessed\
+-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

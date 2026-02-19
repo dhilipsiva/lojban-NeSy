@@ -104,27 +104,39 @@ fn main() -> Result<()> {
                 let ast_buffer_2 = map_buffer_to_semantics(ast_buffer_1);
 
                 // --- Phase 2: WASM Semantics ---
-                let sexps = semantics_inst
+                let compile_result = semantics_inst
                     .lojban_nesy_semantics()
                     .call_compile_buffer(&mut store, &ast_buffer_2)?;
+                let sexps = match compile_result {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("[Host] Semantics Error: {}", e);
+                        continue;
+                    }
+                };
 
                 for sexp in sexps {
                     println!("[Host] Logical Form: {}", sexp);
 
                     // --- Phase 3: WASM Reasoning ---
-                    if let Err(e) = reasoning_inst
+                    match reasoning_inst
                         .lojban_nesy_reasoning()
-                        .call_assert_fact(&mut store, &sexp)
+                        .call_assert_fact(&mut store, &sexp)?
                     {
-                        eprintln!("[Host] Reasoning call_assert_fact error: {}", e);
-                        continue;
+                        Ok(()) => {}
+                        Err(e) => {
+                            eprintln!("[Host] Assert Error: {}", e);
+                            continue;
+                        }
                     }
-                    if let Err(e) = reasoning_inst
+
+                    match reasoning_inst
                         .lojban_nesy_reasoning()
-                        .call_query_entailment(&mut store, &sexp)
+                        .call_query_entailment(&mut store, &sexp)?
                     {
-                        eprintln!("[Host] Reasoning call_assert_fact error: {}", e);
-                        continue;
+                        Ok(true) => println!("[Host] Entailment: TRUE"),
+                        Ok(false) => println!("[Host] Entailment: FALSE"),
+                        Err(e) => eprintln!("[Host] Query Error: {}", e),
                     }
                 }
             }

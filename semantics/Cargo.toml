@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 lasso = "0.7.3"
 phf = "0.13.1"
-serde = { version = "1.0.228", features = ["derive"] }
 wit-bindgen-rt = "0.44.0"
 
 [build-dependencies]

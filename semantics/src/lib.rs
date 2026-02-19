@@ -12,7 +12,7 @@ struct SemanticsComponent;
 
 impl Guest for SemanticsComponent {
     /// Consumes the Canonical ABI AST buffer and returns an array of optimized S-Expressions.
-    fn compile_buffer(ast: AstBuffer) -> Vec<String> {
+    fn compile_buffer(ast: AstBuffer) -> Result<Vec<String>, String> {
         // Instantiate the string-interning compiler (Zero dictionary allocation)
         let mut compiler = SemanticCompiler::new();
         let mut sexps = Vec::with_capacity(ast.sentences.len());
@@ -25,7 +25,7 @@ impl Guest for SemanticsComponent {
             sexps.push(compiler.to_sexp(&logical_form));
         }
 
-        sexps
+        Ok(sexps)
     }
 }
 

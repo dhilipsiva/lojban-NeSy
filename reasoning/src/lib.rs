@@ -54,34 +54,31 @@ fn get_egraph() -> &'static Mutex<EGraph> {
 struct ReasoningComponent;
 
 impl Guest for ReasoningComponent {
-    fn assert_fact(sexp: String) {
+    fn assert_fact(sexp: String) -> Result<(), String> {
         let egraph_mutex = get_egraph();
         let mut egraph = egraph_mutex.lock().unwrap();
 
         let command = format!("(IsTrue {})\n(run 10)", sexp);
         egraph
             .parse_and_run_program(None, &command)
-            .expect("Failed to assert fact");
+            .map(|_| ())
+            .map_err(|e| format!("Failed to assert fact: {}", e))
     }
 
-    fn query_entailment(sexp: String) -> bool {
+    fn query_entailment(sexp: String) -> Result<bool, String> {
         let egraph_mutex = get_egraph();
         let mut egraph = egraph_mutex.lock().unwrap();
 
         let command = format!("(check (IsTrue {}))", sexp);
         match egraph.parse_and_run_program(None, &command) {
-            Ok(_) => {
-                println!("[Reasoning] TRUE: {}", sexp);
-                true
-            }
+            Ok(_) => Ok(true),
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("Check failed") {
-                    println!("[Reasoning] FALSE: not entailed: {}", sexp);
+                    Ok(false)
                 } else {
-                    eprintln!("[Reasoning] ERROR (not a check failure): {}", msg);
+                    Err(format!("Reasoning error: {}", msg))
                 }
-                false
             }
         }
     }

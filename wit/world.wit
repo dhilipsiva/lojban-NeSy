@@ -36,12 +36,12 @@ interface parser {
 
 interface semantics {
     use ast-types.{ast-buffer};
-    compile-buffer: func(ast: ast-buffer) -> list<string>;
+    compile-buffer: func(ast: ast-buffer) -> result<list<string>, string>;
 }
 
 interface reasoning {
-    assert-fact: func(sexp: string);
-    query-entailment: func(sexp: string) -> bool;
+    assert-fact: func(sexp: string) -> result<_, string>;
+    query-entailment: func(sexp: string) -> result<bool, string>;
 }
 
 // --- Component Worlds ---
