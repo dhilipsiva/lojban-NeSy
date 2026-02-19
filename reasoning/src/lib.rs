@@ -71,11 +71,16 @@ impl Guest for ReasoningComponent {
         let command = format!("(check (IsTrue {}))", sexp);
         match egraph.parse_and_run_program(None, &command) {
             Ok(_) => {
-                println!("[WASM Reasoning Core] Query TRUE: Graph entails {}", sexp);
+                println!("[Reasoning] TRUE: {}", sexp);
                 true
             }
             Err(e) => {
-                println!("[WASM Reasoning Core] Query FALSE/UNKNOWN: {}", e);
+                let msg = e.to_string();
+                if msg.contains("Check failed") {
+                    println!("[Reasoning] FALSE: not entailed: {}", sexp);
+                } else {
+                    eprintln!("[Reasoning] ERROR (not a check failure): {}", msg);
+                }
                 false
             }
         }
