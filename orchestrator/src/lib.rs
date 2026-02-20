@@ -8,18 +8,20 @@ struct EnginePipeline;
 
 impl Guest for EnginePipeline {
     fn execute(input: String) -> bool {
+        // REPL Command Routing
+        let is_query = input.starts_with("?");
+        let text = if is_query { input[1..].trim() } else { &input };
+
         // --- Phase 1: Zero-Copy Parse ---
-        let ast = match parser::parse_text(&input) {
+        let ast = match parser::parse_text(text) {
             Ok(ast) => ast,
             Err(e) => {
                 println!("[WASM] Parser Error: {}", e);
                 return false;
             }
         };
-        println!("[WASM] Parsed {} bridi.", ast.sentences.len());
 
         // --- Phase 2: Zero-Copy Semantics ---
-        // AST memory pointer is passed directly; no host-side serialization!
         let sexps = match semantics::compile_buffer(&ast) {
             Ok(s) => s,
             Err(e) => {
@@ -28,30 +30,31 @@ impl Guest for EnginePipeline {
             }
         };
 
-        let mut final_entailment = false;
+        let mut final_result = true;
 
         // --- Phase 3: Reasoning ---
         for sexp in sexps {
-            println!("[WASM] Logical Form: {}", sexp);
-
-            if let Err(e) = reasoning::assert_fact(&sexp) {
-                println!("[WASM] Assert Error: {}", e);
-                continue;
-            }
-
-            match reasoning::query_entailment(&sexp) {
-                Ok(result) => {
-                    println!(
-                        "[WASM] Entailment: {}",
-                        if result { "TRUE" } else { "FALSE" }
-                    );
-                    final_entailment = result;
+            if is_query {
+                match reasoning::query_entailment(&sexp) {
+                    Ok(result) => {
+                        println!(
+                            "[WASM] Query Entailment: {}",
+                            if result { "TRUE" } else { "FALSE" }
+                        );
+                        final_result = result;
+                    }
+                    Err(e) => println!("[WASM] Query Error: {}", e),
                 }
-                Err(e) => println!("[WASM] Query Error: {}", e),
+            } else {
+                if let Err(e) = reasoning::assert_fact(&sexp) {
+                    println!("[WASM] Assert Error: {}", e);
+                    continue;
+                }
+                println!("[WASM] Fact Asserted: {}", sexp);
             }
         }
 
-        final_entailment
+        final_result
     }
 }
 

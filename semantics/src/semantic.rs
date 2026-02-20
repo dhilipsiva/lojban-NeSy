@@ -1,4 +1,4 @@
-use crate::bindings::lojban::nesy::ast_types::{Bridi, Selbri, Sumti};
+use crate::bindings::lojban::nesy::ast_types::{Bridi, Conversion, Selbri, Sumti};
 use crate::dictionary::JbovlasteSchema;
 use crate::ir::{LogicalForm, LogicalTerm};
 use lasso::Rodeo;
@@ -14,73 +14,78 @@ impl SemanticCompiler {
         }
     }
 
-    /// Compiles a flattened WASM Bridi AST into an explicit First-Order Logic formula.
     pub fn compile_bridi(
         &mut self,
         bridi: &Bridi,
         selbris: &[Selbri],
         sumtis: &[Sumti],
     ) -> LogicalForm {
-        // 1. Resolve the Selbri (Relation) using the flat array index
         let selbri_node = &selbris[bridi.relation as usize];
+        let mut conversion_mod = None;
 
-        let (relation_str, target_arity): (&str, usize) = match selbri_node {
-            Selbri::Root(gismu) => (gismu, JbovlasteSchema::get_arity_or_default(gismu)),
-            Selbri::Tanru((modifier_id, head_id)) => {
-                let head_node = &selbris[*head_id as usize];
-                let head_str: &str = match head_node {
-                    Selbri::Root(h) => h,
-                    _ => "unknown",
-                };
-                (head_str, JbovlasteSchema::get_arity_or_default(head_str))
+        // 1. Resolve Relation & Track Conversions
+        let (relation_str, target_arity) = match selbri_node {
+            Selbri::Root(gismu) => (gismu.as_str(), JbovlasteSchema::get_arity_or_default(gismu)),
+            Selbri::Converted((conv, inner_id)) => {
+                conversion_mod = Some(*conv);
+                let inner_node = &selbris[*inner_id as usize];
+                match inner_node {
+                    Selbri::Root(r) => (r.as_str(), JbovlasteSchema::get_arity_or_default(r)),
+                    _ => ("unknown", 2),
+                }
             }
+            Selbri::Tanru((_, head_id)) => match &selbris[*head_id as usize] {
+                Selbri::Root(h) => (h.as_str(), JbovlasteSchema::get_arity_or_default(h)),
+                _ => ("unknown", 2),
+            },
             Selbri::Compound(parts) => {
-                let head_str = parts.last().map(|s| s.as_str()).unwrap_or("unknown");
-                (head_str, JbovlasteSchema::get_arity_or_default(head_str))
+                let head = parts.last().map(|s| s.as_str()).unwrap_or("unknown");
+                (head, JbovlasteSchema::get_arity_or_default(head))
             }
-            // Fallback for exhaustive matching on unhandled permutations
             _ => ("unknown", 2),
         };
+
         let relation_id = self.interner.get_or_intern(relation_str);
 
         // 2. Map Sumti to Logical Terms
         let mut args: Vec<LogicalTerm> = Vec::with_capacity(target_arity);
 
-        // FIX: Chain head_terms and tail_terms sequentially to reconstruct the logical argument list
         for &term_id in bridi.head_terms.iter().chain(bridi.tail_terms.iter()) {
-            let term_node = &sumtis[term_id as usize];
-            let logical_term = match term_node {
+            let logical_term = match &sumtis[term_id as usize] {
                 Sumti::ProSumti(p) => {
-                    let p_str: &str = p;
-                    if p_str == "da" || p_str == "de" || p_str == "di" {
-                        LogicalTerm::Variable(self.interner.get_or_intern(p_str))
+                    if p == "da" || p == "de" || p == "di" {
+                        LogicalTerm::Variable(self.interner.get_or_intern(p.as_str()))
                     } else {
-                        LogicalTerm::Constant(self.interner.get_or_intern(p_str))
+                        LogicalTerm::Constant(self.interner.get_or_intern(p.as_str()))
                     }
                 }
-                Sumti::Name(n) => {
-                    let n_str: &str = n;
-                    LogicalTerm::Constant(self.interner.get_or_intern(n_str))
-                }
-                // FIX: Destructure the tuple to extract the valid memory offset ID
-                Sumti::Description((_gadri, desc_selbri_id)) => {
-                    let desc_selbri_node = &selbris[*desc_selbri_id as usize];
-                    let desc_str: &str = match desc_selbri_node {
-                        Selbri::Root(r) => r,
+                Sumti::Name(n) => LogicalTerm::Constant(self.interner.get_or_intern(n.as_str())),
+                Sumti::Description((_gadri, desc_id)) => {
+                    let desc_str = match &selbris[*desc_id as usize] {
+                        Selbri::Root(r) => r.as_str(),
                         _ => "entity",
                     };
                     LogicalTerm::Description(self.interner.get_or_intern(desc_str))
                 }
-                Sumti::QuotedLiteral(_) | Sumti::Unspecified => LogicalTerm::Unspecified,
-                // Ensure exhaustive match for remaining wit-bindgen variants
                 _ => LogicalTerm::Unspecified,
             };
             args.push(logical_term);
         }
 
-        // 3. Arity Normalization (Padding with zo'e)
+        // 3. Arity Normalization
         while args.len() < target_arity {
             args.push(LogicalTerm::Unspecified);
+        }
+
+        // 4. Mathematical Place Permutation (se/te/ve/xe)
+        if let Some(conv) = conversion_mod {
+            match conv {
+                Conversion::Se if args.len() >= 2 => args.swap(0, 1),
+                Conversion::Te if args.len() >= 3 => args.swap(0, 2),
+                Conversion::Ve if args.len() >= 4 => args.swap(0, 3),
+                Conversion::Xe if args.len() >= 5 => args.swap(0, 4),
+                _ => {}
+            }
         }
 
         LogicalForm::Predicate {
@@ -89,12 +94,10 @@ impl SemanticCompiler {
         }
     }
 
-    /// Converts the LIR into an egglog S-Expression by resolving interner IDs.
     pub fn to_sexp(&self, form: &LogicalForm) -> String {
         match form {
             LogicalForm::Predicate { relation, args } => {
                 let raw_rel = self.interner.resolve(relation);
-
                 let args_str: Vec<String> = args
                     .iter()
                     .map(|arg| match arg {
@@ -117,21 +120,16 @@ impl SemanticCompiler {
             LogicalForm::And(left, right) => {
                 format!("(And {} {})", self.to_sexp(left), self.to_sexp(right))
             }
-            // FIX: Prevent WASM traps by implementing basic serialization for quantifiers
-            LogicalForm::ForAll(var, body) => {
-                format!(
-                    "(ForAll \"{}\" {})",
-                    self.interner.resolve(var),
-                    self.to_sexp(body)
-                )
-            }
-            LogicalForm::Exists(var, body) => {
-                format!(
-                    "(Exists \"{}\" {})",
-                    self.interner.resolve(var),
-                    self.to_sexp(body)
-                )
-            }
+            LogicalForm::ForAll(v, b) => format!(
+                "(ForAll \"{}\" {})",
+                self.interner.resolve(v),
+                self.to_sexp(b)
+            ),
+            LogicalForm::Exists(v, b) => format!(
+                "(Exists \"{}\" {})",
+                self.interner.resolve(v),
+                self.to_sexp(b)
+            ),
         }
     }
 }
