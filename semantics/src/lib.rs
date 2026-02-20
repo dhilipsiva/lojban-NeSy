@@ -14,9 +14,19 @@ use semantic::SemanticCompiler;
 struct SemanticsComponent;
 
 impl Guest for SemanticsComponent {
-    /// Consumes the Canonical ABI AST buffer and returns a zero-copy logic arena buffer.
     fn compile_buffer(ast: AstBuffer) -> Result<LogicBuffer, String> {
-        // Flatten the logical trees into a flat, integer-indexed arena buffer
+        let mut compiler = SemanticCompiler::new();
+        let mut logic_forms = Vec::with_capacity(ast.sentences.len());
+
+        for sentence in ast.sentences.iter() {
+            logic_forms.push(compiler.compile_bridi(
+                sentence,
+                &ast.selbris,
+                &ast.sumtis,
+                &ast.sentences,
+            ));
+        }
+
         let mut nodes = Vec::new();
         let mut roots = Vec::with_capacity(logic_forms.len());
 
@@ -29,7 +39,6 @@ impl Guest for SemanticsComponent {
     }
 }
 
-/// Recursively flattens the nested LogicalForm into the flat WIT LogicBuffer.
 fn flatten_form(form: &LogicalForm, nodes: &mut Vec<LogicNode>, interner: &lasso::Rodeo) -> u32 {
     match form {
         LogicalForm::Predicate { relation, args } => {

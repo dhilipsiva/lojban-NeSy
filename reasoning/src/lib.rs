@@ -13,6 +13,10 @@ fn get_egraph() -> &'static Mutex<EGraph> {
         let mut egraph = EGraph::default();
 
         let schema_str = r#"
+            ;; ═══════════════════════════════════════════════
+            ;; Lojban NeSy Engine — FOL Schema & Rules
+            ;; ═══════════════════════════════════════════════
+
             ;; Atomic Terms
             (datatype Term
                 (Var String)
@@ -29,9 +33,7 @@ fn get_egraph() -> &'static Mutex<EGraph> {
 
             ;; Well-Formed Formulas
             (datatype Formula
-                ;; A single variadic predicate replaces Pred1 through Pred5
                 (Pred String TermList)
-                
                 (And Formula Formula)
                 (Or Formula Formula)
                 (Not Formula)
@@ -43,15 +45,74 @@ fn get_egraph() -> &'static Mutex<EGraph> {
             ;; The Knowledge Base
             (relation IsTrue (Formula))
 
-            ;; Equality Saturation Rules
+            ;; ───────────────────────────────────────────────
+            ;; STRUCTURAL REWRITES
+            ;; These merge e-classes (equate terms).
+            ;; Always terminating — no new facts generated.
+            ;; ───────────────────────────────────────────────
+
+            ;; Commutativity
             (rewrite (And A B) (And B A))
             (rewrite (Or A B) (Or B A))
+
+            ;; Associativity
+            (rewrite (And (And A B) C) (And A (And B C)))
+            (rewrite (Or (Or A B) C) (Or A (Or B C)))
+
+            ;; Double negation elimination
             (rewrite (Not (Not A)) A)
+
+            ;; De Morgan's Laws
+            (rewrite (Not (And A B)) (Or (Not A) (Not B)))
+            (rewrite (Not (Or A B)) (And (Not A) (Not B)))
+
+            ;; Material conditional elimination
+            (rewrite (Implies A B) (Or (Not A) B))
+
+            ;; ───────────────────────────────────────────────
+            ;; INFERENCE RULES
+            ;; These add new IsTrue facts to the database.
+            ;; All are bounded (no recursive generation).
+            ;; ───────────────────────────────────────────────
+
+            ;; Conjunction Elimination: A ∧ B ⊢ A, B
+            ;; Enables querying individual predicates from connective assertions
+            ;; e.g., "la .bob. cu barda je sutra" → can now query "? la .bob. cu barda"
+            (rule ((IsTrue (And A B)))
+                  ((IsTrue A) (IsTrue B)))
+
+            ;; Disjunctive Syllogism: A ∨ B, ¬A ⊢ B
+            (rule ((IsTrue (Or A B)) (IsTrue (Not A)))
+                  ((IsTrue B)))
+
+            ;; Modus Ponens: A → B, A ⊢ B
+            (rule ((IsTrue (Implies A B)) (IsTrue A))
+                  ((IsTrue B)))
+
+            ;; Modus Tollens: A → B, ¬B ⊢ ¬A
+            (rule ((IsTrue (Implies A B)) (IsTrue (Not B)))
+                  ((IsTrue (Not A))))
+
+            ;; ───────────────────────────────────────────────
+            ;; QUANTIFIER RULES
+            ;; ───────────────────────────────────────────────
+
+            ;; ∃-distribution over ∧ (forward only — sound)
+            ;; ∃x.(A ∧ B) ⊢ ∃x.A ∧ ∃x.B
+            ;; Combined with conjunction elimination, allows extraction of
+            ;; individual predicates from existentially quantified conjunctions.
+            (rule ((IsTrue (Exists v (And A B))))
+                  ((IsTrue (And (Exists v A) (Exists v B)))))
+
+            ;; ∀-distribution over ∧ (sound)
+            ;; ∀x.(A ∧ B) ⊢ ∀x.A ∧ ∀x.B
+            (rule ((IsTrue (ForAll v (And A B))))
+                  ((IsTrue (And (ForAll v A) (ForAll v B)))))
         "#;
 
         egraph
             .parse_and_run_program(None, schema_str)
-            .expect("Failed to load variadic FOL schema");
+            .expect("Failed to load FOL schema and rules");
 
         Mutex::new(egraph)
     })
@@ -78,9 +139,17 @@ impl Guest for ReasoningComponent {
         let egraph_mutex = get_egraph();
         let mut egraph = egraph_mutex.lock().unwrap();
 
-        // Saturate the E-Graph once before checking all roots
-        if let Err(e) = egraph.parse_and_run_program(None, "(run 10)") {
-            return Err(format!("Saturation error: {}", e));
+        // Saturate: run all rewrites and inference rules to fixpoint.
+        // Safe because all rules are bounded (no recursive fact generation).
+        if let Err(e) = egraph.parse_and_run_program(None, "(run-schedule (saturate (run)))") {
+            // Fallback: if saturate is unavailable in this egglog build, use bounded run
+            eprintln!(
+                "[reasoning] saturate failed, falling back to bounded run: {}",
+                e
+            );
+            if let Err(e2) = egraph.parse_and_run_program(None, "(run 100)") {
+                return Err(format!("Saturation error: {}", e2));
+            }
         }
 
         let mut all_true = true;

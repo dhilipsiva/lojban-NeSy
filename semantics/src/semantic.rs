@@ -177,6 +177,23 @@ impl SemanticCompiler {
         }
     }
 
+    // ─── Arity Normalization ─────────────────────────────────────
+
+    /// Fit an argument vector to a target arity: truncate if too long,
+    /// pad with Unspecified if too short. Ensures every predicate receives
+    /// exactly the right number of arguments regardless of calling context.
+    fn fit_args(args: &[LogicalTerm], arity: usize) -> Vec<LogicalTerm> {
+        let mut fitted = Vec::with_capacity(arity);
+        for i in 0..arity {
+            if i < args.len() {
+                fitted.push(args[i].clone());
+            } else {
+                fitted.push(LogicalTerm::Unspecified);
+            }
+        }
+        fitted
+    }
+
     // ─── Selbri Application ──────────────────────────────────────
 
     /// Recursively instantiates a Selbri against a set of arguments, correctly
@@ -191,15 +208,33 @@ impl SemanticCompiler {
         sentences: &[Bridi],
     ) -> LogicalForm {
         match &selbris[selbri_id as usize] {
-            Selbri::Root(g) => LogicalForm::Predicate {
-                relation: self.interner.get_or_intern(g.as_str()),
-                args: args.to_vec(),
-            },
+            Selbri::Root(g) => {
+                let arity = JbovlasteSchema::get_arity_or_default(g.as_str());
+                LogicalForm::Predicate {
+                    relation: self.interner.get_or_intern(g.as_str()),
+                    args: Self::fit_args(args, arity),
+                }
+            }
 
             // Tanru → Intersective Conjunction: sutra gerku(x) = sutra(x) ∧ gerku(x)
+            // Each sub-selbri gets args fit to its own arity.
             Selbri::Tanru((mod_id, head_id)) => {
-                let left = self.apply_selbri(*mod_id, args, selbris, sumtis, sentences);
-                let right = self.apply_selbri(*head_id, args, selbris, sumtis, sentences);
+                let mod_arity = self.get_selbri_arity(*mod_id, selbris);
+                let head_arity = self.get_selbri_arity(*head_id, selbris);
+                let left = self.apply_selbri(
+                    *mod_id,
+                    &Self::fit_args(args, mod_arity),
+                    selbris,
+                    sumtis,
+                    sentences,
+                );
+                let right = self.apply_selbri(
+                    *head_id,
+                    &Self::fit_args(args, head_arity),
+                    selbris,
+                    sumtis,
+                    sentences,
+                );
                 LogicalForm::And(Box::new(left), Box::new(right))
             }
 
@@ -286,9 +321,14 @@ impl SemanticCompiler {
             }
 
             // FIX 1.6: Selbri connectives — je/ja/jo/ju
+            // Each side gets args fit to its own arity.
             Selbri::Connected((left_id, conn, right_id)) => {
-                let left = self.apply_selbri(*left_id, args, selbris, sumtis, sentences);
-                let right = self.apply_selbri(*right_id, args, selbris, sumtis, sentences);
+                let left_arity = self.get_selbri_arity(*left_id, selbris);
+                let right_arity = self.get_selbri_arity(*right_id, selbris);
+                let left_args = Self::fit_args(args, left_arity);
+                let right_args = Self::fit_args(args, right_arity);
+                let left = self.apply_selbri(*left_id, &left_args, selbris, sumtis, sentences);
+                let right = self.apply_selbri(*right_id, &right_args, selbris, sumtis, sentences);
 
                 match conn {
                     // je (AND): P(x) ∧ Q(x)
@@ -323,9 +363,10 @@ impl SemanticCompiler {
 
             Selbri::Compound(parts) => {
                 let head = parts.last().map(|s| s.as_str()).unwrap_or("unknown");
+                let arity = JbovlasteSchema::get_arity_or_default(head);
                 LogicalForm::Predicate {
                     relation: self.interner.get_or_intern(head),
-                    args: args.to_vec(),
+                    args: Self::fit_args(args, arity),
                 }
             }
         }
