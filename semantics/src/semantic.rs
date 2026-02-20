@@ -22,43 +22,88 @@ impl SemanticCompiler {
         self.interner.get_or_intern(&v)
     }
 
+    /// Recursively extracts the arity of the structural head of the relation
+    fn get_selbri_arity(&self, selbri_id: u32, selbris: &[Selbri]) -> usize {
+        match &selbris[selbri_id as usize] {
+            Selbri::Root(g) => JbovlasteSchema::get_arity_or_default(g.as_str()),
+            Selbri::Tanru((_, head_id)) => self.get_selbri_arity(*head_id, selbris),
+            Selbri::Converted((_, inner_id)) => self.get_selbri_arity(*inner_id, selbris),
+            Selbri::Compound(parts) => parts
+                .last()
+                .map(|s| JbovlasteSchema::get_arity_or_default(s.as_str()))
+                .unwrap_or(2),
+            _ => 2,
+        }
+    }
+
+    /// Extracts the string name of the head for non-quantified descriptions
+    fn get_selbri_head_name<'a>(&self, selbri_id: u32, selbris: &'a [Selbri]) -> &'a str {
+        match &selbris[selbri_id as usize] {
+            Selbri::Root(r) => r.as_str(),
+            Selbri::Tanru((_, head_id)) => self.get_selbri_head_name(*head_id, selbris),
+            Selbri::Converted((_, inner_id)) => self.get_selbri_head_name(*inner_id, selbris),
+            Selbri::Compound(parts) => parts.last().map(|s| s.as_str()).unwrap_or("entity"),
+            _ => "entity",
+        }
+    }
+
+    /// Recursively instantiates a Selbri against a set of arguments, correctly mapping
+    /// intersective Tanru and argument-swapping conversions across the binary tree.
+    fn apply_selbri(
+        &mut self,
+        selbri_id: u32,
+        args: &[LogicalTerm],
+        selbris: &[Selbri],
+    ) -> LogicalForm {
+        match &selbris[selbri_id as usize] {
+            Selbri::Root(g) => LogicalForm::Predicate {
+                relation: self.interner.get_or_intern(g.as_str()),
+                args: args.to_vec(),
+            },
+            // The Core Fix: Map Tanru to Intersective Conjunction
+            Selbri::Tanru((mod_id, head_id)) => {
+                let left = self.apply_selbri(*mod_id, args, selbris);
+                let right = self.apply_selbri(*head_id, args, selbris);
+                LogicalForm::And(Box::new(left), Box::new(right))
+            }
+            // Delegate argument permutation directly into the recursion
+            Selbri::Converted((conv, inner_id)) => {
+                let mut permuted = args.to_vec();
+                match conv {
+                    Conversion::Se if permuted.len() >= 2 => permuted.swap(0, 1),
+                    Conversion::Te if permuted.len() >= 3 => permuted.swap(0, 2),
+                    Conversion::Ve if permuted.len() >= 4 => permuted.swap(0, 3),
+                    Conversion::Xe if permuted.len() >= 5 => permuted.swap(0, 4),
+                    _ => {}
+                }
+                self.apply_selbri(*inner_id, &permuted, selbris)
+            }
+            Selbri::Compound(parts) => {
+                let head = parts.last().map(|s| s.as_str()).unwrap_or("unknown");
+                LogicalForm::Predicate {
+                    relation: self.interner.get_or_intern(head),
+                    args: args.to_vec(),
+                }
+            }
+            _ => LogicalForm::Predicate {
+                relation: self.interner.get_or_intern("unknown"),
+                args: args.to_vec(),
+            },
+        }
+    }
+
     pub fn compile_bridi(
         &mut self,
         bridi: &Bridi,
         selbris: &[Selbri],
         sumtis: &[Sumti],
     ) -> LogicalForm {
-        let selbri_node = &selbris[bridi.relation as usize];
-        let mut conversion_mod = None;
+        let target_arity = self.get_selbri_arity(bridi.relation, selbris);
 
-        // 1. Resolve Relation & Track Conversions
-        let (relation_str, target_arity) = match selbri_node {
-            Selbri::Root(gismu) => (gismu.as_str(), JbovlasteSchema::get_arity_or_default(gismu)),
-            Selbri::Converted((conv, inner_id)) => {
-                conversion_mod = Some(*conv);
-                let inner_node = &selbris[*inner_id as usize];
-                match inner_node {
-                    Selbri::Root(r) => (r.as_str(), JbovlasteSchema::get_arity_or_default(r)),
-                    _ => ("unknown", 2),
-                }
-            }
-            Selbri::Tanru((_, head_id)) => match &selbris[*head_id as usize] {
-                Selbri::Root(h) => (h.as_str(), JbovlasteSchema::get_arity_or_default(h)),
-                _ => ("unknown", 2),
-            },
-            Selbri::Compound(parts) => {
-                let head = parts.last().map(|s| s.as_str()).unwrap_or("unknown");
-                (head, JbovlasteSchema::get_arity_or_default(head))
-            }
-            _ => ("unknown", 2),
-        };
-
-        let relation_id = self.interner.get_or_intern(relation_str);
-
-        // 2. Map Sumti to Logical Terms and Extract Quantifiers
         let mut args: Vec<LogicalTerm> = Vec::with_capacity(target_arity);
-        let mut quantifiers = Vec::new(); // Stores (variable_spur, restrictor_relation_str)
+        let mut quantifiers = Vec::new(); // Tracks (variable, description_selbri_id)
 
+        // 1. Map Sumti and intercept existential quantifiers
         for &term_id in bridi.head_terms.iter().chain(bridi.tail_terms.iter()) {
             let logical_term = match &sumtis[term_id as usize] {
                 Sumti::ProSumti(p) => {
@@ -70,17 +115,12 @@ impl SemanticCompiler {
                 }
                 Sumti::Name(n) => LogicalTerm::Constant(self.interner.get_or_intern(n.as_str())),
                 Sumti::Description((gadri, desc_id)) => {
-                    let desc_str = match &selbris[*desc_id as usize] {
-                        Selbri::Root(r) => r.as_str(),
-                        _ => "entity",
-                    };
-
-                    // Core Fix: Map 'lo' to Existential Variables
                     if matches!(gadri, Gadri::Lo) {
                         let var = self.fresh_var();
-                        quantifiers.push((var, desc_str));
+                        quantifiers.push((var, *desc_id));
                         LogicalTerm::Variable(var)
                     } else {
+                        let desc_str = self.get_selbri_head_name(*desc_id, selbris);
                         LogicalTerm::Description(self.interner.get_or_intern(desc_str))
                     }
                 }
@@ -89,43 +129,26 @@ impl SemanticCompiler {
             args.push(logical_term);
         }
 
-        // 3. Arity Normalization
+        // 2. Pad to target arity
         while args.len() < target_arity {
             args.push(LogicalTerm::Unspecified);
         }
 
-        // 4. Mathematical Place Permutation (se/te/ve/xe)
-        if let Some(conv) = conversion_mod {
-            match conv {
-                Conversion::Se if args.len() >= 2 => args.swap(0, 1),
-                Conversion::Te if args.len() >= 3 => args.swap(0, 2),
-                Conversion::Ve if args.len() >= 4 => args.swap(0, 3),
-                Conversion::Xe if args.len() >= 5 => args.swap(0, 4),
-                _ => {}
-            }
-        }
+        // 3. Construct the main relation via tree traversal
+        let mut final_form = self.apply_selbri(bridi.relation, &args, selbris);
 
-        // 5. Construct Base Predicate
-        let mut final_form = LogicalForm::Predicate {
-            relation: relation_id,
-            args,
-        };
+        // 4. Wrap with Restrictors (Inner-to-Outer)
+        for (var, desc_id) in quantifiers.into_iter().rev() {
+            let desc_arity = self.get_selbri_arity(desc_id, selbris);
 
-        // 6. Wrap in Quantifiers (Outer-to-Inner)
-        for (var, desc_str) in quantifiers.into_iter().rev() {
-            let desc_rel = self.interner.get_or_intern(desc_str);
-            let target_arity = JbovlasteSchema::get_arity_or_default(desc_str);
-
-            let mut restrictor_args = Vec::with_capacity(target_arity);
+            let mut restrictor_args = Vec::with_capacity(desc_arity);
             restrictor_args.push(LogicalTerm::Variable(var));
-            while restrictor_args.len() < target_arity {
+            while restrictor_args.len() < desc_arity {
                 restrictor_args.push(LogicalTerm::Unspecified);
             }
 
-            let restrictor = LogicalForm::Predicate {
-                relation: desc_rel,
-                args: restrictor_args,
-            };
+            // Description selbris map structurally just like the main relation
+            let restrictor = self.apply_selbri(desc_id, &restrictor_args, selbris);
 
             final_form = LogicalForm::Exists(
                 var,
