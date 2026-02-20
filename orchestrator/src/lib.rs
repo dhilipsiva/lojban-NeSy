@@ -28,7 +28,7 @@ impl Guest for EnginePipeline {
             }
         };
 
-        // --- DEBUG: View the Shattered Arity Wall ---
+        // --- DEBUG: View the Logic Tree ---
         for &root_id in &logic_buffer.roots {
             let debug_sexp = reconstruct_debug_sexp(&logic_buffer, root_id);
             println!("[WASM] Logic Tree: {}", debug_sexp);
@@ -62,7 +62,7 @@ impl Guest for EnginePipeline {
     }
 }
 
-/// Utility for Orchestrator visibility into the LogicBuffer
+/// Utility for Orchestrator visibility into the LogicBuffer.
 fn reconstruct_debug_sexp(buffer: &LogicBuffer, node_id: u32) -> String {
     match &buffer.nodes[node_id as usize] {
         LogicNode::Predicate((rel, args)) => {
@@ -84,6 +84,16 @@ fn reconstruct_debug_sexp(buffer: &LogicBuffer, node_id: u32) -> String {
                 reconstruct_debug_sexp(buffer, *l),
                 reconstruct_debug_sexp(buffer, *r)
             )
+        }
+        LogicNode::OrNode((l, r)) => {
+            format!(
+                "(Or {} {})",
+                reconstruct_debug_sexp(buffer, *l),
+                reconstruct_debug_sexp(buffer, *r)
+            )
+        }
+        LogicNode::NotNode(inner) => {
+            format!("(Not {})", reconstruct_debug_sexp(buffer, *inner))
         }
         LogicNode::ExistsNode((v, body)) => {
             format!(

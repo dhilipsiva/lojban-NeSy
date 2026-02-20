@@ -27,4 +27,8 @@ pub enum LogicalForm {
     Exists(Spur, Box<LogicalForm>),
     /// Logical Conjunction: A ∧ B
     And(Box<LogicalForm>, Box<LogicalForm>),
+    /// Logical Disjunction: A ∨ B
+    Or(Box<LogicalForm>, Box<LogicalForm>),
+    /// Logical Negation: ¬A
+    Not(Box<LogicalForm>),
 }

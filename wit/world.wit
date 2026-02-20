@@ -49,7 +49,7 @@ interface ast-types {
         sentences: list<bridi>,
     }
 
-    // --- NEW: Zero-Copy Logic Types ---
+    // --- Logic Types ---
     variant logical-term {
         variable(string),
         constant(string),
@@ -60,6 +60,8 @@ interface ast-types {
     variant logic-node {
         predicate(tuple<string, list<logical-term>>),
         and-node(tuple<u32, u32>),
+        or-node(tuple<u32, u32>),
+        not-node(u32),
         exists-node(tuple<string, u32>),
         for-all-node(tuple<string, u32>),
     }
@@ -97,3 +99,4 @@ world engine-pipeline {
     import reasoning;
     export execute: func(input: string) -> bool;
 }
+

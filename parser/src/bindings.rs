@@ -328,7 +328,7 @@ pub mod lojban {
                         .finish()
                 }
             }
-            /// --- NEW: Zero-Copy Logic Types ---
+            /// --- Logic Types ---
             #[derive(Clone)]
             pub enum LogicalTerm {
                 Variable(_rt::String),
@@ -361,6 +361,8 @@ pub mod lojban {
             pub enum LogicNode {
                 Predicate((_rt::String, _rt::Vec<LogicalTerm>)),
                 AndNode((u32, u32)),
+                OrNode((u32, u32)),
+                NotNode(u32),
                 ExistsNode((_rt::String, u32)),
                 ForAllNode((_rt::String, u32)),
             }
@@ -375,6 +377,12 @@ pub mod lojban {
                         }
                         LogicNode::AndNode(e) => {
                             f.debug_tuple("LogicNode::AndNode").field(e).finish()
+                        }
+                        LogicNode::OrNode(e) => {
+                            f.debug_tuple("LogicNode::OrNode").field(e).finish()
+                        }
+                        LogicNode::NotNode(e) => {
+                            f.debug_tuple("LogicNode::NotNode").field(e).finish()
                         }
                         LogicNode::ExistsNode(e) => {
                             f.debug_tuple("LogicNode::ExistsNode").field(e).finish()
@@ -1100,8 +1108,8 @@ pub(crate) use __export_parser_component_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1113] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xd2\x07\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1136] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xe9\x07\x01A\x02\x01\
 A\x05\x01B0\x01y\x04\0\x09selbri-id\x03\0\0\x01y\x04\0\x08sumti-id\x03\0\x02\x01\
 m\x05\x02fa\x02fe\x02fi\x02fo\x02fu\x04\0\x09place-tag\x03\0\x04\x01m\x04\x02se\x02\
 te\x02ve\x02xe\x04\0\x0aconversion\x03\0\x06\x01m\x04\x02je\x02ja\x02jo\x02ju\x04\
@@ -1118,15 +1126,15 @@ o\x02\x03\x0f\x01q\x07\x09pro-sumti\x01s\0\x0bdescription\x01\x10\0\x04name\x01s
 \0\x05bridi\x03\0\x1d\x01p\x1c\x01p\x14\x01p\x1e\x01r\x03\x07selbris\x1f\x06sumt\
 is\x20\x09sentences!\x04\0\x0aast-buffer\x03\0\"\x01q\x04\x08variable\x01s\0\x08\
 constant\x01s\0\x0bdescription\x01s\0\x0bunspecified\0\0\x04\0\x0clogical-term\x03\
-\0$\x01p%\x01o\x02s&\x01o\x02yy\x01o\x02sy\x01q\x04\x09predicate\x01'\0\x08and-n\
-ode\x01(\0\x0bexists-node\x01)\0\x0cfor-all-node\x01)\0\x04\0\x0alogic-node\x03\0\
-*\x01p+\x01py\x01r\x02\x05nodes,\x05roots-\x04\0\x0clogic-buffer\x03\0.\x03\0\x1b\
-lojban:nesy/ast-types@0.1.0\x05\0\x02\x03\0\0\x0aast-buffer\x01B\x05\x02\x03\x02\
-\x01\x01\x04\0\x0aast-buffer\x03\0\0\x01j\x01\x01\x01s\x01@\x01\x05inputs\0\x02\x04\
-\0\x0aparse-text\x01\x03\x04\0\x18lojban:nesy/parser@0.1.0\x05\x02\x04\0\"lojban\
-:nesy/parser-component@0.1.0\x04\0\x0b\x16\x01\0\x10parser-component\x03\0\0\0G\x09\
-producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rus\
-t\x060.41.0";
+\0$\x01p%\x01o\x02s&\x01o\x02yy\x01o\x02sy\x01q\x06\x09predicate\x01'\0\x08and-n\
+ode\x01(\0\x07or-node\x01(\0\x08not-node\x01y\0\x0bexists-node\x01)\0\x0cfor-all\
+-node\x01)\0\x04\0\x0alogic-node\x03\0*\x01p+\x01py\x01r\x02\x05nodes,\x05roots-\
+\x04\0\x0clogic-buffer\x03\0.\x03\0\x1blojban:nesy/ast-types@0.1.0\x05\0\x02\x03\
+\0\0\x0aast-buffer\x01B\x05\x02\x03\x02\x01\x01\x04\0\x0aast-buffer\x03\0\0\x01j\
+\x01\x01\x01s\x01@\x01\x05inputs\0\x02\x04\0\x0aparse-text\x01\x03\x04\0\x18lojb\
+an:nesy/parser@0.1.0\x05\x02\x04\0\"lojban:nesy/parser-component@0.1.0\x04\0\x0b\
+\x16\x01\0\x10parser-component\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
+wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

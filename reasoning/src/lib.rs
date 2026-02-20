@@ -45,6 +45,7 @@ fn get_egraph() -> &'static Mutex<EGraph> {
 
             ;; Equality Saturation Rules
             (rewrite (And A B) (And B A))
+            (rewrite (Or A B) (Or B A))
             (rewrite (Not (Not A)) A)
         "#;
 
@@ -65,7 +66,6 @@ impl Guest for ReasoningComponent {
 
         for &root_id in &logic.roots {
             let sexp = reconstruct_sexp(&logic, root_id);
-            // FIX (I8): Removed (run 10) from assertion to speed up data ingestion
             let command = format!("(IsTrue {})", sexp);
             if let Err(e) = egraph.parse_and_run_program(None, &command) {
                 return Err(format!("Failed to assert fact: {}", e));
@@ -78,7 +78,7 @@ impl Guest for ReasoningComponent {
         let egraph_mutex = get_egraph();
         let mut egraph = egraph_mutex.lock().unwrap();
 
-        // FIX (I8): Saturate the E-Graph once before checking all roots
+        // Saturate the E-Graph once before checking all roots
         if let Err(e) = egraph.parse_and_run_program(None, "(run 10)") {
             return Err(format!("Saturation error: {}", e));
         }
@@ -103,12 +103,10 @@ impl Guest for ReasoningComponent {
     }
 }
 
-/// Localized translator operating purely on the zero-copy logic arena.
-/// Automatically folds N-arity arguments into a Lisp-style Cons list.
+/// Translates the zero-copy logic arena into egglog s-expressions.
 fn reconstruct_sexp(buffer: &LogicBuffer, node_id: u32) -> String {
     match &buffer.nodes[node_id as usize] {
         LogicNode::Predicate((rel, args)) => {
-            // Fold the variadic array into a nested (Cons ... (Cons ... (Nil)))
             let mut args_str = String::from("(Nil)");
             for arg in args.iter().rev() {
                 let term_str = match arg {
@@ -127,6 +125,16 @@ fn reconstruct_sexp(buffer: &LogicBuffer, node_id: u32) -> String {
                 reconstruct_sexp(buffer, *l),
                 reconstruct_sexp(buffer, *r)
             )
+        }
+        LogicNode::OrNode((l, r)) => {
+            format!(
+                "(Or {} {})",
+                reconstruct_sexp(buffer, *l),
+                reconstruct_sexp(buffer, *r)
+            )
+        }
+        LogicNode::NotNode(inner) => {
+            format!("(Not {})", reconstruct_sexp(buffer, *inner))
         }
         LogicNode::ExistsNode((v, body)) => {
             format!("(Exists \"{}\" {})", v, reconstruct_sexp(buffer, *body))

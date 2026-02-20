@@ -16,13 +16,6 @@ struct SemanticsComponent;
 impl Guest for SemanticsComponent {
     /// Consumes the Canonical ABI AST buffer and returns a zero-copy logic arena buffer.
     fn compile_buffer(ast: AstBuffer) -> Result<LogicBuffer, String> {
-        let mut compiler = SemanticCompiler::new();
-        let mut logic_forms = Vec::with_capacity(ast.sentences.len());
-
-        for sentence in ast.sentences {
-            logic_forms.push(compiler.compile_bridi(&sentence, &ast.selbris, &ast.sumtis));
-        }
-
         // Flatten the logical trees into a flat, integer-indexed arena buffer
         let mut nodes = Vec::new();
         let mut roots = Vec::with_capacity(logic_forms.len());
@@ -36,7 +29,7 @@ impl Guest for SemanticsComponent {
     }
 }
 
-/// Recursively flattens the nested LogicalForm into the flat WIT LogicBuffer
+/// Recursively flattens the nested LogicalForm into the flat WIT LogicBuffer.
 fn flatten_form(form: &LogicalForm, nodes: &mut Vec<LogicNode>, interner: &lasso::Rodeo) -> u32 {
     match form {
         LogicalForm::Predicate { relation, args } => {
@@ -64,6 +57,19 @@ fn flatten_form(form: &LogicalForm, nodes: &mut Vec<LogicNode>, interner: &lasso
             let r_id = flatten_form(right, nodes, interner);
             let id = nodes.len() as u32;
             nodes.push(LogicNode::AndNode((l_id, r_id)));
+            id
+        }
+        LogicalForm::Or(left, right) => {
+            let l_id = flatten_form(left, nodes, interner);
+            let r_id = flatten_form(right, nodes, interner);
+            let id = nodes.len() as u32;
+            nodes.push(LogicNode::OrNode((l_id, r_id)));
+            id
+        }
+        LogicalForm::Not(inner) => {
+            let inner_id = flatten_form(inner, nodes, interner);
+            let id = nodes.len() as u32;
+            nodes.push(LogicNode::NotNode(inner_id));
             id
         }
         LogicalForm::Exists(v, body) => {
