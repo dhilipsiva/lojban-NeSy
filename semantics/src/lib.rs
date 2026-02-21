@@ -16,9 +16,13 @@ struct SemanticsComponent;
 impl Guest for SemanticsComponent {
     fn compile_buffer(ast: AstBuffer) -> Result<LogicBuffer, String> {
         let mut compiler = SemanticCompiler::new();
-        let mut logic_forms = Vec::with_capacity(ast.sentences.len());
+        let mut logic_forms = Vec::with_capacity(ast.roots.len());
 
-        for sentence in ast.sentences.iter() {
+        // Only compile top-level (root) sentences.
+        // Rel clause bodies live in ast.sentences but are referenced
+        // by index from Sumti::Restricted — they are NOT roots.
+        for &root_idx in ast.roots.iter() {
+            let sentence = &ast.sentences[root_idx as usize];
             logic_forms.push(compiler.compile_bridi(
                 sentence,
                 &ast.selbris,

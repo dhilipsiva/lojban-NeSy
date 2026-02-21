@@ -47,6 +47,9 @@ interface ast-types {
         selbris: list<selbri>,
         sumtis: list<sumti>,
         sentences: list<bridi>,
+        /// Indices into `sentences` for top-level sentences only.
+        /// Rel clause bodies live in `sentences` but are NOT roots.
+        roots: list<u32>,
     }
 
     // --- Logic Types ---
@@ -108,4 +111,3 @@ world engine-pipeline {
     /// Debug: compile text to logic s-expression without asserting.
     export compile-debug: func(input: string) -> result<string, string>;
 }
-

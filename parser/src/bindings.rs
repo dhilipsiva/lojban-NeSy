@@ -321,6 +321,9 @@ pub mod lojban {
                 pub selbris: _rt::Vec<Selbri>,
                 pub sumtis: _rt::Vec<Sumti>,
                 pub sentences: _rt::Vec<Bridi>,
+                /// Indices into `sentences` for top-level sentences only.
+                /// Rel clause bodies live in `sentences` but are NOT roots.
+                pub roots: _rt::Vec<u32>,
             }
             impl ::core::fmt::Debug for AstBuffer {
                 fn fmt(
@@ -331,6 +334,7 @@ pub mod lojban {
                         .field("selbris", &self.selbris)
                         .field("sumtis", &self.sumtis)
                         .field("sentences", &self.sentences)
+                        .field("roots", &self.roots)
                         .finish()
                 }
             }
@@ -448,6 +452,7 @@ pub mod exports {
                                 selbris: selbris3,
                                 sumtis: sumtis3,
                                 sentences: sentences3,
+                                roots: roots3,
                             } = e;
                             let vec13 = selbris3;
                             let len13 = vec13.len();
@@ -761,19 +766,29 @@ pub mod exports {
                             *ptr2
                                 .add(5 * ::core::mem::size_of::<*const u8>())
                                 .cast::<*mut u8>() = result26;
-                        }
-                        Err(e) => {
-                            *ptr2.add(0).cast::<u8>() = (1i32) as u8;
-                            let vec27 = (e.into_bytes()).into_boxed_slice();
+                            let vec27 = (roots3).into_boxed_slice();
                             let ptr27 = vec27.as_ptr().cast::<u8>();
                             let len27 = vec27.len();
                             ::core::mem::forget(vec27);
                             *ptr2
-                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .add(8 * ::core::mem::size_of::<*const u8>())
                                 .cast::<usize>() = len27;
                             *ptr2
-                                .add(::core::mem::size_of::<*const u8>())
+                                .add(7 * ::core::mem::size_of::<*const u8>())
                                 .cast::<*mut u8>() = ptr27.cast_mut();
+                        }
+                        Err(e) => {
+                            *ptr2.add(0).cast::<u8>() = (1i32) as u8;
+                            let vec28 = (e.into_bytes()).into_boxed_slice();
+                            let ptr28 = vec28.as_ptr().cast::<u8>();
+                            let len28 = vec28.len();
+                            ::core::mem::forget(vec28);
+                            *ptr2
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>() = len28;
+                            *ptr2
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>() = ptr28.cast_mut();
                         }
                     };
                     ptr2
@@ -947,15 +962,24 @@ pub mod exports {
                                 len33 * (6 * ::core::mem::size_of::<*const u8>()),
                                 ::core::mem::size_of::<*const u8>(),
                             );
-                        }
-                        _ => {
                             let l34 = *arg0
-                                .add(::core::mem::size_of::<*const u8>())
+                                .add(7 * ::core::mem::size_of::<*const u8>())
                                 .cast::<*mut u8>();
                             let l35 = *arg0
+                                .add(8 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base36 = l34;
+                            let len36 = l35;
+                            _rt::cabi_dealloc(base36, len36 * 4, 4);
+                        }
+                        _ => {
+                            let l37 = *arg0
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l38 = *arg0
                                 .add(2 * ::core::mem::size_of::<*const u8>())
                                 .cast::<usize>();
-                            _rt::cabi_dealloc(l34, l35, 1);
+                            _rt::cabi_dealloc(l37, l38, 1);
                         }
                     }
                 }
@@ -983,10 +1007,10 @@ pub mod exports {
                 struct _RetArea(
                     [::core::mem::MaybeUninit<
                         u8,
-                    >; 7 * ::core::mem::size_of::<*const u8>()],
+                    >; 9 * ::core::mem::size_of::<*const u8>()],
                 );
                 static mut _RET_AREA: _RetArea = _RetArea(
-                    [::core::mem::MaybeUninit::uninit(); 7
+                    [::core::mem::MaybeUninit::uninit(); 9
                         * ::core::mem::size_of::<*const u8>()],
                 );
             }
@@ -1114,8 +1138,8 @@ pub(crate) use __export_parser_component_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1148] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xf5\x07\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1155] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfc\x07\x01A\x02\x01\
 A\x05\x01B0\x01y\x04\0\x09selbri-id\x03\0\0\x01y\x04\0\x08sumti-id\x03\0\x02\x01\
 m\x05\x02fa\x02fe\x02fi\x02fo\x02fu\x04\0\x09place-tag\x03\0\x04\x01m\x04\x02se\x02\
 te\x02ve\x02xe\x04\0\x0aconversion\x03\0\x06\x01m\x04\x02je\x02ja\x02jo\x02ju\x04\
@@ -1129,18 +1153,18 @@ o\x02\x05\x03\x01o\x02\x03\x0f\x01q\x07\x09pro-sumti\x01s\0\x0bdescription\x01\x
 compound\x01\x15\0\x05tanru\x01\x16\0\x09converted\x01\x17\0\x07negated\x01\x01\0\
 \x07grouped\x01\x01\0\x09with-args\x01\x19\0\x09connected\x01\x1a\0\x04\0\x06sel\
 bri\x03\0\x1b\x01r\x04\x08relation\x01\x0ahead-terms\x18\x0atail-terms\x18\x07ne\
-gated\x7f\x04\0\x05bridi\x03\0\x1d\x01p\x1c\x01p\x14\x01p\x1e\x01r\x03\x07selbri\
-s\x1f\x06sumtis\x20\x09sentences!\x04\0\x0aast-buffer\x03\0\"\x01q\x04\x08variab\
-le\x01s\0\x08constant\x01s\0\x0bdescription\x01s\0\x0bunspecified\0\0\x04\0\x0cl\
-ogical-term\x03\0$\x01p%\x01o\x02s&\x01o\x02yy\x01o\x02sy\x01q\x06\x09predicate\x01\
-'\0\x08and-node\x01(\0\x07or-node\x01(\0\x08not-node\x01y\0\x0bexists-node\x01)\0\
-\x0cfor-all-node\x01)\0\x04\0\x0alogic-node\x03\0*\x01p+\x01py\x01r\x02\x05nodes\
-,\x05roots-\x04\0\x0clogic-buffer\x03\0.\x03\0\x1blojban:nesy/ast-types@0.1.0\x05\
-\0\x02\x03\0\0\x0aast-buffer\x01B\x05\x02\x03\x02\x01\x01\x04\0\x0aast-buffer\x03\
-\0\0\x01j\x01\x01\x01s\x01@\x01\x05inputs\0\x02\x04\0\x0aparse-text\x01\x03\x04\0\
-\x18lojban:nesy/parser@0.1.0\x05\x02\x04\0\"lojban:nesy/parser-component@0.1.0\x04\
-\0\x0b\x16\x01\0\x10parser-component\x03\0\0\0G\x09producers\x01\x0cprocessed-by\
-\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+gated\x7f\x04\0\x05bridi\x03\0\x1d\x01p\x1c\x01p\x14\x01p\x1e\x01py\x01r\x04\x07\
+selbris\x1f\x06sumtis\x20\x09sentences!\x05roots\"\x04\0\x0aast-buffer\x03\0#\x01\
+q\x04\x08variable\x01s\0\x08constant\x01s\0\x0bdescription\x01s\0\x0bunspecified\
+\0\0\x04\0\x0clogical-term\x03\0%\x01p&\x01o\x02s'\x01o\x02yy\x01o\x02sy\x01q\x06\
+\x09predicate\x01(\0\x08and-node\x01)\0\x07or-node\x01)\0\x08not-node\x01y\0\x0b\
+exists-node\x01*\0\x0cfor-all-node\x01*\0\x04\0\x0alogic-node\x03\0+\x01p,\x01r\x02\
+\x05nodes-\x05roots\"\x04\0\x0clogic-buffer\x03\0.\x03\0\x1blojban:nesy/ast-type\
+s@0.1.0\x05\0\x02\x03\0\0\x0aast-buffer\x01B\x05\x02\x03\x02\x01\x01\x04\0\x0aas\
+t-buffer\x03\0\0\x01j\x01\x01\x01s\x01@\x01\x05inputs\0\x02\x04\0\x0aparse-text\x01\
+\x03\x04\0\x18lojban:nesy/parser@0.1.0\x05\x02\x04\0\"lojban:nesy/parser-compone\
+nt@0.1.0\x04\0\x0b\x16\x01\0\x10parser-component\x03\0\0\0G\x09producers\x01\x0c\
+processed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

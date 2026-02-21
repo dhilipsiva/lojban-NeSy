@@ -39,6 +39,9 @@ impl Guest for ParserComponent {
 /// Converts the tree-structured AST into the flat index-based WIT buffer.
 /// Each recursive AST node is pushed into the appropriate array and
 /// referenced by index from its parent.
+///
+/// Top-level sentences are recorded in `buffer.roots`.
+/// Rel clause bodies are stored in `buffer.sentences` but are NOT roots.
 struct Flattener {
     buffer: wit::AstBuffer,
 }
@@ -50,6 +53,7 @@ impl Flattener {
                 selbris: Vec::new(),
                 sumtis: Vec::new(),
                 sentences: Vec::new(),
+                roots: Vec::new(),
             },
         }
     }
@@ -58,6 +62,11 @@ impl Flattener {
         let mut f = Self::new();
         for bridi in parsed.sentences {
             f.push_bridi(bridi);
+            // The top-level sentence is always the LAST entry added by
+            // push_bridi.  Rel clause bodies are pushed earlier (during
+            // push_sumti for Restricted variants), so they have lower indices.
+            let root_idx = (f.buffer.sentences.len() - 1) as u32;
+            f.buffer.roots.push(root_idx);
         }
         f.buffer
     }
@@ -189,7 +198,9 @@ impl Flattener {
             ast::Sumti::Restricted { inner, clause } => {
                 let inner_id = self.push_sumti(*inner);
 
-                // The rel clause body is a sentence — push it as a bridi
+                // The rel clause body is a sentence — push it as a bridi.
+                // It is NOT a root; it lives in `sentences` only for
+                // cross-referencing by index from the Restricted variant.
                 let body_idx = self.buffer.sentences.len() as u32;
                 self.push_bridi(*clause.body);
 
