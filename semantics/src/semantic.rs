@@ -165,8 +165,15 @@ impl SemanticCompiler {
     fn inject_variable(form: LogicalForm, var: lasso::Spur) -> LogicalForm {
         match form {
             LogicalForm::Predicate { relation, mut args } => {
-                if !args.is_empty() && matches!(args[0], LogicalTerm::Unspecified) {
-                    args[0] = LogicalTerm::Variable(var);
+                // Find the FIRST Unspecified slot in any position and bind the
+                // relative-clause variable there.  This handles cases like
+                // "lo gerku poi mi nelci" where x1 is already filled ("mi")
+                // and the bound variable belongs in x2.
+                let first_unspec = args
+                    .iter()
+                    .position(|a| matches!(a, LogicalTerm::Unspecified));
+                if let Some(idx) = first_unspec {
+                    args[idx] = LogicalTerm::Variable(var);
                 } else if args.is_empty() {
                     args.push(LogicalTerm::Variable(var));
                 }
@@ -219,13 +226,16 @@ impl SemanticCompiler {
             Selbri::Tanru((mod_id, head_id)) => {
                 let mod_arity = self.get_selbri_arity(*mod_id, selbris);
                 let head_arity = self.get_selbri_arity(*head_id, selbris);
-                let left = self.apply_selbri(
-                    *mod_id,
-                    &Self::fit_args(args, mod_arity),
-                    selbris,
-                    sumtis,
-                    sentences,
-                );
+
+                // Tanru semantics: modifier and head share ONLY x1 (the referent).
+                // "sutra gerku" = "is-fast(x1) ∧ is-dog(x1, ...)" — the modifier's
+                // remaining places (x2..xN) are independent of the head's places.
+                let mut mod_args = vec![LogicalTerm::Unspecified; mod_arity];
+                if !args.is_empty() && mod_arity > 0 {
+                    mod_args[0] = args[0].clone();
+                }
+
+                let left = self.apply_selbri(*mod_id, &mod_args, selbris, sumtis, sentences);
                 let right = self.apply_selbri(
                     *head_id,
                     &Self::fit_args(args, head_arity),

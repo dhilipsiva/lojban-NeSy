@@ -154,7 +154,7 @@ const CORE_GISMU_ARITIES: &[(&str, usize)] = &[
     ("ctuca", 5), // x1 teaches x2 to x3 about x4 by method x5
     ("ciska", 5), // x1 inscribes x2 on x3 with instrument x4 in x5
     ("mrilu", 5), // x1 mails x2 to x3 from x4 by x5
-    ("bevri", 4), // x1 carries x2 to x3 from x4
+    ("bevri", 5), // x1 carries x2 to x3 from x4 over path x5
     ("vecnu", 4), // x1 sells x2 to x3 for x4
     ("dunda", 3), // x1 gives x2 to x3
     ("prami", 2), // x1 loves x2
