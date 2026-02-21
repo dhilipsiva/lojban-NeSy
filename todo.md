@@ -107,3 +107,51 @@ Reify events: `∃e. prami(e) ∧ agent(e, mi) ∧ theme(e, do)`. This changes t
 
 **6.3 — Non-monotonic reasoning / belief revision**
 Retraction of facts, default reasoning. Fundamentally changes the egglog model.
+
+Yes. The architecture is sound. The generic engine approach is correct. Here's what's missing, ranked purely by how much application surface each feature unlocks.
+
+**Tier 1 — Without these, training data is too structurally impoverished for useful embeddings.**
+
+`nu` abstraction is the single most critical gap. Every domain we discussed requires propositions as arguments: "I want [that you go]," "the process of [A binding B] causes [C increasing]," "evidence supports [that X evolved before Y]." Without `nu`, every predicate can only take entities as arguments. You can't represent beliefs, causation, evidence relations, or any higher-order claim. This blocks meaningful training data generation across every domain. Implementation: new AST node `Abstraction(body)` that reifies a proposition as an entity. Medium effort — touches parser, AST, semantics.
+
+Tense markers (`pu`/`ca`/`ba`) are required for temporal reasoning. Every domain needs before/after/during: drug administered before symptom onset, gene duplication before vertebrate radiation, sensor reading at time T. Without tense, all assertions are timeless. Implementation: three cmavo that wrap predicates in `Past(P)`/`Present(P)`/`Future(P)`. Small effort — parser + semantics only, no reasoning changes needed.
+
+Numerical predicates and comparisons. "HbA1c above 7.0," "expression fold-change greater than 2," "dN/dS ratio exceeds 1," "temperature above threshold." Every quantitative domain is blocked without this. Implementation: extend `LogicalTerm` with numeric literals, add comparison predicates (`greaterThan`, `lessThan`, `equalTo`). Medium effort.
+
+**Tier 2 — Without these, reasoning is too shallow for real inference chains.**
+
+Causal connectives (`ri'a`/`mu'i`/`ni'i`). "A causes B," "A motivates B," "A logically entails B." Lojban distinguishes physical causation, motivation, and logical entailment — three distinct causal modalities. This is gold for scientific reasoning where you need to distinguish correlation from causation from logical consequence. Implementation: new binary connective nodes in AST, map to typed implication predicates.
+
+Implication as a first-class connective. Currently your universal quantification encodes `∀x.(A→B)` as `∀x.(¬A∨B)`. But bare implication without quantifiers — "if it rains, the ground is wet" — has no direct syntax. Lojban's `ganai...gi` (if-then) should map to `Implies(A,B)` directly. Small diff, significant expressiveness.
+
+Multi-place predicate queries. Right now queries check `selbri(x1)` or `selbri(x1, x2)`. Real knowledge bases need queries like "who klama'd to what destination?" — partial binding where some places are bound and others are existentially quantified. Your `check_formula_holds` architecture supports this in principle, but the REPL and semantics need to handle underspecified place structures.
+
+**Tier 3 — Required for production-grade knowledge bases, not for initial training.**
+
+Event semantics (Neo-Davidsonian reification). Every predication becomes an event entity with role-linked participants. "Bob walked quickly to the store" becomes `∃e. walk(e) ∧ agent(e, bob) ∧ destination(e, store) ∧ manner(e, quick)`. This is the proper foundation for adverbials, temporal relations between events, and causal chains between processes. It's the right long-term architecture but it's a major refactor — every existing assertion changes structure.
+
+Relative clauses (`poi`/`noi`). "The dog which is big runs" — restrictive relative clauses define subsets. Your engine currently can't express "the X such that P(X)." This matters for any query that filters entities by properties. Implementation: `poi` introduces a subordinate bridi that constrains the description's referent.
+
+Ontological hierarchy / type system. "A dog is an animal. All animals are organisms." Subsumption reasoning. Currently your engine treats every predicate as flat. A type hierarchy lets you reason at multiple levels of abstraction — critical for Gene Ontology, taxonomic classification, legal entity types.
+
+**Tier 4 — Nice-to-have, not blockers.**
+
+Evidentials (`ba'a`/`ka'u`/`ti'e`). Lojban marks epistemic source — "I observe," "I hypothesize," "I heard." Useful for provenance tracking in knowledge bases but not structurally necessary.
+
+Attitudinals. Emotional/evaluative markers. Irrelevant for formal reasoning.
+
+MEX (mathematical expression system). Lojban's built-in math notation. Only needed if you want to embed mathematical reasoning directly. Numerical predicates from Tier 1 cover 90% of practical needs.
+
+**The implementation order I'd recommend:**
+
+```
+Phase 7:  nu abstraction + pu/ca/ba tense         ← unlocks training data diversity
+Phase 8:  numerical predicates + comparisons       ← unlocks quantitative domains  
+Phase 9:  causal connectives + bare implication     ← unlocks scientific reasoning
+Phase 10: relative clauses (poi/noi)               ← unlocks filtered queries
+Phase 11: event semantics refactor                  ← proper long-term foundation
+```
+
+Phases 7-9 are what make the engine genuinely useful. Phase 7 alone probably doubles the structural diversity of your training data. Phases 7-9 together cover every domain we discussed — medicine, law, genomics, evolution, astrophysics, NASA.
+
+Phase 7 first?
