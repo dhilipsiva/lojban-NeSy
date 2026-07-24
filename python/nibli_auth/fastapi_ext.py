@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Optional
 
-from nibli_auth._native import can
+from nibli_auth._native import can, can_any
 
 
 def agent_from_headers(headers: Mapping[str, str]) -> str:
@@ -38,6 +38,18 @@ def require(
             },
         )
     return d
+
+
+def filter_authorized(
+    agent: str,
+    action: str,
+    objects: list[str],
+    context_kr: str = "",
+) -> list[str]:
+    """Filter objects list returning only those authorized for agent/action under context_kr."""
+    pairs = can_any(agent, action, objects, context_kr)
+    return [obj for obj, allowed in pairs if allowed]
+
 
 
 def context_from_db(db: Mapping[str, str], agent: str) -> str:

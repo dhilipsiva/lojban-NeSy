@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import unittest
 
-from nibli_auth import can, allowed_fields, policy_version, reset_thread_auth
+from nibli_auth import (
+    allowed_fields,
+    can,
+    can_any,
+    load_policy,
+    policy_version,
+    reset_thread_auth,
+)
 
 
 class AuthCoreTests(unittest.TestCase):
@@ -34,6 +41,29 @@ class AuthCoreTests(unittest.TestCase):
         self.assertIn("title", fields)
         self.assertIn("body", fields)
 
+    def test_can_any(self) -> None:
+        ctx = 'owns(Alice, Doc1).\nin_tenant(Alice, "acme").\nresource_tenant(Doc2, "acme").'
+        results = can_any("Alice", "read", ["Doc1", "Doc2", "Doc3"], ctx)
+        self.assertEqual(
+            results,
+            [("Doc1", True), ("Doc2", True), ("Doc3", False)],
+        )
+
+    def test_grant(self) -> None:
+        ctx = 'grant(Alice, "edit", Doc1).'
+        d = can("Alice", "edit", "Doc1", ctx)
+        self.assertTrue(d.allowed, d)
+        d_wrong = can("Alice", "delete", "Doc1", ctx)
+        self.assertFalse(d_wrong.allowed, d_wrong)
+
+    def test_load_policy(self) -> None:
+        version = load_policy('all $a, $r: has_role($a, "super") & resource($r) -> authorized($a, "all", $r).')
+        self.assertEqual(version, "0.1.0")
+        ctx = 'has_role(Alice, "super").\nresource(Doc100).'
+        d = can("Alice", "all", "Doc100", ctx)
+        self.assertTrue(d.allowed, d)
+
 
 if __name__ == "__main__":
     unittest.main()
+

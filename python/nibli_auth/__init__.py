@@ -11,7 +11,9 @@ from nibli_auth._native import (
     Explained,
     allowed_fields,
     can,
+    can_any,
     explain,
+    load_policy,
     policy_version,
     reset_thread_auth,
 )
@@ -21,10 +23,13 @@ __all__ = [
     "Explained",
     "allowed_fields",
     "can",
+    "can_any",
     "explain",
+    "load_policy",
     "policy_version",
     "reset_thread_auth",
     "fastapi_ext",
 ]
+
 
 __version__ = policy_version()

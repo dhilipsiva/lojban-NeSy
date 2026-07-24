@@ -149,3 +149,57 @@ fn decision_cache_hit_stable() {
     let d2 = a.can("Alice", "read", "Doc1", "").expect("2");
     assert_eq!(d1, d2);
 }
+
+#[test]
+fn can_any_batch_authorization() {
+    let mut a = loaded();
+    let ctx = r#"
+owns(Alice, Doc1).
+in_tenant(Alice, "acme").
+resource_tenant(Doc2, "acme").
+resource_tenant(Doc3, "other").
+"#;
+    let candidates = vec!["Doc1", "Doc2", "Doc3", "Doc4"];
+    let results = a.can_any("Alice", "read", &candidates, ctx).expect("can_any");
+    assert_eq!(
+        results,
+        vec![
+            ("Doc1".to_string(), true),
+            ("Doc2".to_string(), true),
+            ("Doc3".to_string(), false),
+            ("Doc4".to_string(), false),
+        ]
+    );
+
+    let tls_results = nibli_auth::tls::can_any("Alice", "read", &candidates, ctx).expect("tls::can_any");
+    assert_eq!(tls_results, results);
+}
+
+#[test]
+fn grant_rule_action_specific() {
+    let mut a = loaded();
+    let ctx = r#"
+grant(Alice, "edit", Doc1).
+grant(Bob, "delete", Doc2).
+"#;
+    let d1 = a.can("Alice", "edit", "Doc1", ctx).expect("can edit");
+    assert!(d1.allowed, "grant(Alice, edit, Doc1) should allow: {d1:?}");
+
+    let d1_wrong = a.can("Alice", "delete", "Doc1", ctx).expect("can delete");
+    assert!(!d1_wrong.allowed, "grant edit should not grant delete: {d1_wrong:?}");
+
+    let d2 = a.can("Bob", "delete", "Doc2", ctx).expect("can delete");
+    assert!(d2.allowed, "grant(Bob, delete, Doc2) should allow: {d2:?}");
+}
+
+#[test]
+fn tls_load_custom_policy() {
+    nibli_auth::tls::reset_thread_auth();
+    nibli_auth::tls::load_policy(Some("all $a, $r: has_role($a, \"super\") & resource($r) -> authorized($a, \"all\", $r).")).unwrap();
+    let ctx = "has_role(Alice, \"super\").\nresource(Doc100).";
+    let d = nibli_auth::tls::can("Alice", "all", "Doc100", ctx).unwrap();
+    assert!(d.allowed, "custom loaded policy should allow: {d:?}");
+    nibli_auth::tls::reset_thread_auth();
+}
+
+

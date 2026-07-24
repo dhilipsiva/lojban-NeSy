@@ -105,6 +105,18 @@ pub fn require(
     }
 }
 
+/// Batch authorization query returning boolean authorization for each candidate resource.
+pub fn can_any(
+    agent: &str,
+    action: &str,
+    candidates: &[&str],
+    context_kr: &str,
+) -> Result<Vec<(String, bool)>, AuthRejection> {
+    tls::can_any(agent, action, candidates, context_kr)
+        .map_err(AuthRejection::from_auth_error)
+}
+
+
 /// Field mask after a successful row-level allow (or empty if denied).
 pub fn field_mask(
     agent: &str,
@@ -125,4 +137,9 @@ pub fn agent_from_header(value: Option<&HeaderValue>) -> Result<String, AuthReje
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(AuthRejection::missing_agent)
+}
+
+/// Reload worker thread's policy with optional extra KR rules.
+pub fn load_policy(extra_kr: Option<&str>) -> Result<String, AuthRejection> {
+    tls::load_policy(extra_kr).map_err(AuthRejection::from_auth_error)
 }

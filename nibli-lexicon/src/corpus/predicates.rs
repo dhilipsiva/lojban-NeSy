@@ -1028,6 +1028,8 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "gram", source_gismu: "grake", swap: None, places: &["subject", "object", "standard"], gloss: "gram", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:prose, x3:prose] — lensisku: "$x_{1}$ is the grammar/rules/defining form of language $x_{2}$ for struc…"
     PredicateEntry { name: "grammar", source_gismu: "gerna", swap: None, places: &["grammar", "language", "structure"], gloss: "grammar", template: None, tier: CorpusTier::GlossDerived },
+    // Auth explicit grant (nibli-auth).
+    PredicateEntry { name: "grant", source_gismu: "zzauth8", swap: None, places: &["agent", "action", "resource"], gloss: "grant", template: Some("{x1} is granted {x2} on {x3}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:generic, x3:generic, x4:prose] — lensisku: "$x_{1}$ grasps/holds/clutches/seizes/grips/[hugs] $x_{2}$ with $x_{3}$ (…"
     PredicateEntry { name: "grasp", source_gismu: "jgari", swap: None, places: &["subject", "object", "place3", "locus"], gloss: "grasp", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:prose] — lensisku: "$x_{1}$ is a blade/expanse of grass of species $x_{2}$."

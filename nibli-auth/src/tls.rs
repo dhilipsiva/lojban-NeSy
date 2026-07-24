@@ -33,6 +33,17 @@ pub fn reset_thread_auth() {
     });
 }
 
+/// Reload this thread's authorizer policy with optional extra KR rules.
+pub fn load_policy(extra_kr: Option<&str>) -> Result<String, AuthError> {
+    AUTH.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let mut a = Authorizer::new();
+        let version = a.load_policy(extra_kr)?;
+        *slot = Some(a);
+        Ok(version)
+    })
+}
+
 /// Hot-path can via thread-local authorizer.
 pub fn can(
     agent: &str,
@@ -42,6 +53,17 @@ pub fn can(
 ) -> Result<Decision, AuthError> {
     with_auth(|a| a.can(agent, action, object, context_kr))
 }
+
+/// Batch authorization query via thread-local authorizer.
+pub fn can_any(
+    agent: &str,
+    action: &str,
+    candidates: &[&str],
+    context_kr: &str,
+) -> Result<Vec<(String, bool)>, AuthError> {
+    with_auth(|a| a.can_any(agent, action, candidates, context_kr))
+}
+
 
 /// Field mask via thread-local authorizer.
 pub fn allowed_fields(

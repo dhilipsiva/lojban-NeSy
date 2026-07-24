@@ -162,6 +162,78 @@ impl Authorizer {
         Ok(decision)
     }
 
+    /// Batch authorization query: given `agent`, `action`, and a slice of `resource_candidates`,
+    /// return which resources the agent is authorized for, evaluated against the warm policy
+    /// + a single `context_kr` assertion.
+    ///
+    /// Derives resource-independent subgoals (e.g. roles, tenant memberships, owner relationships)
+    /// once per call over the asserted context rather than per candidate.
+    pub fn can_any(
+        &mut self,
+        agent: &str,
+        action: &str,
+        resource_candidates: &[&str],
+        context_kr: &str,
+    ) -> Result<Vec<(String, bool)>, AuthError> {
+        self.ensure_policy()?;
+
+        if resource_candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let context_hash = hash_context(context_kr);
+        let mut results: Vec<(String, Option<bool>)> = Vec::with_capacity(resource_candidates.len());
+        let mut all_cached = true;
+
+        for &res in resource_candidates {
+            let key = CacheKey {
+                policy_version: self.policy_version.clone(),
+                agent: agent.to_string(),
+                action: action.to_string(),
+                resource: res.to_string(),
+                context_hash,
+            };
+            if let Some(hit) = self.cache.get(&key) {
+                results.push((res.to_string(), Some(hit.allowed)));
+            } else {
+                results.push((res.to_string(), None));
+                all_cached = false;
+            }
+        }
+
+        if all_cached {
+            return Ok(results
+                .into_iter()
+                .map(|(r, opt)| (r, opt.expect("all_cached implies Some")))
+                .collect());
+        }
+
+        self.with_context(context_kr, |auth| {
+            let mut final_results = Vec::with_capacity(resource_candidates.len());
+
+            for (res, cached_allowed) in results {
+                let allowed = if let Some(val) = cached_allowed {
+                    val
+                } else {
+                    let q_single = kr::authorized_query(agent, action, &res);
+                    let res_single = auth.core.query_text(&q_single)?;
+                    let dec = Decision::from_query(
+                        &res_single,
+                        Some(res_single.status_label().to_string()),
+                    );
+                    let allowed = dec.allowed;
+                    let key = auth.cache_key(agent, action, &res, context_kr);
+                    auth.cache.insert(key, dec);
+                    allowed
+                };
+                final_results.push((res, allowed));
+            }
+
+            Ok(final_results)
+        })
+    }
+
+
     /// Field-level allow list for serializer masking.
     ///
     /// v0.1: if `authorized(agent, action, resource)` is TRUE, return all

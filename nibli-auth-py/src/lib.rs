@@ -73,6 +73,22 @@ fn can(agent: &str, action: &str, object: &str, context_kr: &str) -> PyResult<Py
 }
 
 #[pyfunction]
+#[pyo3(signature = (agent, action, candidates, context_kr=""))]
+fn can_any(
+    agent: &str,
+    action: &str,
+    candidates: Bound<'_, PyList>,
+    context_kr: &str,
+) -> PyResult<Vec<(String, bool)>> {
+    let mut refs: Vec<String> = Vec::with_capacity(candidates.len());
+    for item in candidates.iter() {
+        refs.push(item.extract::<String>()?);
+    }
+    let slice: Vec<&str> = refs.iter().map(String::as_str).collect();
+    tls::can_any(agent, action, &slice, context_kr).map_err(to_py_err)
+}
+
+#[pyfunction]
 #[pyo3(signature = (agent, action, object, candidates, context_kr=""))]
 fn allowed_fields(
     agent: &str,
@@ -112,14 +128,23 @@ fn reset_thread_auth() {
     tls::reset_thread_auth();
 }
 
+#[pyfunction]
+#[pyo3(signature = (extra_kr=None))]
+fn load_policy(extra_kr: Option<&str>) -> PyResult<String> {
+    tls::load_policy(extra_kr).map_err(to_py_err)
+}
+
 #[pymodule]
 fn nibli_auth_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDecision>()?;
     m.add_class::<PyExplained>()?;
     m.add_function(wrap_pyfunction!(can, m)?)?;
+    m.add_function(wrap_pyfunction!(can_any, m)?)?;
     m.add_function(wrap_pyfunction!(allowed_fields, m)?)?;
     m.add_function(wrap_pyfunction!(explain, m)?)?;
     m.add_function(wrap_pyfunction!(policy_version, m)?)?;
     m.add_function(wrap_pyfunction!(reset_thread_auth, m)?)?;
+    m.add_function(wrap_pyfunction!(load_policy, m)?)?;
     Ok(())
 }
+

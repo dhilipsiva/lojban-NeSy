@@ -416,6 +416,9 @@ interface authorizer {
         /// (`object` = protected resource id; WIT reserves the keyword `resource`.)
         can: func(agent: string, action: string, object: string,
                   context-kr: string) -> result<decision, string>;
+        /// Batch authorization query returning candidate allowed booleans.
+        can-any: func(agent: string, action: string, objects: list<string>,
+                      context-kr: string) -> result<list<tuple<string, bool>>, string>;
         /// Field mask candidates (v0.1: all candidates if row can allows).
         allowed-fields: func(agent: string, action: string, object: string,
                              context-kr: string,

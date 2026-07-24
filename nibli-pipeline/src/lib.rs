@@ -266,6 +266,21 @@ impl AuthGuestSession for AuthSession {
             .map_err(|e| e.message)
     }
 
+    fn can_any(
+        &self,
+        agent: String,
+        action: String,
+        objects: Vec<String>,
+        context_kr: String,
+    ) -> Result<Vec<(String, bool)>, String> {
+        let refs: Vec<&str> = objects.iter().map(String::as_str).collect();
+        self.inner
+            .borrow_mut()
+            .can_any(&agent, &action, &refs, &context_kr)
+            .map_err(|e| e.message)
+    }
+
+
     fn allowed_fields(
         &self,
         agent: String,

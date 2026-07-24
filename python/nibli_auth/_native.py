@@ -8,7 +8,9 @@ try:
         Explained,
         allowed_fields,
         can,
+        can_any,
         explain,
+        load_policy,
         policy_version,
         reset_thread_auth,
     )
@@ -25,7 +27,10 @@ __all__ = [
     "Explained",
     "allowed_fields",
     "can",
+    "can_any",
     "explain",
+    "load_policy",
     "policy_version",
     "reset_thread_auth",
 ]
+

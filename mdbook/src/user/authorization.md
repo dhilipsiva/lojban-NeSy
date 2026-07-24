@@ -29,11 +29,29 @@ This page is **code-derived** (crates, policy file, examples). It is not the Ora
 
 **Actions, roles, attrs** are KR **quoted strings**: `"read"`, `"update"`, `"admin"`, `"title"`.
 
+**Entities (Agents & Resources)** can be specified as:
+- **Capitalized Names**: `Alice`, `Doc1`, `User1`
+- **Quoted Strings**: `"1"`, `"2"`, `"user_123"` (required when IDs are numeric strings or lowercase).
+
 ```nibli-kr
-owns(Alice, Doc1).
+owns(Alice, Doc1).                  # Capitalized name constants
+owns("101", "202").                 # Quoted string IDs
 authorized(Alice, "update", Doc1).   # query shape
 has_role(Carol, "admin").
 resource(Doc1).
+```
+
+### Fail-Closed Lexicon & Custom Domain Roles (NIBLI_KR §13)
+
+Nibli enforces a **fail-closed vocabulary**: uncurated predicate names (e.g., `has_codename`, `program_role`) are rejected at compile time rather than silently defaulting to an arity-2 guess. This prevents security bugs caused by typos (e.g., `is_admim`).
+
+To model custom roles, permissions, or domain attributes without changing Rust code:
+- Use **`has_role(Agent, "custom_permission_or_codename")`** with **quoted string tokens** (e.g., `"read_application"`, `"create_invoice"`). Quoted string tokens can be any arbitrary string.
+- Use **`in_tenant(Agent, "group_id")`** for custom tenancy/organization groups.
+
+```nibli-kr
+has_role(Alice, "read_application").
+in_tenant(Alice, "org_sales_east").
 ```
 
 ## Builtin policy
@@ -58,7 +76,8 @@ Overlay extra KR with `Authorizer::load_policy(Some(extra))` or per-call `contex
 | No engine per request | One warm authorizer (or one per OS thread) |
 | Policy once | `load_policy` / thread-local first use |
 | Ephemeral request facts | `context_kr` asserted then retracted |
-| Cheap hot path | `can` / `allowed_fields` — **no proof** |
+| Cheap hot path | `can` / `can_any` / `allowed_fields` — **no proof** |
+| Batch authorization | `can_any` — derives roles/tenants once per batch over context |
 | Proofs opt-in | `explain` only |
 | Decision cache | Keyed by policy version + agent/action/object + context hash |
 
@@ -84,14 +103,16 @@ assert!(d.allowed);
 
 // Multi-thread / axum workers:
 let d = tls::can("Alice", "read", "Doc1", "owns(Alice, Doc1).")?;
+let batch = tls::can_any("Alice", "read", &["Doc1", "Doc2"], "owns(Alice, Doc1).")?;
 let fields = tls::allowed_fields("Alice", "read", "Doc1", "owns(Alice, Doc1).", &["title", "body"])?;
 ```
 
 - **`can`** — row-level allow/deny (`Decision`).
+- **`can_any`** — batch queryset/row evaluation returning `Vec<(String, bool)>`.
 - **`allowed_fields`** — v0.1: if row `can` allows, return all `candidates` (serializer masking).
 - **`explain`** — same as can plus optional proof JSON.
 
-Optional Cargo features on `nibli-auth`: `axum` (`Agent` header extractor, `require`, `field_mask`), `async-graphql`, `juniper`.
+Optional Cargo features on `nibli-auth`: `axum` (`Agent` header extractor, `require`, `can_any`, `field_mask`), `async-graphql`, `juniper`.
 
 ## WIT (WASM component)
 
@@ -100,7 +121,7 @@ Package **`nibli:engine@0.6.0`** exports **`authorizer`** alongside `engine` (lo
 | WIT | Notes |
 |-----|--------|
 | `load-policy` | Builtin (+ optional extra KR) |
-| `can` / `allowed-fields` / `explain` | Same semantics as Rust |
+| `can` / `can-any` / `allowed-fields` / `explain` | Same semantics as Rust |
 | Parameter **`object`** | Protected resource id — WIT reserves the keyword `resource` |
 
 Native and guest both wrap the same policy file via `nibli-auth`. `engine.session` and `authorizer.session` do **not** share a KB in v0.1.
@@ -113,10 +134,11 @@ just test-auth-py
 ```
 
 ```python
-from nibli_auth import can, allowed_fields, explain
+from nibli_auth import can, can_any, allowed_fields, explain
 
 d = can("Alice", "update", "Doc1", "owns(Alice, Doc1).")
 assert d.allowed
+results = can_any("Alice", "read", ["Doc1", "Doc2"], "owns(Alice, Doc1).")
 fields = allowed_fields("Alice", "read", "Doc1", ["title", "body"], "owns(Alice, Doc1).")
 ```
 

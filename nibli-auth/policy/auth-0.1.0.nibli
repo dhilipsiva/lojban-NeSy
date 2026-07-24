@@ -15,3 +15,8 @@ all $a, $r: has_role($a, "admin") & resource($r) -> authorized($a, "update", $r)
 
 # Same-tenant read (resource must declare its tenant).
 all $a, $r, $t: in_tenant($a, $t) & resource_tenant($r, $t) -> authorized($a, "read", $r).
+
+# Direct action-level grant (grant(Agent, Action, Resource)).
+all $a, $act, $r: grant($a, $act, $r) -> authorized($a, $act, $r).
+
+
