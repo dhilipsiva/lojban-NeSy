@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(status(&session, "warns(Varfarin)."), "FALSE");
     }
 
-    /// The exact bytes Chapter 19's Syllogism walkthrough reproduces click-for-
+    /// The exact bytes Chapter 18's Syllogism walkthrough reproduces click-for-
     /// click in the playground: the Back-translation tab (`back_translate_ir`),
     /// and the verdict + "why" + collapsed proof panel (`query_with_proof`).
     /// If this breaks, the book's "verbatim" claim is stale — re-capture and
@@ -316,11 +316,11 @@ mod tests {
         assert_eq!(status, "TRUE");
         assert_eq!(
             why,
-            "Because adam is a dog, adam is an animal; and because adam is an animal, adam eats _."
+            "Because adam is a dog, adam is an animal; and because adam is an animal, adam eats."
         );
         assert_eq!(
             proof,
-            "⊢ adam eats _  [by the rule: every animal eats something] -> TRUE\n  \
+            "⊢ adam eats  [by the rule: every animal eats] -> TRUE\n  \
              ⊢ adam is an animal  [by the rule: every dog is an animal] -> TRUE\n    \
              ▣ adam is a dog  [given] -> TRUE"
         );
@@ -347,38 +347,36 @@ mod tests {
         );
     }
 
-    /// The back-translations Chapter 19's two draft-error examples reproduce in
+    /// The back-translations Chapter 18's two draft-error examples reproduce in
     /// the playground (the Transparency Triad catching an LLM mistake). These are
     /// the structure-exposing IR gloss (`back_translate_ir`), NOT the lexical
-    /// `(swap-2)` fallback. If this breaks, C19's quoted glosses are stale.
+    /// `(swap-2)` fallback. If this breaks, C18's quoted glosses are stale.
     #[test]
-    fn c19_draft_error_glosses_are_verbatim() {
-        // Quantifier swap (GDPR Art 33): `su'o` reads as a flat existential
-        // assertion; `ro` reads as a universal "For every X, if … then …" rule.
+    fn c18_draft_error_glosses_are_verbatim() {
+        // Quantifier swap (GDPR Art 33): `some` reads as a flat existential
+        // assertion; `every` reads as a universal "For every X, if … then …" rule.
         assert_eq!(
-            super::back_translate_ir("obliged(some data governs, event { message() })."),
-            "X govern, X is data, Y is event, and X is obligated to Y."
+            super::back_translate_ir("obligated(some data governs, event { message() })."),
+            "X is obligated to govern, data, and notify."
         );
         assert_eq!(
-            super::back_translate_ir("obliged(every data governs, event { message() })."),
-            "For every X, if X govern and X is data, then Y is event and X is obligated to Y."
+            super::back_translate_ir("obligated(every data governs, event { message() })."),
+            "For every X, if X governs and X is data, then X is obligated to notify."
         );
         // Missing negation (GDPR Art 17), single-condition restrictor so the
-        // gloss has no spurious person-split — the dropped `na` is isolated in
-        // the antecedent.
+        // dropped `~` is isolated in the antecedent.
         assert_eq!(
             super::back_translate_ir(
                 "obligated(every permitted, event { removes(removed: some data) })."
             ),
-            "For every X, if something permits X, then Y is event, Z is data, \
-             something is removed, and Y is obligated to X."
+            "For every X, if something permits X, then X is obligated to data and be erased."
         );
         assert_eq!(
             super::back_translate_ir(
                 "obligated(every ~permitted, event { removes(removed: some data) })."
             ),
-            "For every X, if it is not the case that something permits X, then Y is \
-             event, Z is data, something is removed, and Y is obligated to X."
+            "For every X, if it is not the case that something permits X, then X is \
+             obligated to data and be erased."
         );
         // The corrected negated-restrictor rule compiles and enters the KB — the
         // "engine refuses to compile it" claim C19 used to make is stale.
