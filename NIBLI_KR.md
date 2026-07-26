@@ -264,7 +264,9 @@ Precedence, tightest first: `~` · deontic/tense prefixes · `&` · `|` · `^` �
 
 **Prefixes** (at most one of each per bridi, enforced by the grammar):
 `past` / `now` / `future` (`pu/ca/ba` wrappers) and `must` / `may`
-(`.ei`→Obligatory / `.e'e`→Permitted). Nesting is pinned to smuni's verified emission
+(`.ei`→Obligatory / `.e'e`→Permitted — the v0.1 surface's mapping, preserved as
+history; in standard Lojban permission is `.e'a` and `.e'e` is competence, per
+CLL ch. 13 — the deviation belongs to that front end, not to Lojban). Nesting is pinned to smuni's verified emission
 order (`nibli-semantics/src/semantic/compile.rs:358-383`): deontic outermost, then tense, then
 negation innermost — `must past ~P` compiles to `Obligatory(Past(Not(P)))`. This
 resolves former open issue O3; the §15 `Modified <- Deontic? Tense? Atom` order stands.
