@@ -96,7 +96,7 @@ pub(super) fn witness_term_to_logical_term(gt: &GroundTerm) -> LogicalTerm {
 // Neo-Davidsonian event decomposition compiles a surface numeric proposition to
 // `∃ev. head(ev) ∧ rel_x1(ev, a) ∧ rel_x2(ev, b) ∧ ...` — the head
 // (ComputeNode for registered compute predicates, a plain Predicate for the
-// query-time comparisons zmadu/mleca/dunli) carries ONLY the event variable;
+// query-time comparisons greater/less/num_equal) carries ONLY the event variable;
 // the operands live in sibling role predicates. The flat evaluators above
 // read the head's own args and never see the numbers, so every surface
 // numeric query used to return FALSE.
@@ -115,7 +115,7 @@ pub(super) struct NumericGroupVerdict {
 ///
 /// Fires only on the EXACT group shape (the strictness is the soundness
 /// guard): the body's And-tree must consist of one head — `ComputeNode(rel,
-/// [Var ev])`, or `Predicate(rel, [Var ev])` with rel ∈ {zmadu, mleca, dunli}
+/// [Var ev])`, or `Predicate(rel, [Var ev])` with rel ∈ {greater, less, num_equal}
 /// — plus role predicates `rel_xN(Var ev, arg)` for the same rel with
 /// contiguous N starting at 1. Any other conjunct (pair modifier roles,
 /// tense nodes in hand-built buffers, a different event variable) returns
@@ -124,11 +124,14 @@ pub(super) struct NumericGroupVerdict {
 /// Routing is by RELATION NAME, arithmetic-first (matching the documented
 /// design, nibli-host's host evaluate(), and the batch path): comparison →
 /// built-in arithmetic → (ComputeNode heads only) external backend dispatch.
-/// A backend error degrades to None (store/NAF fallback), so no-backend
+/// A backend error (or no backend at all) yields `Unknown(BackendUnavailable)`
+/// — method "backend_unavailable", with NO store fallback on this path (there
+/// is nothing cached to honor: this path never ingests) — so no-backend
 /// configs neither error nor hang.
 ///
 /// A computed `false` is DEFINITIVE, matching the flat ComputeNode/Predicate
-/// arms (the store-shadowing policy question is tracked in todo.md).
+/// arms (the store-shadowing policy question is tracked in TODO.md
+/// §Compute / fact lifecycle).
 ///
 /// Deliberately performs NO auto-ingestion: unlike the flat path, whose
 /// ground fact is byte-identical on every query (HashSet-deduped), ingesting

@@ -184,6 +184,22 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ---
 
+## Compute / fact lifecycle
+
+- **Auto-ingested compute facts bypass the fact registry.** An arithmetic/backend
+  `true` auto-asserted mid-query (`assert_typed_fact`) writes only the typed fact
+  store: no `FactRecord`, no fact id — invisible to `:facts`, not retractable, and
+  dropped by any rebuild (retraction, failed-assert rollback, and trap replay all
+  rebuild from the registry). `set_compute_dispatch`'s trust-boundary doc already
+  discloses the non-durability; the store-shadowing policy question in
+  `nibli-reason/src/compute.rs` points here. Decide the lifecycle: give ingested
+  facts registry records (listable, retractable, replay-safe), or codify the
+  current outage-cache semantics as the contract (dispatch-first on every query;
+  the stored fact is consulted only when dispatch errors) and say so in
+  GUARANTEES.md.
+
+---
+
 ## Pointers
 
 | Tracker | Scope |
