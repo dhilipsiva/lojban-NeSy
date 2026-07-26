@@ -7,19 +7,19 @@
 # nibli-reason pipeline; the accompanying regression tests (gdpr_* in
 # nibli-engine/tests/integration.rs, plus the shipped-examples guard in nibli-ui)
 # assert the same outcomes this file is designed to produce, so the prose in
-# Chapter 20 cannot silently drift from the engine's actual behaviour.
+# Chapter 19 cannot silently drift from the engine's actual behavior.
 #
 # Scope: Articles 5, 6, 7, 9, 15, 17, 33.
 #   Subject     = Adam
 #   Controllers = Akmes (breached) and Gugli (clean control)
 #
 # Predicate conventions (proxy predicates for second-order legal concepts; see
-# Chapter 20, "Honest Boundaries"):
-#   se curmi              -> "processing has a lawful basis" (Art 6)
-#   na se curmi           -> "no lawful basis remains" => right to erasure (Art 17)
-#   se bilga lo nu <X>    -> "is under a legal obligation that X"
-#   se curmi lo nu <X>    -> "has the right that X"
-#   se bilga lo nu se vimcu -> "is obligated to be erased" (Art 17 erasure)
+# Chapter 19, "Honest Boundaries"):
+#   permitted                    -> "processing has a lawful basis" (Art 6)
+#   ~permitted                   -> "no lawful basis remains" => right to erasure (Art 17)
+#   obligated(..., event { X })  -> "is under a legal obligation that X"
+#   permitted(..., event { X })  -> "has the right that X"
+#   obligated(..., event { removes() }) -> "is obligated to be erased" (Art 17 erasure)
 
 # ─── Article 4 / 9: categories of personal data ───────────────────
 # Names and addresses are personal data.
@@ -55,7 +55,7 @@ permitted(every person where obliged).
 # Consent must be freely given. Whether a given consent was "freely given"
 # (un-coerced, genuinely optional) is a case-by-case human judgment: it falls
 # OUTSIDE the firewall and is deliberately not encoded as a deductive rule.
-# See Chapter 20, "Honest Boundaries".
+# See Chapter 19, "Honest Boundaries".
 
 # ─── Article 15: right of access (DSAR) ───────────────────────────
 # Every data subject has the right to access their data.
@@ -63,19 +63,19 @@ permitted(every person, event { data discovers() }).
 
 # ─── Article 17: right to erasure ─────────────────────────────────
 # A data subject who has NOT consented is obligated to have their data erased
-# (Art 17(1)(b)) — the natural negated-restrictor rule form `ro lo prenu poi na
-# zanru cu se bilga lo nu se vimcu`. `poi na zanru` compiles to a
+# (Art 17(1)(b)) — the natural negated-restrictor rule form `obligated(every
+# person where ~approves, event { removes() })`. `where ~approves` compiles to a
 # negation-as-failure check over the consent event, so the obligation arises
-# exactly when no consent witness exists; the belief-revision demo in Chapter 20
+# exactly when no consent witness exists; the belief-revision demo in Chapter 19
 # retracts consent to make it flip from FALSE to TRUE. The rule itself is defined
 # at the END of this file (after the scenario) so that loading it does not
 # renumber the worked example's fact ids.
-# Keying on `na zanru` rather than the broader `na se curmi` is deliberate: the
-# corpus derives a lawful basis FROM a legal obligation (`poi bilga cu se curmi`
-# above), so a `poi na se curmi` rule would close a negative basis<->obligation
+# Keying on `~approves` rather than the broader `~permitted` is deliberate: the
+# corpus derives a lawful basis FROM a legal obligation (`where obliged`
+# above), so a `where ~permitted` rule would close a negative basis<->obligation
 # cycle and is correctly rejected as unstratifiable. Adam's only basis here is
 # consent, so the two coincide for him; the right can equivalently be queried as
-# the negation of a lawful basis (`la .adam. na se curmi`), evaluated by NAF.
+# the negation of a lawful basis (`~permitted(Adam).`), evaluated by NAF.
 
 # ─── Article 33: breach notification ──────────────────────────────
 # A controller that has suffered a breach is obliged to notify.
