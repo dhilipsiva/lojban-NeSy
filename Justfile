@@ -686,8 +686,8 @@ mutants JOBS="3":
 import FILE *ARGS:
     cargo run -p nibli --bin nibli-import -- {{FILE}} {{ARGS}}
 
-# Timing pins for the book's quoted figures (Ch 13 latency numbers, Ch 20 full
-# Ch-20 sequence): release-profile, native in-process engine, gdpr.nibli corpus,
+# Timing pins for the book's quoted figures (Ch 13 latency numbers, Ch 19 full
+# GDPR sequence): release-profile, native in-process engine, gdpr.nibli corpus,
 # min/median/max over NIBLI_BENCH_RUNS runs (default 10) with verdicts asserted.
 # The source for any latency figure the book quotes — never hand-write timings.
 bench-book:

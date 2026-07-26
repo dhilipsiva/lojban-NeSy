@@ -215,6 +215,54 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ---
 
+## Book-review upstream items (2026-07-26 manuscript review)
+
+Surfaced by the book's verified review passes; each hand-verified at filing time
+(2026-07-27) and naming its book ripple where one exists.
+
+- **`obliged`-spelled every-duty renders the wrong obligated party.**
+  `obliged(every data governs, event { message() }).` back-translates as "For every
+  X, if X governs and X is data, then **Y** is obligated to notify" — the
+  post-`8286738` deontic collapse picks the event variable as the duty-holder for
+  the BASE spelling, while the converted `obligated` spelling correctly binds X.
+  The who-selection appears keyed to the converted routing. Fix the base-spelling
+  collapse; ripple: re-check nibli-wasm's `c18_draft_error_glosses_are_verbatim`
+  pin and the book's Ch 18 alias note.
+- **README's merged REPL-commands table** (~243–263) lists host-only commands
+  (`:backend`/`:fuel`/`:memory`/`:strict`/`:existential-import`) and
+  debug-REPL-only commands (`:contradictions`/`:trace`/`:untrace`/`:traces`) in
+  one table with no binary column — a documented confusion source. Split the
+  table per surface or add a Surface column.
+- **The component's import list is not gated.** Docs (book Ch 13/15/App C) state
+  "no clock or filesystem imports" — true today (imports are the
+  `wasi:cli`/`wasi:io` set + `wasi:random/insecure-seed`), but no CI check pins
+  it and `wasm-tools` sits unused in the flake. A one-line `ci-wasm` smoke
+  (`wasm-tools component wit target/wasm32-wasip2/release/nibli.wasm` + grep for
+  the absent interfaces) closes the gap.
+- **`resource_hint`'s Depth arm is dead code.** Hints fire only on the trap path
+  (`nibli-host/src/main.rs` ~1604) and `classify_resource_trap` never yields
+  Depth, so a `RESOURCE_EXCEEDED (depth)` verdict prints no hint line — and the
+  unreachable hint text (~main.rs:537) recommends raising `max_chain_depth`, a
+  knob no shipped surface exposes. Wire a real Depth hint into the verdict path
+  or drop the dead arm.
+- **nibli-engine persist-before-assert leaves an orphaned durable row on
+  failure.** The store write-through (`nibli-engine/src/lib.rs` ~272–293) mints
+  the id and writes the durable row BEFORE `assert_fact_with_id`; if the assert
+  fails, the in-memory KB rolls back via the registry rebuild but the persisted
+  row has no compensating delete on that path. Verify the intended semantics
+  (does the schema-v3 open/replay tolerate the orphan fail-closed?) and either
+  compensate or document.
+- **`wit/world.wit` `proof-ref` doc comment is wrong.** It claims "No children —
+  the full proof was shown at its first occurrence," but the step always carries
+  exactly one back-reference child (the memo hit pushes
+  `children: vec![cached_idx]`, `nibli-reason/src/reasoning.rs`); the verbose
+  text renderer re-expands that child while the collapsed/UI renderings drop it.
+  Decide whether that divergence is intentional, then fix the comment; ripple:
+  the book's Appendix C reproduces `world.wit` in full and must be updated
+  together.
+
+---
+
 ## Pointers
 
 | Tracker | Scope |
