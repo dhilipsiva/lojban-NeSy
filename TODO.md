@@ -184,6 +184,21 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ---
 
+## Language semantics
+
+- **NIBLI_KR.md §6 co-reference vs the compiler.** The spec (§6) says all
+  occurrences of one `$name` in a statement co-refer; the compiler gives each
+  top-level `&` side its OWN existential scope — verified: `bite($x, Bel) &
+  bite($x, Dana).` compiles to two separate `∃ $x` scopes, asserted and queried
+  alike (the shared CoreSession compile chain), which is Ch 21's disclosed
+  fluent-but-wrong case. Decide: implement statement-wide co-reference (the
+  "correlated multi-witness" roadmap item) or amend §6 to document the
+  per-conjunct scope rule. The book documents the engine's behavior and flags
+  this disagreement; whichever way it resolves, update Ch 21 + NIBLI_KR.md
+  together.
+
+---
+
 ## Compute / fact lifecycle
 
 - **Auto-ingested compute facts bypass the fact registry.** An arithmetic/backend
