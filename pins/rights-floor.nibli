@@ -1,5 +1,12 @@
 # ── Rights-floor firewall pins ────────────────────────────────────────────────
 #
+# KIND: MECHANISM pin. Its fixture is INLINE and must stay inline — the fixture
+# is not the subject, the ENGINE is, so an edit elsewhere weakening the fixture
+# would silently weaken a guarantee about nibli. Do NOT convert this to a
+# `--kb` fixture. (CONTENT pins, which test a specific artifact's behaviour, are
+# the opposite: they must load the live artifact with `--kb`, because there the
+# artifact IS the subject and an inlined copy drifts into certifying fiction.)
+#
 # Run by `just verify-pins` (nibli-pin, native — no wasm, no fuel).
 #
 # WHAT THIS GUARDS, and why it lives in the ENGINE repo rather than next to the

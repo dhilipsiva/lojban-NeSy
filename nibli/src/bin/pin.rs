@@ -15,6 +15,31 @@
 //! Native by design: no wasm, no fuel, no component build — it links
 //! nibli-engine directly so `just` can run it in seconds.
 //!
+//! ── TWO KINDS OF PIN ──────────────────────────────────────────────────────
+//!
+//! **Mechanism pins** guard the engine. Their fixture is INLINE in the pin file
+//! and must stay that way: the fixture is not the subject, so an edit elsewhere
+//! weakening it would silently weaken a guarantee about nibli. Everything under
+//! `pins/` is this kind.
+//!
+//! **Content pins** guard a specific artifact's behaviour — a constitution, a
+//! policy, a corpus. There the artifact IS the subject, so the fixture must be
+//! the LIVE file, loaded with `--kb`:
+//!
+//! ```text
+//! nibli-pin --kb path/to/constitution.nibli path/to/constitution.pins.nibli
+//! ```
+//!
+//! Inlining a content fixture is the failure mode, not the protection: the copy
+//! drifts and the pins quietly start certifying fiction. `--kb` is repeatable
+//! (fixtures load in order) and each pin file gets a fresh engine, so one file
+//! cannot leak state into the next. The same pin file can therefore be run
+//! against several versions of an artifact.
+//!
+//! Composition lives at the CLI rather than in a `:load` directive on purpose:
+//! it keeps the pin language closed, and it means nothing in `pins/*.nibli` can
+//! reference a path outside the repo and break `just ci`.
+//!
 //! ── FILE FORMAT ───────────────────────────────────────────────────────────
 //!
 //! A pin file is nibli KR with annotations, following the `determinism-corpus.nibli`
@@ -137,10 +162,45 @@ struct Report {
     harness: Vec<String>,
 }
 
+/// A pre-loaded fixture KB: `(display name, source)`.
+type KbFile = (String, String);
+
+fn base_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 fn main() -> ExitCode {
-    let paths: Vec<String> = std::env::args().skip(1).collect();
-    if paths.is_empty() {
-        eprintln!("usage: nibli-pin <file.nibli> [more.nibli ...]");
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut kb_paths: Vec<String> = Vec::new();
+    let mut paths: Vec<String> = Vec::new();
+    let mut argv_error: Option<String> = None;
+
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--kb" => match it.next() {
+                Some(p) => kb_paths.push(p.clone()),
+                None => argv_error = Some("--kb needs a path".to_string()),
+            },
+            other if other.starts_with("--") => {
+                argv_error = Some(format!("unknown flag {other:?}"));
+            }
+            other => paths.push(other.to_string()),
+        }
+    }
+
+    if paths.is_empty() || argv_error.is_some() {
+        if let Some(e) = argv_error {
+            eprintln!("nibli-pin: {e}");
+        }
+        eprintln!("usage: nibli-pin [--kb <fixture.nibli>]... <pins.nibli> [more.nibli ...]");
+        eprintln!("  --kb  load a fixture KB into a fresh engine before EACH pin file runs.");
+        eprintln!("        Repeatable; loaded in the order given. Use it for CONTENT pins,");
+        eprintln!("        which test a specific artifact and must read the live artifact");
+        eprintln!("        rather than an inlined copy that can drift.");
         eprintln!("  exit 0 = pins pass, 1 = a pin regressed, 2 = harness/script error");
         return ExitCode::from(EXIT_HARNESS);
     }
@@ -151,14 +211,31 @@ fn main() -> ExitCode {
         harness: Vec::new(),
     };
 
+    // Read every fixture up front: an unreadable fixture means NO pin can run,
+    // so there is nothing to report but a harness error.
+    let mut kbs: Vec<KbFile> = Vec::new();
+    for p in &kb_paths {
+        match std::fs::read_to_string(p) {
+            Ok(src) => kbs.push((base_name(p), src)),
+            Err(e) => total
+                .harness
+                .push(format!("--kb {p}: unreadable ({e}) — no pins could run")),
+        }
+    }
+    if !total.harness.is_empty() {
+        eprintln!("\nHARNESS/SCRIPT ERRORS ({}):", total.harness.len());
+        for h in &total.harness {
+            eprintln!("  ! {h}");
+        }
+        eprintln!("\nnibli-pin: HARNESS ERROR (exit {EXIT_HARNESS}) — pins not trustworthy");
+        return ExitCode::from(EXIT_HARNESS);
+    }
+
     for path in &paths {
         match std::fs::read_to_string(path) {
             Ok(src) => {
-                let name = Path::new(path)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.clone());
-                let r = run_file(&name, &src);
+                let name = base_name(path);
+                let r = run_file_with_kb(&name, &src, &kbs);
                 println!(
                     "  {name}: {} pins, {} findings, {} harness errors",
                     r.pins,
@@ -232,13 +309,58 @@ fn parse_refuse(rest: &str) -> Result<Expect, String> {
     })
 }
 
+/// Run a pin file against a fresh engine with no fixture — the MECHANISM-pin
+/// shape, where the fixture is inline in the pin file itself.
+#[cfg(test)]
 fn run_file(name: &str, src: &str) -> Report {
+    run_file_with_kb(name, src, &[])
+}
+
+/// Load every fixture KB into a fresh engine, then run the pin file against it.
+///
+/// A fixture line that fails to assert is a HARNESS error (exit 2), never a
+/// finding (exit 1). The distinction is not a judgement call: if the fixture did
+/// not load, no pin ran, so there is no pinned property that could have
+/// regressed — reporting a finding would claim knowledge the run does not have.
+/// "I could not run the test" and "the test failed" are different in kind, and
+/// the exit taxonomy exists to keep them apart.
+fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
     let mut rep = Report {
         pins: 0,
         findings: Vec::new(),
         harness: Vec::new(),
     };
     let engine = NibliEngine::new();
+
+    for (kb_name, kb_src) in kbs {
+        for (n, raw) in kb_src.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with(':') || line.starts_with('?') {
+                rep.harness.push(format!(
+                    "{kb_name}:{}: a --kb fixture is plain KB text — directives and `?` queries \
+                     belong in the pin file, not the artifact under test",
+                    n + 1
+                ));
+                continue;
+            }
+            if let Err(e) = engine.assert_text(line) {
+                rep.harness.push(format!(
+                    "{kb_name}:{}: fixture line failed to load — [{}] {e}",
+                    n + 1,
+                    Class::of(&e).name()
+                ));
+            }
+        }
+    }
+    // A fixture that did not load fully leaves the engine in an unknown state;
+    // running pins against it would produce noise, not signal.
+    if !rep.harness.is_empty() {
+        return rep;
+    }
+
     let mut expect = Expect::Default;
     let mut expect_pins: Option<usize> = None;
 
@@ -721,6 +843,111 @@ mod tests {
                 .iter()
                 .any(|h| h.contains("applies to an ASSERTION")),
             "{r:?}"
+        );
+    }
+
+    // ── --kb fixtures (CONTENT pins) ─────────────────────────────────
+    //
+    // A MECHANISM pin inlines its fixture, because the fixture is not the
+    // subject — an external edit weakening it would silently weaken a claim
+    // about the ENGINE. A CONTENT pin must load the live artifact, because the
+    // artifact IS the subject, and inlining a copy means the pins slowly start
+    // certifying a copy that has drifted from the thing shipped.
+
+    const KB: &str = "person(Ara).\nchoose(Electorate, Gia).\n\
+                      all $a: choose(Electorate, $a) -> permits(Review, $a).\n";
+
+    fn kb() -> Vec<KbFile> {
+        vec![("fixture.nibli".to_string(), KB.to_string())]
+    }
+
+    #[test]
+    fn kb_fixture_is_visible_to_pins() {
+        let r = run_file_with_kb(
+            "t",
+            "? permits(Review, Gia).\n# => TRUE\n\
+             ? person(Ara).\n# => TRUE\n\
+             :expect-pins 2\n",
+            &kb(),
+        );
+        assert_eq!(r.findings.len(), 0, "{r:?}");
+        assert_eq!(r.harness.len(), 0, "{r:?}");
+        assert_eq!(r.pins, 2);
+    }
+
+    /// Without the fixture the very same pin file FAILS — proving the fixture is
+    /// actually doing the work, not being quietly ignored.
+    #[test]
+    fn without_the_fixture_the_same_pins_fail() {
+        let r = run_file("t", "? permits(Review, Gia).\n# => TRUE\n:expect-pins 1\n");
+        assert_eq!(r.findings.len(), 1, "{r:?}");
+    }
+
+    /// A fixture that fails to load is a HARNESS error (exit 2), never a finding
+    /// (exit 1): if the fixture did not load, no pin ran, so no pinned property
+    /// could have regressed. Claiming a finding would assert knowledge the run
+    /// does not have.
+    #[test]
+    fn a_broken_fixture_is_a_harness_error_and_runs_no_pins() {
+        let broken = vec![(
+            "bad.nibli".to_string(),
+            "person(Ara).\nzzznotaword(Bet).\n".into(),
+        )];
+        let r = run_file_with_kb("t", "? person(Ara).\n# => TRUE\n:expect-pins 1\n", &broken);
+        assert_eq!(
+            r.findings.len(),
+            0,
+            "must not be reported as a finding: {r:?}"
+        );
+        assert!(
+            r.harness
+                .iter()
+                .any(|h| h.contains("bad.nibli:2") && h.contains("fixture line failed to load")),
+            "{r:?}"
+        );
+        assert_eq!(r.pins, 0, "no pin may run against a half-loaded fixture");
+    }
+
+    /// The artifact under test is plain KB text. A directive or query inside it
+    /// means the two roles got mixed up.
+    #[test]
+    fn a_fixture_containing_pin_syntax_is_a_harness_error() {
+        for bad in [":accept\nperson(Ara).\n", "? person(Ara).\n"] {
+            let r = run_file_with_kb(
+                "t",
+                "? person(Ara).\n# => UNKNOWN\n:expect-pins 1\n",
+                &[("bad.nibli".to_string(), bad.to_string())],
+            );
+            assert!(
+                r.harness.iter().any(|h| h.contains("plain KB text")),
+                "{bad:?} -> {r:?}"
+            );
+        }
+    }
+
+    /// Fixtures compose in order, and each pin file gets a FRESH engine — one
+    /// pin file cannot leak state into the next.
+    #[test]
+    fn fixtures_compose_and_do_not_leak_between_files() {
+        let two = vec![
+            ("a.nibli".to_string(), "person(Ara).\n".to_string()),
+            ("b.nibli".to_string(), "dog(Rex).\n".to_string()),
+        ];
+        let r = run_file_with_kb(
+            "t",
+            "? person(Ara).\n# => TRUE\n? dog(Rex).\n# => TRUE\n:expect-pins 2\n",
+            &two,
+        );
+        assert_eq!(r.findings.len(), 0, "{r:?}");
+        // A second run with the same fixtures starts clean: a fact asserted by
+        // the FIRST pin file must not be visible to the second.
+        let first = run_file_with_kb("t1", "person(Bet).\n:expect-pins 0\n", &two);
+        assert_eq!(first.harness.len(), 0, "{first:?}");
+        let second = run_file_with_kb("t2", "? person(Bet).\n# => FALSE\n:expect-pins 1\n", &two);
+        assert_eq!(
+            second.findings.len(),
+            0,
+            "engine leaked across files: {second:?}"
         );
     }
 

@@ -3383,6 +3383,57 @@ fn derived_only_closes_converted_alias_spellings_too() {
     );
 }
 
+/// A declaration placed BELOW the facts it means to close is refused.
+///
+/// The check fires at assert time, so such a declaration protects nothing — and
+/// it used to do so SILENTLY: the KB loaded at zero errors and was
+/// indistinguishable from a working closure. That is a false green that could
+/// survive indefinitely, so an inert declaration is made unrepresentable rather
+/// than merely detectable.
+#[test]
+fn derived_only_refuses_an_inert_late_declaration() {
+    let engine = engine_with_facts(&["permits(Review, Sock)."]);
+    let err = engine
+        .assert_text("derived_only(\"permits\").")
+        .expect_err("a declaration that protects nothing must not look like one that works");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("comes too late") && msg.contains("permits"),
+        "the error must say WHY and name the relation: {msg}"
+    );
+}
+
+/// …but declaring after the RULES is fine. Only ASSERTED facts can make a
+/// declaration too late: derivations are computed by backward chaining and never
+/// stored, so a relation a rule merely concludes stays declarable. This is the
+/// common authoring order and must not be collateral damage.
+#[test]
+fn derived_only_late_declaration_is_fine_after_rules_only() {
+    let engine = engine_with_facts(&[
+        "all $a: choose(Electorate, $a) & ~rotten($a) & ~broken($a) -> permits(Review, $a).",
+        "choose(Electorate, Gia).",
+        "derived_only(\"permits\").",
+    ]);
+    assert_true(
+        &engine.query_holds("permits(Review, Gia).").unwrap(),
+        "the derived credential survives a late declaration",
+    );
+    assert!(
+        engine.assert_text("permits(Review, Sock).").is_err(),
+        "and the closure is live"
+    );
+}
+
+/// Re-declaring an already-closed relation stays idempotent even though facts
+/// for it may exist — the too-late check must not fire on a no-op.
+#[test]
+fn derived_only_redeclaration_is_idempotent() {
+    let engine = engine_with_facts(&["derived_only(\"permits\").", "person(Adam)."]);
+    engine
+        .assert_text("derived_only(\"permits\").")
+        .expect("re-declaring a closed relation is a no-op, not an error");
+}
+
 /// The declaration is itself queryable — the closure list is inspectable rather
 /// than hidden engine state.
 #[test]

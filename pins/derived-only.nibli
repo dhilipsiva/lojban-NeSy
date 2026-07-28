@@ -1,5 +1,7 @@
 # ── Derived-only (EDB/IDB) pins ───────────────────────────────────────────────
 #
+# KIND: MECHANISM pin — fixture inline by design, see pins/rights-floor.nibli.
+#
 # Run by `just verify-pins` (nibli-pin, native).
 #
 # WHAT THIS GUARDS. In nibli KR a rule ADDS a derivation path; it never REMOVES
@@ -89,4 +91,18 @@ choose(Electorate, Bet).
 ? derived_only("permits").
 # => TRUE
 
-:expect-pins 11
+# ── ORDERING: an inert declaration is now impossible ──
+# The check fires at ASSERT time, so a declaration only protects what is
+# asserted after it. A declaration placed BELOW the facts it means to close used
+# to be a silent no-op: the file loaded at zero errors and looked exactly like a
+# working closure. That is the worst kind of false green, so it is refused.
+:refuse reasoning /comes too late/
+derived_only("person").
+
+# But declaring after the RULES is still fine — derivations are computed by
+# backward chaining and never stored, so only ASSERTED facts can make a
+# declaration too late. This is the common, legitimate authoring order.
+:accept
+derived_only("warns").
+
+:expect-pins 13

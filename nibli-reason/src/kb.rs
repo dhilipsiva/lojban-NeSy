@@ -1933,6 +1933,7 @@ pub(super) fn process_assertion(
             }
 
             let nothing_collected = typed_leaves.is_empty();
+            let mut pending_declarations: Vec<String> = Vec::new();
             for fact in &typed_leaves {
                 // Intercept `du` facts for equality equivalence indexing.
                 if let StoredFact::Bare(gf) = fact {
@@ -1949,9 +1950,42 @@ pub(super) fn process_assertion(
                     && gf.relation == DERIVED_ONLY_ROLE
                     && let Some(GroundTerm::Constant(rel)) = gf.args.get(1)
                 {
-                    inner.derived_only.insert(rel.clone());
+                    pending_declarations.push(rel.clone());
                 }
             }
+
+            // FAIL CLOSED: an INERT declaration. The check fires at assert time,
+            // so `derived_only("permits")` protects only what is asserted AFTER
+            // it. A declaration placed below the facts it means to close is
+            // therefore a no-op — and, worst of all, a SILENT one: the file
+            // loads at zero errors and looks exactly like a working closure.
+            // That is a false green that could survive a long time, so make it
+            // unrepresentable rather than merely detectable.
+            //
+            // Only ASSERTED facts can trigger this: derivations are computed by
+            // backward chaining and never stored, so closing a relation that a
+            // rule concludes is always fine no matter where the declaration sits.
+            for rel in &pending_declarations {
+                if inner.derived_only.contains(rel) {
+                    continue; // idempotent re-declaration
+                }
+                if inner
+                    .fact_store
+                    .lookup_predicate(rel)
+                    .is_some_and(|s| !s.is_empty())
+                {
+                    return Err(format!(
+                        "`derived_only(\"{rel}\")` comes too late: `{rel}` has already been \
+                         asserted in this knowledge base, so the declaration would silently \
+                         protect nothing. Move it ABOVE the first `{rel}` assertion — or, if \
+                         those assertions are the mistake, remove them."
+                    ));
+                }
+            }
+            for rel in pending_declarations {
+                inner.derived_only.insert(rel);
+            }
+
             for fact in typed_leaves {
                 assert_typed_fact(fact, inner);
             }
