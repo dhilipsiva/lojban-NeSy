@@ -421,7 +421,7 @@ test-all: test test-engine test-store test-backend
 
 # CI gate for the hardened runtime surface (fast; native only — no WASM build).
 # For the WASM behavioral smokes too, run `just ci-all`.
-ci: fmt-check clippy-runtime test test-engine test-host test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-proofs verify-book-vocab
+ci: fmt-check clippy-runtime test test-engine test-host test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-book-vocab
 
 # WASM behavioral gate (pre-push, NOT part of `ci` — needs the WASM build, like
 # verify-book-capture). Bundles the gasnu smokes; each depends on
@@ -582,6 +582,33 @@ verify-proofs:
         echo "verify-proofs: lean not found (the Nix dev shell provides it) — skipping"; \
     fi
 
+# KB-level behavioural pins (nibli-pin, NATIVE — no wasm, no fuel, seconds).
+#
+# Guards EMERGENT engine properties a knowledge base depends on but cannot state:
+# chiefly the rights-floor stratification firewall, which falls out of the
+# flatten_consequent / collect_ground_facts opacity asymmetry in nibli-reason. A
+# pin living in a downstream prose repo would never fire on the refactor that
+# breaks it, so the pins are hosted here, beside the code they constrain.
+#
+# Exit codes are distinct ON PURPOSE: 1 = a pinned property regressed (a real
+# finding); 2 = the pin script or harness is broken (nothing was learned). CI
+# must not read one as the other. The harness self-tests live in the bin
+# (`cargo test -p nibli --bin nibli-pin`) and are what make the runner
+# trustworthy — a pin runner that cannot fail is worse than none.
+#
+# Drop additional `pins/*.nibli` files in to extend coverage; each needs its own
+# `:expect-pins <n>` floor. Skips cleanly when the directory is empty.
+verify-pins:
+    @cargo build --quiet -p nibli --bin nibli-pin
+    @cargo test --quiet -p nibli --bin nibli-pin 2>/dev/null >/dev/null || \
+        { echo "verify-pins: HARNESS SELF-TESTS FAILED — the runner itself is untrustworthy"; exit 2; }
+    @files=$(ls pins/*.nibli 2>/dev/null); \
+        if [ -z "$files" ]; then \
+            echo "verify-pins: no pins/*.nibli found — skipping"; \
+        else \
+            ./target/debug/nibli-pin $files; \
+        fi
+
 # ── Fuzz testing (libFuzzer via the Nix shell's pinned nightly) ──
 #
 # The Nix shell exports NIBLI_NIGHTLY_BIN (flake.nix) — a pinned nightly
@@ -703,11 +730,13 @@ count-tests:
     e=$(cargo test -p nibli-engine --tests -- --list 2>/dev/null | grep -c ': test$'); \
     g=$(cargo test -p nibli-host -- --list 2>/dev/null | grep -c ': test$'); \
     v=$(cargo test -p nibli-verify --tests -- --list 2>/dev/null | grep -c ': test$'); \
+    p=$(cargo test -p nibli --bins -- --list 2>/dev/null | grep -c ': test$'); \
     echo "unit (workspace --lib):      $u"; \
     echo "nibli-engine test targets:   $e"; \
     echo "gasnu bin tests:             $g"; \
     echo "nibli-verify test targets:   $v"; \
-    echo "total: $((u + e + g + v))  (a few lib tests appear in both the unit and per-crate figures)"
+    echo "nibli bin tests (nibli-pin): $p"; \
+    echo "total: $((u + e + g + v + p))  (a few lib tests appear in both the unit and per-crate figures)"
 
 # Auth core tests (nibli-auth: policy load, can, allowed_fields, explain, tls)
 test-auth:

@@ -1,0 +1,97 @@
+# ── Rights-floor firewall pins ────────────────────────────────────────────────
+#
+# Run by `just verify-pins` (nibli-pin, native — no wasm, no fuel).
+#
+# WHAT THIS GUARDS, and why it lives in the ENGINE repo rather than next to the
+# prose it serves: a constitutional knowledge base spells an unconditional right
+# as `entitled(every person, event { P() }).` and then depends on the engine
+# REFUSING any rule that would punish the absence of P. That refusal is EMERGENT.
+# It falls out of an asymmetry in nibli-reason:
+#
+#   * `rules::flatten_consequent` descends BOTH branches of the head's `And`, so
+#     an abstraction body's `P` becomes a rule-head conclusion and therefore a
+#     dependency edge `P -> person`;
+#   * `rules::collect_ground_facts` DOES honour `__abs_` opacity and skips that
+#     body, so the floor never derives that anyone actually does P.
+#
+# Make those two symmetric in either direction and something breaks: drop the
+# opacity guard and an entitlement starts fabricating the actuality it
+# guarantees; honour opacity in the head walk too and every firewall pin below
+# silently starts LOADING. No test in a prose repo could ever fire on that
+# refactor, which is the whole reason these pins are hosted here.
+#
+# The pins are deliberately expressed as REFUSALS with an error CLASS plus a
+# message needle. `:refuse reasoning /…/` cannot be satisfied by a misspelled
+# predicate, because a typo is a `Syntax` error and the class is matched on the
+# NibliError variant, not on the rendered string.
+
+# ── the constitution under test ──
+# Article 1's unconditional floor. Kept in this file rather than loaded from
+# utopia.nibli so a pin can never be quietly weakened by an edit elsewhere.
+entitled(every person, event { eats() }).
+entitled(every person, event { dwell() }).
+entitled(every person, event { learn() }).
+
+# Prisoners remain persons. This closure link is what lets a punishing rule
+# reach back into the floor's protected set and close the negative cycle;
+# without it every firewall pin below would load and prove nothing.
+all $anyone: prisoner($anyone) -> person($anyone).
+
+# ── THE FIREWALL: no rule may punish the absence of a floor right ──
+:refuse reasoning /'prisoner' -> 'eats'/
+all $x: person($x) & ~eats($x) -> prisoner($x).
+
+:refuse reasoning /'prisoner' -> 'dwell'/
+all $x: person($x) & ~dwell($x) -> prisoner($x).
+
+:refuse reasoning /'prisoner' -> 'learn'/
+all $x: person($x) & ~learn($x) -> prisoner($x).
+
+# The refusal must be a STRATIFICATION refusal specifically, not merely "some
+# reasoning error" — pin the diagnostic itself so a future error-message change
+# cannot turn this suite into a tautology.
+:refuse reasoning /Unstratifiable negation/
+all $x: person($x) & ~eats($x) -> prisoner($x).
+
+# ── COMPLEMENT CONTROLS: the protected set is EXACTLY the floor ──
+# These are the other half of the guarantee. Refusals alone are satisfiable by an
+# engine that refuses everything; an over-broad protected set is just as much a
+# bug as an absent one, because it silently converts an ordinary predicate into
+# an unconditional right. Each of these MUST still load.
+:accept
+all $x: person($x) & ~home($x) -> prisoner($x).
+
+:accept
+all $x: person($x) & ~choose($x) -> prisoner($x).
+
+:accept
+all $x: person($x) & ~permits($x) -> prisoner($x).
+
+:accept
+all $x: person($x) & ~false($x) -> prisoner($x).
+
+# NOT in the control set, deliberately: `~travel` is refused too, but for a
+# reason that has nothing to do with the floor — utopia.nibli's Article 2 derives
+# travel behind `~prisoner`, so `~travel -> prisoner` closes its own negative
+# cycle. Listing it as a control would pass for the wrong reason and would keep
+# passing after the firewall broke. Left here as prose, not as a pin.
+
+# ── OPACITY: an entitlement must not fabricate the actuality ──
+person(Adam).
+
+? entitled(Adam, event { eats() }).
+# => TRUE
+
+? eats(Adam).
+# => FALSE
+
+? eats(some person).
+# => FALSE
+
+# A right nobody was granted stays absent — the floor is not a blanket TRUE.
+? entitled(Adam, event { choose() }).
+# => FALSE
+
+# Anti-hollowing floor: raise or lower this consciously in the same diff that
+# adds or removes a pin.
+:expect-pins 12
