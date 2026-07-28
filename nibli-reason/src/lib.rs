@@ -802,6 +802,39 @@ impl KnowledgeBase {
         self.inner.borrow().existential_import
     }
 
+    /// Declare `relation` DERIVED-ONLY (intensional / IDB): thereafter it may be
+    /// concluded by a rule but never asserted directly — a direct ground
+    /// assertion is rejected and the whole assertion unwinds atomically.
+    ///
+    /// The KB-level spelling is `derived_only("<relation>").`, which routes here;
+    /// this is the programmatic twin. Declaring is IDEMPOTENT and one-way within
+    /// a session: there is deliberately no `undeclare`, since a relation that
+    /// could be re-opened at runtime would give back exactly the capability the
+    /// declaration exists to remove. Reopen it by editing the KB.
+    ///
+    /// Declaring does NOT retroactively remove facts already asserted, and it is
+    /// a DECLARATION, not derived state — it survives `reset()` and retraction
+    /// replay.
+    pub fn declare_derived(&self, relation: &str) {
+        self.inner
+            .borrow_mut()
+            .derived_only
+            .insert(relation.to_string());
+    }
+
+    /// Whether `relation` is declared derived-only.
+    pub fn is_derived_only(&self, relation: &str) -> bool {
+        self.inner.borrow().derived_only.contains(relation)
+    }
+
+    /// Every relation declared derived-only, sorted — the KB's closure list, for
+    /// tests and for surfaces that want to show it.
+    pub fn derived_only_relations(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.inner.borrow().derived_only.iter().cloned().collect();
+        v.sort();
+        v
+    }
+
     /// Register this KB's external compute dispatch (per-instance — replaces the
     /// old thread-local `register_compute_dispatch`, which the multithreaded
     /// server could never register because each tokio blocking-pool worker had

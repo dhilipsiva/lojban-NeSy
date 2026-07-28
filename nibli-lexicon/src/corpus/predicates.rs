@@ -676,6 +676,16 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "depend", source_gismu: "lacri", swap: None, places: &["subject", "object", "about"], gloss: "depend", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:generic, x3:prose] — lensisku: "$x_{1}$ is a deputy/vice/subordinate in aspect [or organization principl…"
     PredicateEntry { name: "deputy", source_gismu: "vipsi", swap: None, places: &["deputy", "object", "principal"], gloss: "deputy", template: None, tier: CorpusTier::Generic },
+    // Hand-authored META-DECLARATION, not a claim about the world:
+    // `derived_only("permits").` closes the relation named by its string
+    // argument to direct assertion (EDB/IDB separation) — thereafter only a rule
+    // may conclude it. nibli-reason intercepts it in `process_assertion`'s ground
+    // arm. Spelled as an ordinary arity-1 ground fact ON PURPOSE: it needs no
+    // grammar form, it rides the store and buffer replay like any assertion, and
+    // it reaches native/wasmtime/v8 identically because all three go through
+    // `CoreSession::assert_text`. Synthetic provenance (no source gismu), same
+    // convention as the `zzauth*` rows.
+    PredicateEntry { name: "derived_only", source_gismu: "zzmeta1", swap: None, places: &["relation"], gloss: "derived-only", template: Some("{x1} is derivable only by rule"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:prose, x4:prose] — lensisku: "$x_{1}$ tells about/describes $x_{2}$ (object/event/state) to audience $…"
     PredicateEntry { name: "describe", source_gismu: "skicu", swap: None, places: &["subject", "about", "audience", "description"], gloss: "describe", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:generic, x3:prose] — lensisku: "$x_{1}$ (agent/person) earns/[deserves/merits] wages/salary/pay $x_{2}$ …"

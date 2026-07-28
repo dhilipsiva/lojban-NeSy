@@ -685,6 +685,26 @@ pub(super) struct KnowledgeBaseInner {
     /// (NIBLI_KR §14.4 item 3): no phantom entity is injected. Like `strict`,
     /// this is CONFIGURATION — NOT cleared by `reset()`.
     pub(super) existential_import: bool,
+    /// DERIVED-ONLY (intensional / IDB) relations — declared in the KB itself by
+    /// `derived_only("<relation>").`, or programmatically via
+    /// `KnowledgeBase::declare_derived`. A relation in this set may ONLY become
+    /// true by derivation; a direct ground assertion of it is REJECTED
+    /// fail-closed in `process_assertion`, which unwinds the whole assertion
+    /// atomically.
+    ///
+    /// The point is EDB/IDB separation. Without it a rule only ADDS a derivation
+    /// path and never REMOVES assertability, so a KB that derives an authority
+    /// credential (`… -> permits(Review, $a).`) cannot stop anyone from simply
+    /// asserting `permits(Review, Sock).` and handing themselves one. Closing the
+    /// relation turns "write one fact" into "edit the knowledge base", which is
+    /// diffable and reviewable — that change in the shape of the attack is the
+    /// whole value, and it is why this rejects rather than lints.
+    ///
+    /// Deliberately absent from `rebuild_inner`'s clear list, so a relation
+    /// cannot become assertable again after a RETRACTION replay. It IS cleared by
+    /// `reset()`, which wipes the KB: unlike `strict`/`existential_import` this is
+    /// KB content declared in the KB text, not session configuration.
+    pub(super) derived_only: HashSet<String>,
     /// Constants minted as existential-import PRESUPPOSITION witnesses at
     /// description-universal registration (`animal(every dog).` presupposes
     /// ≥1 dog — Lojban's xorlo rule, kept by design).
@@ -750,6 +770,7 @@ impl Clone for KnowledgeBaseInner {
             verbose: self.verbose,
             strict: self.strict,
             existential_import: self.existential_import,
+            derived_only: self.derived_only.clone(),
             strict_violations: Vec::new(),
             presupposition_witnesses: self.presupposition_witnesses.clone(),
             find_horizon_hit: false,
@@ -802,6 +823,7 @@ impl KnowledgeBaseInner {
             // Existential import defaults ON — the v0.1 xorlo behavior kept
             // byte-identical; clean-core opts OUT via `set_existential_import(false)`.
             existential_import: true,
+            derived_only: HashSet::new(),
             strict_violations: Vec::new(),
             presupposition_witnesses: HashSet::new(),
             find_horizon_hit: false,
@@ -834,6 +856,13 @@ impl KnowledgeBaseInner {
         self.negative_facts.clear();
         self.disjunctive_constraints.clear();
         self.presupposition_witnesses.clear();
+        // `derived_only` IS cleared here, unlike `strict`/`existential_import`:
+        // it is KB CONTENT (declared by a `derived_only("…")` statement in the KB
+        // text), not session configuration, so a wiped KB must start with no
+        // closures. Retraction safety does NOT depend on this — `rebuild_inner`
+        // has its own clear list which deliberately omits `derived_only`, and the
+        // declaration is re-asserted by replay regardless.
+        self.derived_only.clear();
         self.pred_cache.borrow_mut().clear();
         self.pred_cache_enabled.set(false);
         self.depth_cut_table.borrow_mut().clear();
@@ -1882,6 +1911,27 @@ pub(super) fn process_assertion(
                 ));
             }
 
+            // FAIL CLOSED: EDB/IDB separation. A relation declared derived-only
+            // may become true ONLY by derivation, so a direct ground assertion of
+            // it is refused and the whole assertion unwinds (the caller's
+            // `rebuild_inner` rollback). Checked BEFORE any leaf is stored, so a
+            // multi-leaf conjunction cannot half-land.
+            //
+            // Only the event TYPE leaf is tested (`permits(ev)`), never the role
+            // leaves (`permits_x1(ev, …)`): the type leaf is present for every
+            // event-decomposed assertion and for flat injected facts alike, and
+            // testing role names would misfire on an unrelated relation that
+            // merely shares a prefix.
+            if let Some(rel) = asserted_derived_only(&typed_leaves, &inner.derived_only) {
+                return Err(format!(
+                    "`{rel}` is declared derived-only (`derived_only(\"{rel}\")`): it can be \
+                     concluded by a rule but never asserted directly. Assert the facts its \
+                     rule derives from instead — or, if this relation really should be a base \
+                     fact in this model, remove its `derived_only` declaration (a visible, \
+                     reviewable edit, which is the point)."
+                ));
+            }
+
             let nothing_collected = typed_leaves.is_empty();
             for fact in &typed_leaves {
                 // Intercept `du` facts for equality equivalence indexing.
@@ -1889,6 +1939,17 @@ pub(super) fn process_assertion(
                     if gf.relation == nibli_types::relations::IDENTITY && gf.args.len() == 2 {
                         union_terms(inner, &gf.args[0], &gf.args[1]);
                     }
+                }
+                // Intercept the `derived_only("<relation>")` META-DECLARATION and
+                // record it. The declaration itself still stores like any fact, so
+                // it survives `:export`, buffer replay, and is queryable — the
+                // KB's own closure list is inspectable rather than hidden engine
+                // state. Read off the ROLE leaf, which carries the string.
+                if let StoredFact::Bare(gf) = fact
+                    && gf.relation == DERIVED_ONLY_ROLE
+                    && let Some(GroundTerm::Constant(rel)) = gf.args.get(1)
+                {
+                    inner.derived_only.insert(rel.clone());
                 }
             }
             for fact in typed_leaves {
@@ -1948,6 +2009,30 @@ pub(super) fn process_assertion(
         return Err(format!("strict mode rejected: {}", joined.join("; ")));
     }
     Ok(())
+}
+
+/// The relation whose declaration closes another relation to direct assertion,
+/// and the event role that carries the closed relation's NAME. A `derived_only`
+/// assertion event-decomposes to `derived_only(ev) ∧ derived_only_x1(ev, "rel")`.
+pub(super) const DERIVED_ONLY: &str = "derived_only";
+pub(super) const DERIVED_ONLY_ROLE: &str = "derived_only_x1";
+
+/// Detect a direct ground assertion of a DERIVED-ONLY relation among the
+/// collected leaves. Returns the offending relation name.
+///
+/// Only the bare event-TYPE leaf is considered (`permits(ev)` / a flat injected
+/// `permits(a, b)`), never the `_xN` role leaves — see the call site. The
+/// declaration relation itself is exempt: `derived_only("derived_only")` would
+/// otherwise be unable to store its own declaration.
+fn asserted_derived_only(leaves: &[StoredFact], closed: &HashSet<String>) -> Option<String> {
+    if closed.is_empty() {
+        return None;
+    }
+    leaves.iter().find_map(|f| {
+        let gf = f.inner();
+        (gf.relation != DERIVED_ONLY && closed.contains(gf.relation.as_str()))
+            .then(|| gf.relation.clone())
+    })
 }
 
 /// Detect an asserted NUMERIC comparison (zmadu/mleca/dunli over number

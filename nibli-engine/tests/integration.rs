@@ -3226,6 +3226,175 @@ fn gdpr_full_corpus_lawful_basis_query_completes() {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Derived-only (intensional / IDB) relations — `derived_only("<rel>")`
+//
+// Without this, a rule only ADDS a derivation path and never REMOVES
+// assertability, so a KB that DERIVES a credential
+//
+//     all $a: choose(Electorate, $a) & ~rotten($a) & ~broken($a)
+//             -> permits(Review, $a).
+//
+// cannot stop anyone from handing themselves one with `permits(Review, Sock).`
+// Declaring the relation derived-only closes that route fail-closed at assert
+// time, turning "write one fact" into "edit the knowledge base" — a diffable,
+// reviewable act. That change in the SHAPE of the attack is the whole point,
+// and it is why this rejects rather than lints.
+// ════════════════════════════════════════════════════════════════════
+
+/// The credential rule the tests below defend, plus its legitimate seed facts.
+const CREDENTIAL_KB: &[&str] = &[
+    "derived_only(\"permits\").",
+    "all $a: choose(Electorate, $a) & ~rotten($a) & ~broken($a) -> permits(Review, $a).",
+    "choose(Electorate, Gia).",
+];
+
+/// The derivation route still works — closing a relation must not close the
+/// door it exists to protect.
+#[test]
+fn derived_only_still_derives() {
+    let engine = engine_with_facts(CREDENTIAL_KB);
+    assert_true(
+        &engine.query_holds("permits(Review, Gia).").unwrap(),
+        "a seated auditor still derives the credential",
+    );
+    assert_false(
+        &engine.query_holds("permits(Review, Sock).").unwrap(),
+        "an unseated one does not",
+    );
+}
+
+/// The assertion route is closed, fail-closed, with a `Reasoning` error naming
+/// the relation.
+#[test]
+fn derived_only_refuses_direct_assertion() {
+    let engine = engine_with_facts(CREDENTIAL_KB);
+    let err = engine
+        .assert_text("permits(Review, Sock).")
+        .expect_err("a closed relation must not be directly assertable");
+    assert!(
+        matches!(err, EngineError::Reasoning(_)),
+        "must be a Reasoning error, not a syntax one: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("permits") && msg.contains("derived-only"),
+        "the error must name the relation and the reason: {msg}"
+    );
+    // And it must not have half-landed.
+    assert_false(
+        &engine.query_holds("permits(Review, Sock).").unwrap(),
+        "the refused fact must leave no trace",
+    );
+}
+
+/// The refusal is ATOMIC: a conjunction that mixes a legal fact with a closed
+/// one must land neither.
+#[test]
+fn derived_only_refusal_is_atomic() {
+    let engine = engine_with_facts(CREDENTIAL_KB);
+    assert!(
+        engine
+            .assert_text("person(Sock) & permits(Review, Sock).")
+            .is_err()
+    );
+    assert_false(
+        &engine.query_holds("person(Sock).").unwrap(),
+        "the legal conjunct must be rolled back with the illegal one",
+    );
+}
+
+/// CONSTRAINT: the declaration survives retraction and the fact-store rebuild.
+/// A relation must not become assertable again after a replay.
+#[test]
+fn derived_only_survives_retraction_and_replay() {
+    let engine = fresh_engine();
+    for line in CREDENTIAL_KB {
+        engine.assert_text(line).unwrap();
+    }
+    let extra = engine.assert_text("choose(Electorate, Bet).").unwrap();
+    // Retracting forces the registry rebuild + buffer replay.
+    engine.retract_fact(extra[0]).unwrap();
+    assert!(
+        engine.assert_text("permits(Review, Sock).").is_err(),
+        "the closure must survive the rebuild — this is the whole retraction constraint"
+    );
+    assert_true(
+        &engine.query_holds("permits(Review, Gia).").unwrap(),
+        "and derivation must still work after the replay",
+    );
+}
+
+/// The declaration is ordinary KB content: a wiped KB starts with no closures.
+/// (Retraction safety does not rely on this — `rebuild_inner` has its own clear
+/// list, and replay re-asserts the declaration anyway.)
+#[test]
+fn derived_only_is_cleared_by_reset() {
+    let engine = engine_with_facts(CREDENTIAL_KB);
+    assert!(engine.assert_text("permits(Review, Sock).").is_err());
+    engine.reset();
+    engine
+        .assert_text("permits(Review, Sock).")
+        .expect("a reset KB has no closures");
+}
+
+/// Declaring is idempotent and order-independent with respect to the rule.
+#[test]
+fn derived_only_declaration_order_does_not_matter() {
+    let engine = engine_with_facts(&[
+        "all $a: choose(Electorate, $a) & ~rotten($a) & ~broken($a) -> permits(Review, $a).",
+        "choose(Electorate, Gia).",
+        "derived_only(\"permits\").",
+        "derived_only(\"permits\").",
+    ]);
+    assert!(engine.assert_text("permits(Review, Sock).").is_err());
+    assert_true(&engine.query_holds("permits(Review, Gia).").unwrap(), "");
+}
+
+/// Closing one relation must not close unrelated ones.
+#[test]
+fn derived_only_is_scoped_to_the_named_relation() {
+    let engine = engine_with_facts(CREDENTIAL_KB);
+    engine
+        .assert_text("person(Adam).")
+        .expect("an unrelated relation stays open");
+    engine
+        .assert_text("choose(Electorate, Bet).")
+        .expect("the rule's own antecedent relation stays assertable");
+}
+
+/// SECURITY-CRITICAL: closing a relation closes EVERY surface spelling of it,
+/// including converted aliases. `permitted` is the x1<->x2 conversion of
+/// `permits` and compiles to the same IR relation, so `permitted(Adam).` is
+/// refused by a `derived_only("permits")` declaration.
+///
+/// If it were not, the declaration would be trivially bypassable: an attacker
+/// blocked from writing `permits(...)` would simply write `permitted(...)` and
+/// get the identical stored fact. The check tests the COMPILED relation, after
+/// alias resolution, which is what makes that impossible.
+#[test]
+fn derived_only_closes_converted_alias_spellings_too() {
+    let engine = engine_with_facts(CREDENTIAL_KB);
+    let err = engine
+        .assert_text("permitted(Adam).")
+        .expect_err("the converted alias must not be a bypass");
+    assert!(
+        err.to_string().contains("permits"),
+        "the error names the CANONICAL relation, which is the one actually closed: {err}"
+    );
+}
+
+/// The declaration is itself queryable — the closure list is inspectable rather
+/// than hidden engine state.
+#[test]
+fn derived_only_declaration_is_queryable() {
+    let engine = engine_with_facts(CREDENTIAL_KB);
+    assert_true(
+        &engine.query_holds("derived_only(\"permits\").").unwrap(),
+        "the declaration stores like any assertion",
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Rights-floor stratification firewall (`entitled`)
 //
 // A constitutional/unconditional rights floor is spelled with the entitled

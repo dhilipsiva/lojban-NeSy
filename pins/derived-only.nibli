@@ -1,0 +1,92 @@
+# ── Derived-only (EDB/IDB) pins ───────────────────────────────────────────────
+#
+# Run by `just verify-pins` (nibli-pin, native).
+#
+# WHAT THIS GUARDS. In nibli KR a rule ADDS a derivation path; it never REMOVES
+# assertability. So a knowledge base that DERIVES a credential still lets anyone
+# assert one directly, and an article whose stated guarantee is "credentials
+# derive from selection, never from assertion" is simply false.
+#
+#     derived_only("permits").
+#
+# closes the relation: thereafter only a rule may conclude it, and a direct
+# ground assertion is refused fail-closed at assert time with the whole
+# assertion unwound atomically. The attack becomes "edit the knowledge base"
+# instead of "write one fact" — loud, diffable, reviewable. That change in the
+# SHAPE of the attack is the point, and it is why this rejects rather than lints.
+#
+# The three refusals below are the three exploits an adversarial audit found,
+# each reduced to its minimal shape. They are pinned as REFUSALS with an error
+# class plus a message needle, so a misspelled predicate (a Syntax error) can
+# never satisfy them.
+
+# ── the declarations ──
+derived_only("permits").
+derived_only("authority").
+derived_only("fit").
+
+# ── the derivation routes these protect (must all still work) ──
+all $a: choose(Electorate, $a) & ~rotten($a) & ~broken($a) -> permits(Review, $a).
+choose(Electorate, Gia).
+
+person(Ara).
+person(Sock).
+
+# ── EXPLOIT A: seize an authority credential with one asserted fact ──
+# The whistleblower shield gates on the exposed party being an `authority`,
+# which is supposed to derive only from selection. One fact made an assailant
+# unjailable.
+:refuse reasoning /`authority` is declared derived-only/
+authority(Pax).
+
+# ── EXPLOIT B: seat sock puppets to drive the multi-sig ──
+# The audit rule requires two INDEPENDENT Review-credentialed auditors. Neither
+# puppet was ever seated by the Electorate, yet every guard on the rule passed
+# because the credential could simply be asserted.
+:refuse reasoning /`permits` is declared derived-only/
+permits(Review, Sock).
+
+# The converted-alias spelling must not be a bypass. `permitted` is the x1<->x2
+# conversion of `permits` and compiles to the SAME IR relation, so it is closed
+# by the same declaration — otherwise the whole guarantee is one synonym away
+# from worthless.
+:refuse reasoning /`permits` is declared derived-only/
+permitted(Sock).
+
+# ── EXPLOIT C: silence a breach marker by asserting eligibility ──
+# Home-confinement eligibility is derived; asserting it directly suppressed the
+# unearned-placement flag.
+:refuse reasoning /`fit` is declared derived-only/
+fit(Ruk, Homestay).
+
+# ── ATOMICITY: a mixed conjunction must land NEITHER conjunct ──
+# Otherwise the legal half of a smuggling assertion still lands.
+:refuse reasoning /`permits` is declared derived-only/
+person(Puppet) & permits(Review, Puppet).
+
+? person(Puppet).
+# => FALSE
+
+# ── THE OTHER HALF: closing must not break derivation ──
+# A refusal-only suite is satisfied by an engine that refuses everything.
+? permits(Review, Gia).
+# => TRUE
+
+# An unseated auditor is still simply FALSE — closing the relation did not turn
+# the credential into something unknowable.
+? permits(Review, Sock).
+# => FALSE
+
+# ── SCOPE: unrelated relations stay assertable ──
+:accept
+person(Bet).
+
+:accept
+choose(Electorate, Bet).
+
+# The declaration is queryable — the closure list is inspectable, not hidden
+# engine state.
+? derived_only("permits").
+# => TRUE
+
+:expect-pins 11
