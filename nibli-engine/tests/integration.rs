@@ -3226,6 +3226,153 @@ fn gdpr_full_corpus_lawful_basis_query_completes() {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Rights-floor stratification firewall (`entitled`)
+//
+// A constitutional/unconditional rights floor is spelled with the entitled
+// party in x1 and the guaranteed event in x2:
+//
+//     entitled(every person, event { eats() }).
+//
+// The SAFETY PROPERTY these tests pin: once such a floor is asserted, no rule
+// can punish someone for lacking the floor right, because the punishing rule
+// closes a negative cycle and is rejected as unstratifiable.
+//
+// The mechanism is subtle and lives in an ASYMMETRY inside nibli-reason:
+// `event { eats() }` compiles to an abstraction, and `rules::flatten_consequent`
+// descends BOTH branches of the head's `And` unconditionally — so the
+// abstraction body's `eats` atom lands in the rule head and becomes a
+// dependency edge `eats -> person`. `rules::collect_ground_facts`, by contrast,
+// DOES honour `__abs_` opacity and skips the body. If flatten_consequent were
+// ever "fixed" for symmetry, every floor below would silently become
+// stratifiable and the punishing rules would start registering — a soundness
+// regression with no other test to catch it.
+// ════════════════════════════════════════════════════════════════════
+
+/// The floor itself asserts, and the `entitled` place structure routes as
+/// committed: x1 = holder, x2 = entitlement, x3 = standard (unfilled here — the
+/// floor is deliberately unconditional, and nothing may require a standard).
+#[test]
+fn rights_floor_entitled_asserts_and_routes() {
+    let engine = engine_with_facts(&["entitled(every person, event { eats() }).", "person(Adam)."]);
+    assert_true(
+        &engine
+            .query_holds("entitled(Adam, event { eats() }).")
+            .unwrap(),
+        "a person is entitled to the floor right",
+    );
+    // Named-arg routing agrees with the positional form.
+    let engine = engine_with_facts(&["entitled(holder: Adam, entitlement: Bread)."]);
+    assert_true(
+        &engine.query_holds("entitled(Adam, Bread).").unwrap(),
+        "named-arg routing must equal positional routing",
+    );
+    // A label from the deontic sibling `obliged` (bound/duty/standard) must NOT
+    // resolve — the two place structures are deliberately distinct.
+    assert!(
+        fresh_engine()
+            .assert_text("entitled(bound: Adam).")
+            .is_err(),
+        "`entitled` must not accept `obliged`'s place labels"
+    );
+}
+
+/// THE OTHER HALF of the abstraction asymmetry: the head walk gains `eats` as a
+/// dependency edge, but `collect_ground_facts` honours `__abs_` opacity, so the
+/// floor must NOT derive that anyone ACTUALLY eats. An entitlement is not an
+/// actuality — a floor that fabricated the fact it guarantees would be exactly
+/// the hallucination this engine exists to rule out.
+///
+/// This pins the opacity side deliberately: `rules::collect_ground_facts`'s guard
+/// and the `flatten_consequent` walk must stay asymmetric. Making them symmetric
+/// in EITHER direction breaks something — drop the opacity guard and the floor
+/// starts asserting that everyone eats; honour opacity in the head walk too and
+/// the stratification firewall above silently disappears.
+#[test]
+fn rights_floor_does_not_fabricate_the_actuality() {
+    let engine = engine_with_facts(&["entitled(every person, event { eats() }).", "person(Adam)."]);
+    assert_true(
+        &engine
+            .query_holds("entitled(Adam, event { eats() }).")
+            .unwrap(),
+        "the entitlement itself holds",
+    );
+    assert_false(
+        &engine.query_holds("eats(Adam).").unwrap(),
+        "being entitled to eat must NOT derive that Adam eats",
+    );
+    assert_false(
+        &engine.query_holds("eats(some person).").unwrap(),
+        "nor that some person eats — the abstraction body stays opaque",
+    );
+}
+
+/// THE FIREWALL: with the floor + "prisoners remain persons" asserted, a rule
+/// that would jail anyone who does not eat is REJECTED as unstratifiable.
+/// Cycle: `prisoner ->(neg) eats` (the punishing rule) + `eats -> person` (the
+/// floor's abstraction body in the rule head) + `person -> prisoner` (closure).
+#[test]
+fn rights_floor_blocks_punishment_for_lacking_it() {
+    let engine = engine_with_facts(&[
+        "entitled(every person, event { eats() }).",
+        "all $anyone: prisoner($anyone) -> person($anyone).",
+    ]);
+    let err = engine
+        .assert_text("all $x: person($x) & ~eats($x) -> prisoner($x).")
+        .expect_err("a rule punishing the absence of a floor right must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("Unstratifiable") && msg.contains("prisoner") && msg.contains("eats"),
+        "the rejection must name the prisoner->eats negative cycle, got: {msg}"
+    );
+}
+
+/// NEGATIVE CONTROL: the rejection above is caused by the floor, not by the
+/// punishing rule being intrinsically unstratifiable. Without the floor line the
+/// very same rule registers and fires.
+#[test]
+fn punishment_rule_alone_is_stratifiable() {
+    let engine = engine_with_facts(&[
+        "all $anyone: prisoner($anyone) -> person($anyone).",
+        "all $x: person($x) & ~eats($x) -> prisoner($x).",
+        "person(Adam).",
+    ]);
+    assert_true(
+        &engine.query_holds("prisoner(Adam).").unwrap(),
+        "with no floor asserted the punishing rule registers and fires",
+    );
+}
+
+/// PLACEMENT DEPENDENCE: the firewall requires the universal in x1 and the event
+/// in x2. Swap them and the floor contributes no `eats -> person` edge, the
+/// punishing rule registers, and the protection is GONE. This is the shape a
+/// future corpus/place-structure change could silently introduce, so pin it
+/// explicitly rather than leaving it as folklore.
+#[test]
+fn rights_floor_protection_is_placement_dependent() {
+    let engine = engine_with_facts(&[
+        // Event in x1, universal in x2 — the WRONG spelling for a floor.
+        "entitled(event { eats() }, every person).",
+        "all $anyone: prisoner($anyone) -> person($anyone).",
+    ]);
+    assert!(
+        engine
+            .assert_text("all $x: person($x) & ~eats($x) -> prisoner($x).")
+            .is_ok(),
+        "universal-in-x2 must NOT build the firewall — if this starts failing, the \
+         event-abstraction head walk changed and the x1 requirement may have been \
+         relaxed (good news, but the floor docs and NIBLI_KR need updating)"
+    );
+    // And the danger is concrete, not theoretical: the rule now FIRES, so a person
+    // gets jailed for the absence of a floor right. This is exactly the outcome the
+    // x1 spelling exists to make unrepresentable.
+    engine.assert_text("person(Adam).").unwrap();
+    assert_true(
+        &engine.query_holds("prisoner(Adam).").unwrap(),
+        "with the floor mis-spelled, lacking the right is punishable",
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Corpus transcript pins (book Ch 19 GDPR / Ch 20 DDI reproducibility)
 // ════════════════════════════════════════════════════════════════════
 

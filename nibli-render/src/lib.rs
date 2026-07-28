@@ -108,6 +108,54 @@ mod tests {
         );
     }
 
+    /// `entitled` is the claim-right predicate: x1 = holder, x2 = entitlement,
+    /// x3 = standard. Two properties matter for reader-facing honesty and are
+    /// pinned here.
+    #[test]
+    fn entitled_keeps_the_holder_in_subject_position_and_hides_the_standard() {
+        let render = |t: &str| {
+            let ast = nibli_kr::parse_checked(t).expect("parse");
+            let buf = nibli_semantics::compile_from_ast(ast).expect("compile");
+            render_logic_buffer(&buf, Register::Spec)
+        };
+
+        // (1) The x3 `standard` place NEVER reaches the English — the corpus
+        // template is 2-placeholder, so a filled OR unfilled standard is
+        // invisible. An unconditional floor therefore cannot read as though it
+        // carried a condition (the reason this entry exists rather than reusing
+        // `deserve`, whose x2/x3 are "wage"/"work").
+        assert_eq!(
+            render("entitled(Adam, Bread)."),
+            "Adam is entitled to Bread."
+        );
+        assert_eq!(
+            render("entitled(Adam, Bread, Law)."),
+            "Adam is entitled to Bread.",
+            "the `standard` place must not leak into the back-translation"
+        );
+
+        // (2) In the rights-floor form the HOLDER stays the grammatical subject.
+        // Contrast `permitted`, whose x1<->x2 swap surfaces as "Y permits X" —
+        // exactly the inversion a floor right must not have.
+        let floor = render("entitled(every person, event { eats() }).");
+        assert!(
+            floor.contains("X is entitled to"),
+            "the holder must stay in subject position, got: {floor}"
+        );
+        assert!(
+            !floor.contains("entitles"),
+            "the floor must not invert into an entitle-the-party reading: {floor}"
+        );
+        // KNOWN LIMITATION (pre-existing, not specific to `entitled`): the
+        // abstraction-scaffold collapse in logic.rs (`collapse_deontic_event_duties`
+        // / `is_deontic_duty_rel`) only covers "obligated"/"obliged", so every other
+        // event-taking predicate still renders the "Y is an event and …" scaffold —
+        // including the shipped GDPR Art 15 right `permitted(every person,
+        // event { data discovers() })`. Generalizing that collapse to be
+        // template-driven would let this read "X is entitled to eat"; it is
+        // deliberately NOT asserted here so the fix does not have to fight a test.
+    }
+
     #[test]
     fn lose_and_building_place_order_read_naturally() {
         let lose = {

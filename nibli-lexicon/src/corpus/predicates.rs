@@ -797,6 +797,16 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     // TODO(corpus): guessed places [x1:gloss, x2:prose] — lensisku: "$x_{1}$ is English/pertains to English-speaking culture in aspect $x_{2}…"
     PredicateEntry { name: "english", source_gismu: "glico", swap: None, places: &["english", "aspect"], gloss: "English", template: None, tier: CorpusTier::GlossDerived },
     PredicateEntry { name: "entails", source_gismu: "nibli", swap: None, places: &["premise", "conclusion", "logic"], gloss: "necessitate", template: Some("{x1} logically entails {x2}"), tier: CorpusTier::Curated },
+    // Hand-authored: the corpus had no claim-right predicate whose x1 is the
+    // ENTITLED party. `obliged`/`obligated` (bilga) put the duty-bearer in x1, so
+    // they spell "X has a duty to Y", not "X is owed Y"; `deserve` (jerna) is an
+    // EARNING relation ("x1 earns wages x2 for work x3") and carries the
+    // desert-through-effort reading a floor right must exclude; `owe` (dejni) puts
+    // the creditor in x3; `grant` is reserved by the built-in auth policy. Place
+    // structure mirrors the deontic family (`obliged` = bound/duty/standard) with
+    // the party moved to x1. Synthetic provenance key — there is no source gismu
+    // (same convention as the `zzauth*` auth predicates).
+    PredicateEntry { name: "entitled", source_gismu: "zzright1", swap: None, places: &["holder", "entitlement", "standard"], gloss: "entitled", template: Some("{x1} is entitled to {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:generic] — lensisku: "$x_{1}$ (ind./mass) is part of an environment/surroundings/context/ambie…"
     PredicateEntry { name: "environment", source_gismu: "vanbi", swap: None, places: &["subject", "object"], gloss: "environment", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:generic] — lensisku: "$x_{1}$ is an era/epoch/age characterized by $x_{2}$ (event/property/int…"
