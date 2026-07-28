@@ -107,12 +107,7 @@ fn allowed_fields(
 
 #[pyfunction]
 #[pyo3(signature = (agent, action, object, context_kr=""))]
-fn explain(
-    agent: &str,
-    action: &str,
-    object: &str,
-    context_kr: &str,
-) -> PyResult<PyExplained> {
+fn explain(agent: &str, action: &str, object: &str, context_kr: &str) -> PyResult<PyExplained> {
     tls::explain(agent, action, object, context_kr)
         .map(Into::into)
         .map_err(to_py_err)
@@ -147,4 +142,3 @@ fn nibli_auth_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_policy, m)?)?;
     Ok(())
 }
-

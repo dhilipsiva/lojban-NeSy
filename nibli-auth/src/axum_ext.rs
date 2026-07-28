@@ -3,10 +3,10 @@
 //! Uses [`crate::tls`] so each worker thread keeps a warm policy-loaded
 //! authorizer. Prefer per-request `context_kr` for owns/roles (app DB).
 
-use axum::extract::FromRequestParts;
-use axum::http::{header::HeaderValue, request::Parts, StatusCode};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum::extract::FromRequestParts;
+use axum::http::{StatusCode, header::HeaderValue, request::Parts};
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::tls;
@@ -112,10 +112,8 @@ pub fn can_any(
     candidates: &[&str],
     context_kr: &str,
 ) -> Result<Vec<(String, bool)>, AuthRejection> {
-    tls::can_any(agent, action, candidates, context_kr)
-        .map_err(AuthRejection::from_auth_error)
+    tls::can_any(agent, action, candidates, context_kr).map_err(AuthRejection::from_auth_error)
 }
-
 
 /// Field mask after a successful row-level allow (or empty if denied).
 pub fn field_mask(

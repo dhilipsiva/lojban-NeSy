@@ -27,7 +27,7 @@ pub mod juniper_ext;
 
 pub use decision::{Decision, Explained, Verdict};
 
-use cache::{hash_context, CacheKey, DecisionCache};
+use cache::{CacheKey, DecisionCache, hash_context};
 use nibli_session::CoreSession;
 use nibli_types::error::NibliError;
 
@@ -61,9 +61,7 @@ impl From<NibliError> for AuthError {
 
 impl AuthError {
     fn msg(s: impl Into<String>) -> Self {
-        Self {
-            message: s.into(),
-        }
+        Self { message: s.into() }
     }
 }
 
@@ -182,7 +180,8 @@ impl Authorizer {
         }
 
         let context_hash = hash_context(context_kr);
-        let mut results: Vec<(String, Option<bool>)> = Vec::with_capacity(resource_candidates.len());
+        let mut results: Vec<(String, Option<bool>)> =
+            Vec::with_capacity(resource_candidates.len());
         let mut all_cached = true;
 
         for &res in resource_candidates {
@@ -232,7 +231,6 @@ impl Authorizer {
             Ok(final_results)
         })
     }
-
 
     /// Field-level allow list for serializer masking.
     ///
@@ -296,13 +294,7 @@ impl Authorizer {
         }
     }
 
-    fn cache_key(
-        &self,
-        agent: &str,
-        action: &str,
-        resource: &str,
-        context_kr: &str,
-    ) -> CacheKey {
+    fn cache_key(&self, agent: &str, action: &str, resource: &str, context_kr: &str) -> CacheKey {
         CacheKey {
             policy_version: self.policy_version.clone(),
             agent: agent.to_string(),

@@ -280,7 +280,6 @@ impl AuthGuestSession for AuthSession {
             .map_err(|e| e.message)
     }
 
-
     fn allowed_fields(
         &self,
         agent: String,

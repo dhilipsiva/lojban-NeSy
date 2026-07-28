@@ -14,7 +14,9 @@ thread_local! {
 }
 
 /// Run `f` with this thread's warm authorizer (policy loaded on first use).
-pub fn with_auth<R>(f: impl FnOnce(&mut Authorizer) -> Result<R, AuthError>) -> Result<R, AuthError> {
+pub fn with_auth<R>(
+    f: impl FnOnce(&mut Authorizer) -> Result<R, AuthError>,
+) -> Result<R, AuthError> {
     AUTH.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -63,7 +65,6 @@ pub fn can_any(
 ) -> Result<Vec<(String, bool)>, AuthError> {
     with_auth(|a| a.can_any(agent, action, candidates, context_kr))
 }
-
 
 /// Field mask via thread-local authorizer.
 pub fn allowed_fields(

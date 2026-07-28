@@ -16,7 +16,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use nibli_auth::axum_ext::{field_mask, require, Agent, AuthRejection};
+use nibli_auth::axum_ext::{Agent, AuthRejection, field_mask, require};
 use nibli_auth::tls;
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
@@ -80,7 +80,8 @@ async fn get_doc(
     let ctx = state.db.context_for(&agent);
     let object = name.clone();
     if q.explain.unwrap_or(false) {
-        let ex = tls::explain(&agent, "read", &object, &ctx).map_err(AuthRejection::from_auth_error)?;
+        let ex =
+            tls::explain(&agent, "read", &object, &ctx).map_err(AuthRejection::from_auth_error)?;
         if !ex.decision.allowed {
             return Err(AuthRejection::forbidden(&ex.decision));
         }
@@ -121,9 +122,7 @@ async fn put_doc(
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
     let state = AppState {
         db: Arc::new(AppDb::demo()),

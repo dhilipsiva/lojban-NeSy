@@ -34,9 +34,7 @@ pub fn emit_token(s: &str) -> String {
 fn is_name_constant(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
-        Some(c) if c.is_ascii_uppercase() => {
-            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
+        Some(c) if c.is_ascii_uppercase() => chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
         _ => false,
     }
 }
