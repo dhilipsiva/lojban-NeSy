@@ -684,8 +684,16 @@ pub fn run_lines_asp(
 
     // 2. ASP-mappable filter (accepts NAF; rejects compute/deontic + non-ground du; a
     //    sole-root exact-count QUERY is accepted — count assertions are not).
+    //
+    //    A NON-GROUND `equals` (`~($a = $b)`, a disequality guard between rule variables)
+    //    additionally rides in as clingo's `!=` builtin, but ONLY when the KB has no ground
+    //    `du` facts — see `filter::buffer_asp_mappable_with`. The precondition is a
+    //    whole-KB property, which is why it is computed here rather than per buffer: with
+    //    an empty union-find, structural comparison and clingo's `!=` decide identity
+    //    identically; with a non-empty one, the pairing is unverified and stays skipped.
+    let du_free = asp::DuClasses::collect(&kb_buffers).is_empty();
     for b in &kb_buffers {
-        if let Some(reason) = filter::buffer_asp_mappable(b) {
+        if let Some(reason) = filter::buffer_asp_mappable_with(b, du_free) {
             return Outcome::SkipNonMappable {
                 name,
                 reason: reason.to_string(),

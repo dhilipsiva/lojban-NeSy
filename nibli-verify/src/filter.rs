@@ -77,13 +77,41 @@ pub fn buffer_non_classical(buf: &LogicBuffer) -> Option<&'static str> {
 /// (`se bilga` / `se curmi` compile to the PLAIN gismu `bilga`/`curmi`, not a deontic modal node,
 /// so the deontic reading rides for free once the abstraction in the head is mapped.)
 pub fn buffer_asp_mappable(buf: &LogicBuffer) -> Option<&'static str> {
+    buffer_asp_mappable_with(buf, false)
+}
+
+/// Whether a NON-GROUND `equals` — `~($a = $b)`, a disequality guard between two rule
+/// variables — may ride into the ASP program as clingo's `!=` builtin.
+///
+/// This is the documented seam for the one `equals` shape beyond ground `du` that the ASP
+/// oracle can judge exactly (the sibling of [`count_case_guard`]). Two conditions, and the
+/// caller owns the second because it is a property of the WHOLE KB, not of one buffer:
+///
+/// 1. **The translator must emit `!=`.** `asp::pos_or_naf` / `peel_antecedent_literal`
+///    intercept `equals` before `regroup_event`. Without that, `~($a = $b)` renders as
+///    `not equals(A, B)`, which — since nothing ever puts `equals/2` in a head — is
+///    vacuously true for every pair including `A == A`. Relaxing this filter without that
+///    interception does not produce a skip, it produces a WRONG oracle verdict.
+/// 2. **No ground `du` facts in the KB** (`allow_nonground_equals` is set only then). With
+///    an empty union-find the engine decides a non-ground `equals` by plain structural
+///    comparison — `materialize::builtin_holds` is written on exactly that assumption, and
+///    `materialize::saturate` refuses the whole KB the moment `equivalence_parent` is
+///    non-empty. Pairing ASP's class-canonical constants against the engine's union-find
+///    *plus* its `DU_VARIANT_BOUND`-truncated variant search is unverified, so that
+///    combination stays skipped.
+pub fn buffer_asp_mappable_with(
+    buf: &LogicBuffer,
+    allow_nonground_equals: bool,
+) -> Option<&'static str> {
     for (idx, node) in buf.nodes.iter().enumerate() {
         let reason = match node {
             LogicNode::ComputeNode(_) => "compute predicate",
             LogicNode::ObligatoryNode(_) | LogicNode::PermittedNode(_) => "deontic",
             LogicNode::CountNode(_) => "exact-count quantifier",
             LogicNode::Predicate((rel, args))
-                if rel == "equals" && !du_mappable(buf, idx, args) =>
+                if rel == "equals"
+                    && !du_mappable(buf, idx, args)
+                    && !(allow_nonground_equals && comparable_equals(args)) =>
             {
                 "equality (nested or non-ground)"
             }
@@ -92,6 +120,17 @@ pub fn buffer_asp_mappable(buf: &LogicBuffer) -> Option<&'static str> {
         return Some(reason);
     }
     None
+}
+
+/// An `equals` whose two arguments are both terms clingo can compare with `==`/`!=` after
+/// `DuClasses` canonicalization: variables and constants only. A `Number` belongs to the
+/// compute fragment and a `Description`/`Unspecified` is an opaque referent whose identity
+/// nibli decides structurally in ways the oracle does not model — both stay skipped.
+fn comparable_equals(args: &[LogicalTerm]) -> bool {
+    args.len() == 2
+        && args
+            .iter()
+            .all(|a| matches!(a, LogicalTerm::Variable(_) | LogicalTerm::Constant(_)))
 }
 
 /// The ASP filter for the QUERY buffer: like [`buffer_asp_mappable`], but a sole-root

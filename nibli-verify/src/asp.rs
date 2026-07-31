@@ -24,6 +24,15 @@
 //! nibli's union-find semantics (substitutivity in fact lookup, rule firing, and NAF checks
 //! alike). A `du` QUERY becomes clingo's term-equality builtin `C1 == C2` over the
 //! canonicalized constants, so the oracle — not the translator — decides identity.
+//!
+//! **NON-ground `equals`** — a disequality guard between two rule variables, `~($a = $b)`,
+//! as in utopia's multi-sig void rule ("two DISTINCT auditors") — maps to clingo's `!=`
+//! builtin, and its positive twin to `==`. The interception must happen BEFORE
+//! `regroup_event` (see [`equals_args`]); a fallthrough there renders `not equals(A, B)`,
+//! which is vacuously true for every pair because nothing ever derives `equals/2`. The
+//! filter admits this shape only when the KB has no ground `du` facts, so structural
+//! comparison and `!=` decide identity identically — see
+//! [`crate::filter::buffer_asp_mappable_with`].
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -61,6 +70,13 @@ impl DuClasses {
             rep.insert(k, r);
         }
         DuClasses { rep }
+    }
+
+    /// No ground `du` fact merged anything — the KB's identity relation is plain
+    /// syntactic equality. Read by `run_lines_asp` to decide whether a NON-ground `equals`
+    /// may map to clingo's `!=` (see `filter::buffer_asp_mappable_with`).
+    pub fn is_empty(&self) -> bool {
+        self.rep.is_empty()
     }
 
     /// The canonical representative for a constant (itself if never merged).
@@ -157,11 +173,12 @@ impl AspTerm {
 }
 
 /// A body literal: a positive atom `a(..)`, a default-negation literal `not a(..)`, or a
-/// term-equality builtin `t1 == t2` (the canonicalized `du` query).
+/// term-(dis)equality builtin `t1 == t2` / `t1 != t2` (the canonicalized `du` comparison).
 enum BodyLit {
     Pos(SurfaceAtom),
     Naf(SurfaceAtom),
     Eq(AspTerm, AspTerm),
+    Neq(AspTerm, AspTerm),
 }
 
 impl BodyLit {
@@ -170,7 +187,34 @@ impl BodyLit {
             BodyLit::Pos(a) => a.render(),
             BodyLit::Naf(a) => format!("not {}", a.render()),
             BodyLit::Eq(l, r) => format!("{} == {}", l.render(), r.render()),
+            BodyLit::Neq(l, r) => format!("{} != {}", l.render(), r.render()),
         }
+    }
+}
+
+/// The two argument terms of a flat `equals(a, b)` atom, or `None` for anything else.
+///
+/// `equals` is the ONE relation nibli never event-decomposes (it rides the union-find, not
+/// the fact store), so it reaches the translator as a bare arity-2 `Predicate` and must be
+/// intercepted BEFORE `regroup_event` — which would happily render it as an ordinary atom
+/// `equals(A, B)`.
+///
+/// That fallthrough is not a cosmetic bug, it is a silently WRONG oracle. Nothing in a
+/// generated program ever puts `equals/2` in a head — the `DuClasses` pre-pass drops the
+/// `du` facts outright — so `equals(A, B)` is unconditionally false, and `not equals(A, B)`
+/// is therefore vacuously TRUE for every pair, INCLUDING `A == A`. A rule guarded by
+/// `~($a = $b)` (utopia's multi-sig void needs two DISTINCT auditors) would fire for a
+/// single auditor signing twice, clingo would report the void, and the differential would
+/// blame the engine for the one guarantee that rule exists to enforce.
+fn equals_args<'a>(
+    buf: &'a LogicBuffer,
+    id: u32,
+) -> Result<Option<(&'a LogicalTerm, &'a LogicalTerm)>, String> {
+    match node_at(buf, id)? {
+        LogicNode::Predicate((rel, args)) if rel == "equals" && args.len() == 2 => {
+            Ok(Some((&args[0], &args[1])))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -343,6 +387,20 @@ fn peel_antecedent_literal(
         LogicNode::NotNode(i) => *i,
         other => return Err(format!("antecedent disjunct is not Not(...): {other:?}")),
     };
+    // `equals` is flat, so it must be caught before the `Predicate` arms below hand it to
+    // `regroup_event` — see `equals_args` for why that fallthrough is unsound, not untidy.
+    if let LogicNode::NotNode(inner2) = node_at(buf, inner)?
+        && let Some((l, r)) = equals_args(buf, *inner2)?
+    {
+        let (l, r) = (term(buf, l, vars), term(buf, r, vars));
+        out.push(BodyLit::Neq(l, r));
+        return Ok(());
+    }
+    if let Some((l, r)) = equals_args(buf, inner)? {
+        let (l, r) = (term(buf, l, vars), term(buf, r, vars));
+        out.push(BodyLit::Eq(l, r));
+        return Ok(());
+    }
     match node_at(buf, inner)? {
         // Double negation `Not(Not(∃R))` = a `poi na R` restrictor = a NAF literal.
         LogicNode::NotNode(inner2) => {
@@ -363,13 +421,28 @@ fn peel_antecedent_literal(
     Ok(())
 }
 
-/// A conjunct of a compound restrictor: `Not(∃R)` → NAF, `∃P`/`P` → positive.
+/// A conjunct of a compound restrictor: `Not(a = b)` → `!=`, `a = b` → `==`,
+/// `Not(∃R)` → NAF, `∃P`/`P` → positive.
 fn pos_or_naf(
     buf: &LogicBuffer,
     id: u32,
     vars: &mut VarMap,
     out: &mut Vec<BodyLit>,
 ) -> Result<(), String> {
+    // The `equals` interception, again before `regroup_event` — this is the arm utopia's
+    // fifteen-conjunct void rule actually takes for its `~($a = $b)`.
+    if let LogicNode::NotNode(inner) = node_at(buf, id)?
+        && let Some((l, r)) = equals_args(buf, *inner)?
+    {
+        let (l, r) = (term(buf, l, vars), term(buf, r, vars));
+        out.push(BodyLit::Neq(l, r));
+        return Ok(());
+    }
+    if let Some((l, r)) = equals_args(buf, id)? {
+        let (l, r) = (term(buf, l, vars), term(buf, r, vars));
+        out.push(BodyLit::Eq(l, r));
+        return Ok(());
+    }
     match node_at(buf, id)? {
         LogicNode::NotNode(inner) => out.push(BodyLit::Naf(regroup_event(buf, *inner, vars)?)),
         LogicNode::ExistsNode(_) | LogicNode::Predicate(_) => {
@@ -388,6 +461,17 @@ fn collect_query_body(
     vars: &mut VarMap,
     out: &mut Vec<BodyLit>,
 ) -> Result<(), String> {
+    // A NEGATED identity query. The query filter does not admit this shape today, so this
+    // arm is defence in depth — but it costs six lines and closes the same vacuous-`not
+    // equals` hole the rule-body path had, so a future filter relaxation cannot reopen it
+    // silently. See `equals_args`.
+    if let LogicNode::NotNode(inner) = node_at(buf, id)?
+        && let Some((l, r)) = equals_args(buf, *inner)?
+    {
+        let (l, r) = (term(buf, l, vars), term(buf, r, vars));
+        out.push(BodyLit::Neq(l, r));
+        return Ok(());
+    }
     match node_at(buf, id)? {
         // A `du` query after canonicalization: identity holds iff both sides rewrote to
         // the SAME representative. Delegate to clingo's term-equality builtin so the
@@ -514,10 +598,33 @@ fn check_safety(head: &SurfaceAtom, body: &[BodyLit]) -> Result<(), String> {
         }
         Ok(())
     };
+    // A comparison builtin binds nothing — clingo requires both sides already bound by a
+    // positive body literal, exactly like a negative literal's arguments. Without this a
+    // rule whose only mention of a variable is `X != Y` would be rejected by clingo at
+    // grounding time (an oracle CRASH read as a harness error), or worse, mis-ground.
+    let unbound_term = |t: &AspTerm, kind: &str| -> Result<(), String> {
+        if let AspTerm::Var(v) = t
+            && !pos_vars.contains(v.as_str())
+        {
+            return Err(format!(
+                "unsafe rule: {kind} variable {v} not bound by a positive body literal"
+            ));
+        }
+        Ok(())
+    };
     unbound(head, "head")?;
     for lit in body {
-        if let BodyLit::Naf(a) = lit {
-            unbound(a, "negative-literal")?;
+        match lit {
+            BodyLit::Naf(a) => unbound(a, "negative-literal")?,
+            BodyLit::Eq(l, r) => {
+                unbound_term(l, "equality")?;
+                unbound_term(r, "equality")?;
+            }
+            BodyLit::Neq(l, r) => {
+                unbound_term(l, "disequality")?;
+                unbound_term(r, "disequality")?;
+            }
+            BodyLit::Pos(_) => {}
         }
     }
     Ok(())
@@ -958,5 +1065,89 @@ mod tests {
         }
         // An unmerged constant is its own representative.
         assert_eq!(a.canon("dan"), "dan");
+    }
+
+    /// THE VACUOUS-`not equals` GUARD.
+    ///
+    /// A disequality guard between two rule variables — utopia's `~($a = $b)`, the
+    /// multi-sig void rule's "two DISTINCT auditors" clause — must render as clingo's
+    /// `!=` builtin. If it ever falls through to `regroup_event` instead, it renders as
+    /// `not equals(A, B)`, and since the `DuClasses` pre-pass DROPS every `du` fact,
+    /// nothing puts `equals/2` in a head — so `equals(A, B)` is unconditionally false and
+    /// `not equals(A, B)` is vacuously TRUE for every pair, `A == A` included.
+    ///
+    /// That failure is silent and it points the wrong way: clingo would derive the void
+    /// for a single auditor signing twice, and the differential would report the ENGINE
+    /// as divergent on precisely the guarantee that rule exists to enforce. Hence a
+    /// direct render assertion rather than trusting the end-to-end pin alone.
+    #[test]
+    fn nonground_disequality_renders_as_the_clingo_builtin_not_a_naf_atom() {
+        // ∀x ∀y. (sign(x) ∧ sign(y) ∧ ¬(x = y)) → void(x)
+        //   compiled shape: ForAll x. ForAll y. Or(Not(body), head)
+        let mut nodes = Vec::new();
+        let s1 = event1(&mut nodes, "e1", "sign", var("x"));
+        let s2 = event1(&mut nodes, "e2", "sign", var("y"));
+        let eq = pred(&mut nodes, "equals", vec![var("x"), var("y")]);
+        let neq = not(&mut nodes, eq);
+        let b1 = and(&mut nodes, s1, s2);
+        let body = and(&mut nodes, b1, neq);
+        let head = event1(&mut nodes, "e3", "void", var("x"));
+        let nb = not(&mut nodes, body);
+        let imp = or(&mut nodes, nb, head);
+        let fy = forall(&mut nodes, "y", imp);
+        let fx = forall(&mut nodes, "x", fy);
+        let kb = LogicBuffer {
+            nodes,
+            roots: vec![fx],
+        };
+
+        let mut qn = Vec::new();
+        let q = event1(&mut qn, "e9", "void", con("adam"));
+        let query = LogicBuffer {
+            nodes: qn,
+            roots: vec![q],
+        };
+
+        let lp = render_program(&[kb], &query).expect("render");
+        assert!(
+            lp.contains("!="),
+            "disequality must reach clingo as the `!=` builtin:\n{lp}"
+        );
+        assert!(
+            !lp.contains("not equals"),
+            "`not equals(..)` is vacuously true — nothing derives `equals/2`:\n{lp}"
+        );
+    }
+
+    /// The positive twin: a non-ground `a = b` conjunct is `==`, never a NAF atom.
+    #[test]
+    fn nonground_equality_renders_as_the_clingo_builtin() {
+        let mut nodes = Vec::new();
+        let s1 = event1(&mut nodes, "e1", "sign", var("x"));
+        let s2 = event1(&mut nodes, "e2", "sign", var("y"));
+        let eq = pred(&mut nodes, "equals", vec![var("x"), var("y")]);
+        let b1 = and(&mut nodes, s1, s2);
+        let body = and(&mut nodes, b1, eq);
+        let head = event1(&mut nodes, "e3", "void", var("x"));
+        let nb = not(&mut nodes, body);
+        let imp = or(&mut nodes, nb, head);
+        let fy = forall(&mut nodes, "y", imp);
+        let fx = forall(&mut nodes, "x", fy);
+        let kb = LogicBuffer {
+            nodes,
+            roots: vec![fx],
+        };
+        let mut qn = Vec::new();
+        let q = event1(&mut qn, "e9", "void", con("adam"));
+        let query = LogicBuffer {
+            nodes: qn,
+            roots: vec![q],
+        };
+        let lp = render_program(&[kb], &query).expect("render");
+        assert!(lp.contains("=="), "equality must render as `==`:\n{lp}");
+        assert!(
+            !lp.contains("equals("),
+            "no `equals/2` atom may survive:\n{lp}"
+        );
     }
 }
