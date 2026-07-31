@@ -82,8 +82,10 @@ fn naf_verdicts_are_unchanged_by_materialization() {
 /// becoming definitive — never a flip between two definitive verdicts, which is what
 /// the first test in this file pins.
 ///
-/// `depth_boundary_contract` (tests/traces.rs) is deliberately NOT changed: it exercises
-/// POSITIVE goals, which this landing does not shortcut, so it still holds verbatim.
+/// Its positive twin is `positive_goal_past_the_depth_bound_becomes_definitive`. Since
+/// both halves are shortcut, `depth_boundary_contract` (tests/traces.rs) now runs with
+/// materialisation OFF — it pins the SEARCH contract, and a complete extension is exactly
+/// what removes the search.
 #[test]
 fn naf_over_a_chain_past_the_depth_bound_becomes_definitive() {
     let kb_lines = [
@@ -269,9 +271,14 @@ fn the_report_names_what_was_saturated() {
     assert!(refused.iter().all(|(_, why)| !why.is_empty()));
 }
 
-/// A KB with no negation at all must not pay for a saturation it cannot use.
+/// Since the POSITIVE fast path, a negation-free KB saturates too — that is the point:
+/// a completed extension answers an ordinary query by lookup, not only a `~p(x)`.
+///
+/// (This replaces an earlier `a_kb_without_negation_saturates_nothing`, which pinned the
+/// NAF-only target set. That was correct while `~` was the sole consumer and became wrong
+/// the moment positive goals could read the same extension.)
 #[test]
-fn a_kb_without_negation_saturates_nothing() {
+fn a_kb_without_negation_still_saturates_for_positive_lookups() {
     let kb = new_kb();
     for l in ["dog(Rex).", "all $x: dog($x) -> animal($x)."] {
         assert_buf(&kb, compile_surface(l));
@@ -279,8 +286,77 @@ fn a_kb_without_negation_saturates_nothing() {
     assert!(query(&kb, compile_surface("animal(Rex).")));
     let (complete, refused) = kb.materialization_report();
     assert!(
-        complete.is_empty() && refused.is_empty(),
-        "no `~` anywhere means no targets: complete={complete:?} refused={refused:?}"
+        complete.iter().any(|r| r == "animal"),
+        "`animal` is rule-derived and projectable — expected it saturated: \
+         complete={complete:?} refused={refused:?}"
+    );
+}
+
+/// The positive twin of `naf_over_a_chain_past_the_depth_bound_becomes_definitive`, and
+/// the reason `depth_boundary_contract` had to be scoped: a completed extension decides
+/// regardless of `max_chain_depth`, so a positive goal past the bound now answers instead
+/// of returning `ResourceExceeded(Depth)`. Non-definitive → definitive, the sound
+/// direction; the differential gate is what forbids the other one.
+#[test]
+fn positive_goal_past_the_depth_bound_becomes_definitive() {
+    let kb_lines = [
+        "dog(Rex).",
+        "all $x: dog($x) -> animal($x).",
+        "all $x: animal($x) -> alive($x).",
+        "all $x: alive($x) -> beautiful($x).",
+    ];
+    let verdict = |on: bool| {
+        let kb = new_kb();
+        kb.set_materialization(on);
+        kb.set_max_chain_depth(1);
+        for l in kb_lines {
+            assert_buf(&kb, compile_surface(l));
+        }
+        query_result(&kb, compile_surface("beautiful(Rex)."))
+    };
+    let off = verdict(false);
+    assert!(
+        !off.is_definitive(),
+        "a 3-hop chain under a depth-1 bound must be non-definitive without \
+         materialisation, got {off:?}"
+    );
+    assert_eq!(
+        verdict(true),
+        QueryResult::True,
+        "the saturated extension decides it regardless of the bound"
+    );
+}
+
+/// A proof-traced query keeps the BACKWARD-CHAINING path: a lookup has no derivation, and
+/// the trace contract assumes one. Gating that per-sink rather than per-query is what
+/// broke `flat_vs_surface::transitive_chain_true` in development — phase 1 resolved at
+/// depth 1 by lookup, then phase 2 rebuilt the trace by chaining at that same depth and
+/// could not reach it, turning a TRUE into `ResourceExceeded(Depth)`.
+#[test]
+fn a_traced_query_agrees_with_its_untraced_twin() {
+    let kb = new_kb();
+    for l in [
+        "dog(Rex).",
+        "all $x: dog($x) -> animal($x).",
+        "all $x: animal($x) -> alive($x).",
+    ] {
+        assert_buf(&kb, compile_surface(l));
+    }
+    let untraced = query_result(&kb, compile_surface("alive(Rex)."));
+    let (traced, trace) = kb
+        .query_entailment_with_proof_inner(compile_surface("alive(Rex)."))
+        .unwrap();
+    assert_eq!(untraced, QueryResult::True);
+    assert_eq!(
+        traced, untraced,
+        "traced and untraced verdicts must not diverge"
+    );
+    assert!(
+        trace
+            .steps
+            .get(trace.root as usize)
+            .is_some_and(|s| s.holds),
+        "a TRUE verdict must carry a holding root step, not a not-found leaf"
     );
 }
 
@@ -348,5 +424,62 @@ fn the_materialization_mode_survives_reset() {
     assert!(
         !kb.is_materialization(),
         "the mode is session configuration, not KB content"
+    );
+}
+
+/// THE BUG THE DIFFERENTIAL CAUGHT (`mat_seed4` / `mat_seed35`, 2026-07-31).
+///
+/// `eligible_relations` closes downward over relations it cannot PROJECT. But a relation
+/// can also become unusable later, when `seed_edb` refuses its STORED FACTS — a `past`
+/// fact, a role gap, an arity clash. Those refusals are invisible to the eligibility
+/// analysis, so a rule reading `~rotten` was still saturated while `rotten`'s extension
+/// was ABSENT. An absent extension reads as "nothing derived", so the negated condition
+/// passed and the head was derived for everyone: a definitive WRONG TRUE, the exact
+/// failure this module exists to prevent.
+///
+/// Here `rotten` carries a Past fact, so it cannot be projected; `fit` reads it under `~`
+/// and must therefore be refused too, not silently completed over a hole.
+#[test]
+fn a_relation_whose_negated_dependency_is_unseedable_is_refused_not_completed() {
+    let kb_lines = [
+        "person(Ara).",
+        "rotten(Ara).",
+        // Makes `rotten` unprojectable: rule firing is flavour-polymorphic and the
+        // projection drops flavours, so the relation is refused wholesale.
+        "past rotten(Ara).",
+        "all $x: person($x) & ~rotten($x) -> fit($x).",
+    ];
+    let (on, off) = both_ways(&kb_lines, &["fit(Ara)."]);
+    assert_eq!(
+        on[0],
+        QueryResult::False,
+        "Ara IS rotten, so `~rotten(Ara)` fails and `fit` must not hold"
+    );
+    assert_eq!(on, off, "materialisation must not change this verdict");
+
+    let kb = new_kb();
+    for l in kb_lines {
+        assert_buf(&kb, compile_surface(l));
+    }
+    let _ = query_result(&kb, compile_surface("fit(Ara)."));
+    let (complete, refused) = kb.materialization_report();
+    assert!(
+        !complete.iter().any(|r| r == "fit"),
+        "`fit` reads an unseedable relation under `~` — it must NOT be complete: \
+         complete={complete:?}"
+    );
+    assert!(
+        refused
+            .iter()
+            .any(|(rel, why)| rel == "fit" && why.contains("rotten")),
+        "the refusal must NAME the dependency that caused it: refused={refused:?}"
+    );
+    // And the reason for `rotten` itself must point at the DATA, not at a rule — the two
+    // are different repairs.
+    assert!(
+        refused
+            .iter()
+            .any(|(rel, why)| rel == "rotten" && why.contains("stored fact")),
+        "refused={refused:?}"
     );
 }

@@ -754,6 +754,49 @@ fn check_formula_holds_core<S: TraceSink>(
                 };
                 return Ok((res, idx));
             }
+            // MATERIALISED FAST PATH (positive twin of the one in
+            // `eval_negated_exists_group`). "Does a witness exist" over a COMPLETE
+            // saturated extension is a set membership test — no candidate sweep, no
+            // per-candidate body re-walk, no depth bound.
+            //
+            // Placed HERE deliberately: after the batch-compute and numeric-group segments
+            // above, which auto-ingest their results into the store and must keep
+            // precedence; and before `collect_entailment_candidates`, which is the cost
+            // this exists to skip.
+            //
+            // Two guards the negated twin does not need. `tense.is_none()` — the
+            // saturation only ever holds Bare tuples. And the `materialized` borrow is
+            // read into a local and DROPPED before anything else runs: this function holds
+            // `&mut inner`, and any path reaching `assert_typed_fact` would
+            // `borrow_mut()` the same cell (`invalidate_materialization`), so holding the
+            // shared borrow across the body would be a `BorrowMutError` panic, not a
+            // compile error.
+            //
+            // NOT taken during a proof-traced query (`positive_lookup` is lowered for its
+            // whole duration): a lookup has no derivation to record, and the trace contract
+            // is built on there being one — `ProofRule::ExistsWitness` names the witness
+            // term, which the projection eliminated, and `proofs/Trace.lean`'s certificates
+            // assume a rule-local blocking premise. Proof queries are the rare case, so
+            // they keep the backward-chaining path and stay exactly as sound.
+            if inner.positive_lookup.get() && tense.is_none() && inner.materialization {
+                let hit = crate::materialize::probe_positive_group(buffer, *body, v, subs)
+                    .and_then(|(rel, tuple)| {
+                        let m = inner.materialized.borrow();
+                        let m = m.as_ref()?;
+                        m.is_complete_for(&rel, tuple.len())
+                            .then(|| m.contains(&rel, &tuple))
+                    });
+                if let Some(found) = hit {
+                    return Ok((
+                        if found {
+                            QueryResult::True
+                        } else {
+                            QueryResult::False
+                        },
+                        0,
+                    ));
+                }
+            }
             // Slow path: need owned Vec because the body eval takes &mut inner.
             // Candidate narrowing (∃-heavy query blowup fix): when the body has
             // a mandatory positive anchor, enumerate only index/rule-derivable

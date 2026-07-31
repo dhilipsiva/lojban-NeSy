@@ -215,6 +215,32 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ---
 
+## Reasoning / evaluation
+
+- **Materialisation: the trace story (C2).** Proof-traced queries keep the
+  backward-chaining path (`positive_lookup` lowered for their duration) because a
+  materialised verdict has no derivation to record. To let them use the fast path,
+  four things need answering: `trace_predicate_provenance_typed` falls to a
+  `holds:false` `PredicateNotFound` for a TRUE reachable only by materialisation; a
+  materialised FALSE has no per-rule blocking premise, which `proofs/Trace.lean`'s
+  `Neg` constructor and `trace_soundness_conformance` both require; `ProofRule::
+  ExistsWitness` names a witness term the projection eliminated; and `naf_dependent`
+  can flip true→false when a positive lookup deletes the `Negation` steps beneath it
+  (a user-visible honesty marker moving because of an optimisation). Minimum-churn
+  option if pursued: `ProofRule::PredicateCheck { method: "materialized" }` — no WIT
+  change — plus a `validate_cert` arm and a `factAx`-analogue bridge against `m.ext`.
+- **Materialisation: incremental re-saturation (C3).** Every fact insert drops the
+  saturation (`assert_typed_fact` → `invalidate_materialization`), so an interleaved
+  `assert; query; assert; query` REPL session pays a full fixpoint per query, and
+  `nibli-ui` re-asserts its whole tab per run by design. Datalog is monotone, so a
+  seed addition can only GROW the model: a three-state dirty flag (`Clean` /
+  `GrewBy(Vec<StoredFact>)` / `Invalid`) could resume the semi-naive loop from a
+  one-tuple delta rather than rebuild — `eval_rule`'s `delta_pos` marker is already a
+  delta-driven round. `Invalid` for retraction, rebuild, reset, rule registration, and
+  any non-`Bare` or `equals` insert (both can retroactively disqualify a relation).
+
+---
+
 ## Book-review upstream items (2026-07-26 manuscript review)
 
 Surfaced by the book's verified review passes; each hand-verified at filing time

@@ -31,8 +31,12 @@
 //! Every verdict is asserted each iteration — a timing figure attached to a wrong
 //! verdict would be meaningless. Each iteration uses a fresh engine, so no state
 //! leaks between runs. Prints min/median/max over `NIBLI_BENCH_RUNS` iterations
-//! (default 5 — the NAF leg is slow enough that 10 is impractical before
-//! materialisation) after one untimed warm-up.
+//! (default 5 — the NAF leg is slow enough that 10 is impractical with
+//! `NIBLI_MATERIALIZE=0`) after one untimed warm-up.
+//!
+//! Both legs are sub-millisecond with materialisation ON, so the figures worth
+//! quoting are the RATIOS against the `NIBLI_MATERIALIZE=0` side of the same build,
+//! not the ON numbers alone.
 //!
 //! Run via `just bench-naf`. The recipe forces the release profile; a debug build
 //! prints a loud warning and its figures must never be quoted.

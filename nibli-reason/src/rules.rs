@@ -633,6 +633,15 @@ pub(super) fn register_rule(
             .extend(pred_keys);
     }
 
+    // A new rule changes `pred_dep_graph`, and therefore BOTH the stratification
+    // (`materialize::compute_strata`) and the eligibility closure
+    // (`materialize::eligible_relations`) — so it can invalidate a COMPLETENESS claim,
+    // not merely add tuples. Today this is covered transitively, by the
+    // `invalidate_pred_cache` at the end of the enclosing assertion; the explicit call
+    // is here so the invariant is anchored at the mutation point rather than to a
+    // caller's discipline (the same reason `assert_typed_fact` carries its own).
+    invalidate_materialization(inner);
+
     Ok(())
 }
 

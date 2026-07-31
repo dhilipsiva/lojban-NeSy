@@ -449,7 +449,20 @@ impl KnowledgeBase {
         if !inner.materialization || inner.materialized.borrow().is_some() {
             return;
         }
-        let mut targets: HashSet<String> = HashSet::new();
+        let elig = materialize::eligible_relations(&inner);
+        // TARGETS. Every relation the saturator is ALLOWED to complete, not just the ones
+        // read under `~`: since the positive probe in `check_formula_holds_core`'s
+        // `ExistsNode` arm, a completed extension answers ordinary queries too, so
+        // restricting the target set to the NAF cone would leave the positive fast path
+        // permanently cold. `saturate` still scopes the actual work to the dependency
+        // closure of these, and `eligible_relations` has already refused everything it
+        // cannot project — so widening here cannot admit an unsound relation, only more
+        // sound ones.
+        //
+        // The `~`-read relations are unioned in explicitly because a NAF target may be
+        // pure EDB (no rule concludes it, so it is not an `eligible` key) and still needs
+        // to be marked complete from its seed — that is the common `~rotten(x)` case.
+        let mut targets: HashSet<String> = elig.eligible.iter().cloned().collect();
         materialize::collect_negated_relations(logic, &mut targets);
         for rule in materialize::distinct_rules(&inner) {
             for (i, c) in rule.typed_conditions.iter().enumerate() {
@@ -463,11 +476,13 @@ impl KnowledgeBase {
                 }
             }
         }
+        // The query's own relations: a positive query over a saturable relation should hit
+        // the fast path even when nothing in the KB negates anything.
+        materialize::collect_query_relations(logic, &mut targets);
         if targets.is_empty() {
             *inner.materialized.borrow_mut() = Some(materialize::Materialized::empty());
             return;
         }
-        let elig = materialize::eligible_relations(&inner);
         let strata = materialize::compute_strata(&inner.pred_dep_graph);
         let m = materialize::saturate(&inner, &elig, &strata, &targets);
         *inner.materialized.borrow_mut() = Some(m);
@@ -730,9 +745,16 @@ impl KnowledgeBase {
         &self,
         logic: LogicBuffer,
     ) -> Result<(QueryResult, ProofTrace), String> {
-        // Same saturation the untraced path uses — a traced verdict that disagreed with
-        // its untraced twin would be a proof of the wrong thing.
+        // Same saturation the untraced path uses — the NAF probe stays on, and its trace
+        // shape is unaffected (`emit_derived` records a `Negation` leaf per group without
+        // re-evaluating it, so `naf_dependent` still computes correctly).
         self.ensure_materialized(&logic);
+        // The POSITIVE lookup, however, is lowered for the whole traced query — BOTH
+        // phases. A lookup has no derivation to record, and gating it per-sink would let
+        // the untraced phase-1 probe resolve at depth 1 while phase 2 rebuilt the trace by
+        // backward chaining at that same depth and failed to reach it, turning a TRUE into
+        // `ResourceExceeded(Depth)`. Restored on every exit below, error paths included.
+        self.inner.borrow().positive_lookup.set(false);
         // Tabling: clear once, persist across phases.
         let configured_max = {
             let inner = self.inner.borrow();
@@ -755,6 +777,9 @@ impl KnowledgeBase {
             let result = match self.run_entailment_check(&logic) {
                 Ok(r) => r,
                 Err(e) => {
+                    let inner = self.inner.borrow();
+                    inner.positive_lookup.set(true);
+                    drop(inner);
                     self.inner.borrow_mut().max_chain_depth = configured_max;
                     return Err(e);
                 }
@@ -771,6 +796,10 @@ impl KnowledgeBase {
         // set-idempotent for the only state it reads (`typed_fact_is_asserted`).
         self.inner.borrow_mut().max_chain_depth = resolving_depth;
         let out = self.run_entailment_check_with_proof(&logic);
+        {
+            let inner = self.inner.borrow();
+            inner.positive_lookup.set(true);
+        }
         self.inner.borrow_mut().max_chain_depth = configured_max;
         out
     }

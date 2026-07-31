@@ -155,9 +155,13 @@ pub enum Ineligible {
     /// A condition dispatches to the compute backend / arithmetic. Its domain is not
     /// enumerable, so its extension is not a finite set to saturate.
     ComputeCondition(String),
-    /// The fact or a rule template carries a tense or deontic flavour. Rule firing is
+    /// A RULE TEMPLATE carries a tense or deontic flavour. Rule firing is
     /// flavour-polymorphic (`apply_tense_to_fact`); v1 does not reproduce that.
     Flavoured(String),
+    /// A STORED FACT of this relation carries a flavour. Distinct from `Flavoured` so the
+    /// report cannot tell a reader to go looking for a `past` in a rule when it is in the
+    /// data (or vice versa) — different place, different repair.
+    FlavouredFact,
     /// The KB has a non-empty `du`-equivalence, so fact lookup is modulo union-find and
     /// a plain set-membership test would miss equivalent variants.
     Equality,
@@ -165,6 +169,12 @@ pub enum Ineligible {
     NegatedGroup(String),
     /// Admitted on its own merits, but something it depends on was not.
     DependsOn(String),
+    /// The stored facts skip a role place (`rel_x1` present, `rel_x2` missing), so there
+    /// is no whole surface atom to project.
+    RoleGap,
+    /// Stored facts of this relation disagree on how many role places they carry, so
+    /// there is no single surface arity to probe against.
+    ArityClash,
 }
 
 impl Ineligible {
@@ -186,6 +196,10 @@ impl Ineligible {
             Ineligible::Flavoured(r) => {
                 format!("rule '{r}' carries a tense/deontic flavour (not reproduced in v1)")
             }
+            Ineligible::FlavouredFact => {
+                "a stored fact of it carries a tense/deontic flavour (not reproduced in v1)"
+                    .to_string()
+            }
             Ineligible::Equality => {
                 "the KB has `=` equivalence classes (lookup is modulo union-find)".to_string()
             }
@@ -193,6 +207,12 @@ impl Ineligible {
                 format!("rule '{r}' has a `~` restrictor group that does not project cleanly")
             }
             Ineligible::DependsOn(d) => format!("depends on '{d}', which is not materialisable"),
+            Ineligible::RoleGap => {
+                "its stored facts skip a role place — no whole surface atom to project".to_string()
+            }
+            Ineligible::ArityClash => {
+                "its stored facts disagree on arity — no single surface shape to probe".to_string()
+            }
         }
     }
 }
@@ -701,10 +721,14 @@ impl Materialized {
 /// anywhere in the store. Those are excluded rather than refusing the whole KB: a
 /// flavoured `past P(x)` and a bare `P(x)` are DIFFERENT facts to the engine, and a
 /// projection that dropped the flavour would merge them.
-fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashSet<String>) {
+fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashMap<String, Ineligible>) {
     let mut anchors: HashSet<(String, GroundTerm)> = HashSet::new();
     let mut roles: HashMap<(String, GroundTerm), Vec<(usize, GroundTerm)>> = HashMap::new();
-    let mut flavoured: HashSet<String> = HashSet::new();
+    // Relation -> why its stored facts cannot be projected. Three distinct causes share
+    // this map, and they must NOT share a message: a flavour, a role-index gap, and an
+    // arity clash are different repairs, and a report that called all three "tense" would
+    // send the reader looking for a `past` that is not there.
+    let mut unseedable: HashMap<String, Ineligible> = HashMap::new();
 
     for f in inner.fact_store.all_facts() {
         let gf = f.inner();
@@ -712,7 +736,7 @@ fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashSet<String>) {
         match gf.args.len() {
             1 => {
                 if !bare {
-                    flavoured.insert(gf.relation.clone());
+                    unseedable.insert(gf.relation.clone(), Ineligible::FlavouredFact);
                     continue;
                 }
                 anchors.insert((gf.relation.clone(), gf.args[0].clone()));
@@ -720,7 +744,7 @@ fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashSet<String>) {
             2 => {
                 if let Some((base, place)) = split_role(&gf.relation) {
                     if !bare {
-                        flavoured.insert(base.to_string());
+                        unseedable.insert(base.to_string(), Ineligible::FlavouredFact);
                         continue;
                     }
                     roles
@@ -736,7 +760,7 @@ fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashSet<String>) {
 
     let mut ext = Extensions::new();
     for (rel, ev) in anchors {
-        if flavoured.contains(&rel) {
+        if unseedable.contains_key(&rel) {
             continue;
         }
         let mut rs = roles.remove(&(rel.clone(), ev)).unwrap_or_default();
@@ -746,7 +770,7 @@ fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashSet<String>) {
         // and mark the relation flavoured-style ineligible via the caller's checks
         // rather than inventing a tuple with a hole in it.
         if rs.iter().enumerate().any(|(i, (p, _))| *p != i + 1) {
-            flavoured.insert(rel);
+            unseedable.insert(rel, Ineligible::RoleGap);
             continue;
         }
         let tuple: Vec<GroundTerm> = rs.into_iter().map(|(_, v)| v).collect();
@@ -760,15 +784,15 @@ fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashSet<String>) {
         let mut widths = tuples.iter().map(Vec::len);
         let first = widths.next().unwrap_or(0);
         if widths.any(|w| w != first) {
-            flavoured.insert(rel.clone());
+            unseedable.insert(rel.clone(), Ineligible::ArityClash);
         }
     }
     // A relation found to be gap-shaped or arity-clashing after some of its tuples were
     // already seeded must not keep those partial tuples.
-    for rel in &flavoured {
+    for rel in unseedable.keys() {
         ext.remove(rel);
     }
-    (ext, flavoured)
+    (ext, unseedable)
 }
 
 /// Bind a projected atom's template values against a concrete tuple.
@@ -935,12 +959,10 @@ pub(super) fn saturate(
         };
     }
 
-    let (mut ext, flavoured) = seed_edb(inner);
+    let (mut ext, unseedable) = seed_edb(inner);
     let mut refused = elig.refused.clone();
-    for rel in &flavoured {
-        refused
-            .entry(rel.clone())
-            .or_insert_with(|| Ineligible::Flavoured(format!("stored fact of '{rel}'")));
+    for (rel, why) in &unseedable {
+        refused.entry(rel.clone()).or_insert_with(|| why.clone());
     }
 
     // Dependency closure of the targets over eligible relations. A target that is not
@@ -949,7 +971,7 @@ pub(super) fn saturate(
     let mut stack: Vec<String> = targets.iter().cloned().collect();
     stack.sort();
     while let Some(rel) = stack.pop() {
-        if flavoured.contains(&rel) || !wanted.insert(rel.clone()) {
+        if unseedable.contains_key(&rel) || !wanted.insert(rel.clone()) {
             continue;
         }
         for pr in elig.rules.get(&rel).into_iter().flatten() {
@@ -984,22 +1006,68 @@ pub(super) fn saturate(
         }
 
         // Every rule concluding a relation in this stratum, once.
+        // Pass 1 — EDB. A relation nothing can derive is complete the moment its seed is
+        // in, and it must be settled BEFORE the dependency check below, because a derived
+        // relation in this same stratum may read it.
+        for rel in &rels {
+            if unseedable.contains_key(*rel) || saturable.contains(*rel) {
+                continue;
+            }
+            if !elig.rules.contains_key(*rel) && !refused.contains_key(*rel) {
+                complete.insert((*rel).clone());
+            }
+        }
+
+        // Pass 2 — the derived relations of this stratum.
+        let mut derived_here: Vec<&String> = rels
+            .iter()
+            .filter(|rel| !unseedable.contains_key(**rel) && saturable.contains(**rel))
+            .copied()
+            .collect();
+
+        // Pass 3 — DEPENDENCY CHECK, and the reason this loop is three passes.
+        //
+        // `eligible_relations` closed downward over relations it could not PROJECT, but a
+        // relation can also become unusable later, when `seed_edb` refuses its stored
+        // facts (a `past` fact, a role gap, an arity clash). Those refusals are invisible
+        // to the eligibility analysis, so without this pass a rule reading `~rotten` would
+        // still be saturated while `rotten`'s extension was ABSENT — and an absent
+        // extension reads as "nothing derived", so the negated condition passes and the
+        // head is derived for everyone. That is a definitive wrong TRUE, and it is exactly
+        // what the ON/OFF differential caught on `mat_seed4` / `mat_seed35`.
+        //
+        // A dependency is acceptable if it is already complete (a lower stratum, or the
+        // EDB pass above) or is being computed alongside us in this stratum's fixpoint.
+        // Shrinking to a fixpoint: dropping one relation can invalidate another.
+        loop {
+            let mut drop_idx: Option<(usize, String)> = None;
+            'scan: for (i, rel) in derived_here.iter().enumerate() {
+                for pr in elig.rules.get(*rel).into_iter().flatten() {
+                    for dep in pr.positive.iter().chain(pr.negative.iter()) {
+                        if complete.contains(&dep.relation)
+                            || derived_here.iter().any(|r| **r == dep.relation)
+                        {
+                            continue;
+                        }
+                        drop_idx = Some((i, dep.relation.clone()));
+                        break 'scan;
+                    }
+                }
+            }
+            match drop_idx {
+                Some((i, dep)) => {
+                    let rel = derived_here.remove(i);
+                    refused
+                        .entry(rel.clone())
+                        .or_insert(Ineligible::DependsOn(dep));
+                }
+                None => break,
+            }
+        }
+
         let mut stratum_rules: Vec<&std::sync::Arc<ProjectedRule>> = Vec::new();
         let mut seen: HashSet<*const ProjectedRule> = HashSet::new();
-        let mut derived_here: Vec<&String> = Vec::new();
-        for rel in &rels {
-            if flavoured.contains(*rel) {
-                continue;
-            }
-            if !saturable.contains(*rel) {
-                // Not saturable. If it has rules we cannot evaluate, it stays
-                // incomplete; if it has none it is EDB and its seed IS complete.
-                if !elig.rules.contains_key(*rel) && !refused.contains_key(*rel) {
-                    complete.insert((*rel).clone());
-                }
-                continue;
-            }
-            derived_here.push(rel);
+        for rel in &derived_here {
             for pr in elig.rules.get(*rel).into_iter().flatten() {
                 if seen.insert(std::sync::Arc::as_ptr(pr)) {
                     stratum_rules.push(pr);
@@ -1184,6 +1252,24 @@ pub(super) fn collect_negated_relations(
     }
 }
 
+/// Every surface relation mentioned anywhere in a compiled buffer — the query-side target
+/// set for the POSITIVE fast path.
+///
+/// Unlike [`collect_negated_relations`] this ignores polarity: a positive query over a
+/// saturable relation should hit the lookup too, and a relation named here that turns out
+/// not to be saturable is simply dropped by the eligibility filter.
+pub(super) fn collect_query_relations(
+    buffer: &nibli_types::logic::LogicBuffer,
+    out: &mut HashSet<String>,
+) {
+    use nibli_types::logic::LogicNode;
+    for node in &buffer.nodes {
+        if let LogicNode::Predicate((rel, _)) = node {
+            out.insert(surface_relation(rel).to_string());
+        }
+    }
+}
+
 /// Project a `~P` group under a rule's current bindings into a ground surface tuple —
 /// the probe [`crate::reasoning::eval_negated_exists_group`] uses to replace its
 /// candidate sweep with a set membership test.
@@ -1197,6 +1283,87 @@ pub(super) fn probe_negated_group(
 ) -> Option<(String, Vec<GroundTerm>)> {
     let atom = project_negated_group(group).ok()?;
     let tuple = ground_values(&atom.values, bindings)?;
+    if tuple.iter().any(|t| matches!(t, GroundTerm::PatternVar(_))) {
+        return None;
+    }
+    Some((atom.relation, tuple))
+}
+
+/// Project a POSITIVE `∃ev. rel(ev) ∧ rel_x1(ev,a) ∧ …` buffer subtree into a ground
+/// surface tuple — the probe `check_formula_holds_core`'s `ExistsNode` arm uses to answer
+/// from a complete extension instead of sweeping candidates.
+///
+/// The negated twin ([`probe_negated_group`]) starts from a rule's already-compiled
+/// `NegatedExistsGroup`; this one starts from raw buffer nodes, so it must do its own
+/// flattening — and that flattening has to REFUSE, not drop.
+///
+/// # Why the obvious helper is wrong
+///
+/// `rules::collect_ground_facts` has exactly this signature shape and looks reusable. It
+/// is not. It is the ASSERT-path walker: an `Or`/`Not` conjunct silently contributes
+/// nothing (its `build_stored_fact_from_node` returns `None`), and an `∃` whose variable
+/// is unbound vanishes. Dropping a conjunct WEAKENS the goal, so the projected tuple is
+/// more general than the query was — and a hit then answers TRUE for something the full
+/// conjunction makes FALSE. That is fail-OPEN, the one direction this module exists to
+/// prevent. Hence the explicit `_ => return None` below, modelled on
+/// `compute::try_evaluate_numeric_group`'s flattener.
+pub(super) fn probe_positive_group(
+    buffer: &nibli_types::logic::LogicBuffer,
+    body_id: u32,
+    exists_var: &str,
+    subs: &HashMap<String, GroundTerm>,
+) -> Option<(String, Vec<GroundTerm>)> {
+    use nibli_types::logic::LogicNode;
+
+    // Flatten the And-tree, REFUSING anything that is not And/Predicate. A `ComputeNode`
+    // is refused too: its relation is never saturated (`Ineligible::ComputeCondition`), so
+    // admitting it could only produce a tuple for a relation with no complete extension.
+    let mut conjuncts: Vec<u32> = Vec::new();
+    let mut stack = vec![body_id];
+    while let Some(id) = stack.pop() {
+        match buffer.nodes.get(id as usize)? {
+            LogicNode::AndNode((l, r)) => {
+                stack.push(*l);
+                stack.push(*r);
+            }
+            LogicNode::Predicate(_) => conjuncts.push(id),
+            _ => return None,
+        }
+    }
+    if conjuncts.is_empty() {
+        return None;
+    }
+
+    // The event variable must NOT already be bound: this arm is the existential probe, and
+    // a bound `ev` means the caller is asking about one specific event, which the
+    // projection cannot answer (it eliminated event identity).
+    if subs.contains_key(exists_var) {
+        return None;
+    }
+
+    // Build one `StoredFact` per conjunct with the event variable left as a PatternVar, so
+    // `project_atoms` can bucket by it exactly as it does for a rule template.
+    let mut ev_subs = subs.clone();
+    ev_subs.insert(
+        exists_var.to_string(),
+        GroundTerm::PatternVar(exists_var.to_string()),
+    );
+    let mut atoms: Vec<StoredFact> = Vec::with_capacity(conjuncts.len());
+    for id in conjuncts {
+        atoms.push(crate::rules::build_stored_fact_from_node(
+            buffer, id, &ev_subs, None,
+        )?);
+    }
+
+    // One event group, nothing left flat — the same acceptance `project_negated_group`
+    // demands. Anything else (two groups, a stray `equals`) is not a single relation's
+    // extension and must fall through to the ordinary search.
+    let (mut projected, flat) = project_atoms(&atoms).ok()?;
+    if projected.len() != 1 || !flat.is_empty() {
+        return None;
+    }
+    let atom = projected.remove(0);
+    let tuple = ground_values(&atom.values, subs)?;
     if tuple.iter().any(|t| matches!(t, GroundTerm::PatternVar(_))) {
         return None;
     }

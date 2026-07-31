@@ -109,12 +109,23 @@ fn depth_boundary_contract() {
 /// a member whose sub-check is unresolved. Built on `compile_surface` (CountNode
 /// is IR-shape-dependent); the unresolved member comes from a 2-rule chain under
 /// a depth-1 bound (RESOURCE_EXCEEDED(Depth) — never a silent True/False).
+///
+/// MATERIALISATION OFF, deliberately. The arithmetic under test is what the CountNode
+/// arm does when a member is UNRESOLVED, and manufacturing an unresolved member takes a
+/// chain the depth bound cannot reach. Stratum-ordered materialisation completes that
+/// chain regardless of the bound (`positive lookup`), so with it on there is no
+/// unresolved member left and the branch is never entered — the test would pass
+/// vacuously while pinning nothing. Turning it off keeps the mutation-kill intact; the
+/// depth-gain itself is pinned separately by
+/// `naf_over_a_chain_past_the_depth_bound_becomes_definitive` and
+/// `positive_goal_past_the_depth_bound_becomes_definitive`.
 #[test]
 fn exact_count_with_unresolved_member_bounds() {
     // KB 1: kim is a ground gerku; danlu(kim) needs cipni→jmive→danlu (2 rule
     // steps) — unreachable under depth 1, so that member is unresolved.
     // satisfying=0, unresolved=1.
     let kb = new_kb();
+    kb.set_materialization(false);
     for s in [
         "dog(Kim).",
         "bird(Kim).",
@@ -145,6 +156,7 @@ fn exact_count_with_unresolved_member_bounds() {
     // KB 2: two ground satisfiers + the unresolved member: the over-count bound
     // is decisive (2 > 1) — FALSE regardless of the unresolved member.
     let kb2 = new_kb();
+    kb2.set_materialization(false);
     for s in [
         "dog(Adam).",
         "dog(Bel).",

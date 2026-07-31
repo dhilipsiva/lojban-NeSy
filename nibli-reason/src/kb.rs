@@ -735,6 +735,16 @@ pub(super) struct KnowledgeBaseInner {
     /// every NAF takes the backward-chaining path, which is what the differential gate
     /// compares against.
     pub(super) materialization: bool,
+    /// Per-QUERY switch for the POSITIVE lookup only (the `ExistsNode` fast path); the
+    /// NAF probe is unaffected. Lowered for the whole of a proof-traced query.
+    ///
+    /// Why a query-scoped flag rather than a `!S::RECORDING` test at the probe: the
+    /// traced query runs in TWO phases, an untraced probe to find the resolving depth and
+    /// then one recording build at that depth. Gating on the sink would let phase 1
+    /// resolve at depth 1 by lookup and then hand phase 2 a depth the backward chainer
+    /// cannot reach — turning a TRUE into `ResourceExceeded(Depth)`. Both phases must
+    /// agree on which evaluator they are using.
+    pub(super) positive_lookup: Cell<bool>,
     /// Transient (per `query_find`): set when witness enumeration drops a candidate
     /// because its leaf check hit the depth/cycle horizon (`ResourceExceeded` /
     /// `Unknown(CycleCut)` / …) rather than a genuine False. `query_find_inner`
@@ -792,6 +802,7 @@ impl Clone for KnowledgeBaseInner {
             presupposition_witnesses: self.presupposition_witnesses.clone(),
             materialized: RefCell::new(None),
             materialization: self.materialization,
+            positive_lookup: Cell::new(true),
             find_horizon_hit: false,
         }
     }
@@ -850,6 +861,7 @@ impl KnowledgeBaseInner {
             // backward-chaining path byte-for-byte, which is what makes the ON/OFF
             // differential in `nibli-verify` expressible.
             materialization: true,
+            positive_lookup: Cell::new(true),
             find_horizon_hit: false,
         }
     }
