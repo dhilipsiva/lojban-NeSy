@@ -483,3 +483,111 @@ fn a_relation_whose_negated_dependency_is_unseedable_is_refused_not_completed() 
         "refused={refused:?}"
     );
 }
+
+/// THE ABSTRACTION PROJECTION, and the firewall it must not break.
+///
+/// `entitled(every person, event { P() }).` compiles to a head carrying an abstraction
+/// referent — `event(sk_1(x))` and `__abs_<hash>(sk_1(x))`, two arity-1 atoms on ONE event
+/// term, plus `entitled_x2(sk_3(x), sk_1(x))`, the referent in a role VALUE. Untreated
+/// that is `AmbiguousAnchor` + `SkolemInValue`, and EVERY abstraction-bearing rule sits
+/// outside the saturation.
+///
+/// The projection maps the referent to its marker relation name as an opaque constant —
+/// the identity that crosses compiles is that NAME, not any term. What makes this safe to
+/// materialise is a property of the compiled form, not of the refusal: the abstraction
+/// body's event term is `sk_2(Unspecified)`, INDEPENDENT of the universal, so its role
+/// values are `Unspecified` and the body projects to a tuple about nobody. An entitlement
+/// therefore cannot fabricate the actuality it guarantees.
+#[test]
+fn an_entitlement_is_materialised_without_fabricating_the_actuality() {
+    let kb_lines = ["entitled(every person, event { eats() }).", "person(Adam)."];
+    let (on, off) = both_ways(
+        &kb_lines,
+        &[
+            "entitled(Adam, event { eats() }).",
+            "eats(Adam).",
+            "eats(some person).",
+            "entitled(Adam, event { choose() }).",
+        ],
+    );
+    assert_eq!(on, off, "the projection must not change any verdict");
+    assert_eq!(on[0], QueryResult::True, "the entitlement must still MATCH");
+    assert_eq!(
+        on[1],
+        QueryResult::False,
+        "the actuality must still MISS — an entitlement does not feed anyone"
+    );
+    assert_eq!(on[2], QueryResult::False, "nor for anyone else");
+    assert_eq!(
+        on[3],
+        QueryResult::False,
+        "a different body is a different content hash — no marker collision"
+    );
+
+    // And it is genuinely materialised, not passing by falling back to the chainer.
+    let kb = new_kb();
+    for l in kb_lines {
+        assert_buf(&kb, compile_surface(l));
+    }
+    let _ = query_result(&kb, compile_surface("eats(Adam)."));
+    let (complete, refused) = kb.materialization_report();
+    assert!(
+        complete.iter().any(|r| r == "eats"),
+        "`eats` should be saturable now: complete={complete:?} refused={refused:?}"
+    );
+    // The typing markers must be REFUSED, never merely omitted: `is_edb` is
+    // "no rule and not refused", and an omitted marker would be marked complete over an
+    // empty seed, so `~event(x)` would answer TRUE where the chainer answers FALSE.
+    assert!(
+        refused.iter().any(|(r, _)| r == "event"),
+        "the `event` typing anchor must be refused, not left to look like EDB: \
+         refused={refused:?}"
+    );
+    assert!(
+        refused.iter().any(|(r, _)| r.starts_with("__abs_")),
+        "the abstraction marker must be refused too: refused={refused:?}"
+    );
+}
+
+/// A MATERIALISED relation must flip when an assertion changes what it derives.
+///
+/// This is the engine-side twin of the consuming project's release sequence
+/// (`13-the-one-thing-taken.pins.nibli`: `dwell(Hano)` TRUE at :46, `free(Hano).` at :72,
+/// `dwell(Hano)` FALSE at :101). Before the abstraction projection those relations were
+/// REFUSED, so they were backward-chained and invalidation was irrelevant to them; now
+/// they are saturated and the flip is a live test that the extension is dropped.
+///
+/// Distinct from `a_later_assertion_invalidates_the_saturation` in asserting that the
+/// relation really was COMPLETE on both sides — otherwise a silent fallback would make
+/// this pass while pinning nothing.
+#[test]
+fn a_materialised_relation_flips_across_an_assertion() {
+    let kb = new_kb();
+    for l in [
+        "person(Ara).",
+        "all $x: person($x) & ~rotten($x) -> fit($x).",
+    ] {
+        assert_buf(&kb, compile_surface(l));
+    }
+    assert_eq!(
+        query_result(&kb, compile_surface("fit(Ara).")),
+        QueryResult::True
+    );
+    let (before, _) = kb.materialization_report();
+    assert!(
+        before.iter().any(|r| r == "fit"),
+        "`fit` must be materialised for this to test anything: {before:?}"
+    );
+
+    assert_buf(&kb, compile_surface("rotten(Ara)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("fit(Ara).")),
+        QueryResult::False,
+        "the new fact must block the NAF — a surviving extension would still say TRUE"
+    );
+    let (after, _) = kb.materialization_report();
+    assert!(
+        after.iter().any(|r| r == "fit"),
+        "and it must be re-saturated, not silently demoted to fallback: {after:?}"
+    );
+}

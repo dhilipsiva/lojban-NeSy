@@ -175,6 +175,10 @@ pub enum Ineligible {
     /// Stored facts of this relation disagree on how many role places they carry, so
     /// there is no single surface arity to probe against.
     ArityClash,
+    /// An abstraction TYPING relation (`__abs_<hash>` or the `event(·)` anchor beside it).
+    /// The projection eliminates the referent, so these carry no surface extension —
+    /// refused rather than omitted so they cannot be mistaken for pure EDB.
+    AbstractionTyping,
 }
 
 impl Ineligible {
@@ -212,6 +216,9 @@ impl Ineligible {
             }
             Ineligible::ArityClash => {
                 "its stored facts disagree on arity — no single surface shape to probe".to_string()
+            }
+            Ineligible::AbstractionTyping => {
+                "an abstraction typing marker — the projection eliminates its referent".to_string()
             }
         }
     }
@@ -302,11 +309,84 @@ fn is_function_term(t: &GroundTerm) -> bool {
 /// the caller can decide whether it knows how to evaluate them.
 #[allow(clippy::type_complexity)]
 fn project_atoms(atoms: &[StoredFact]) -> Result<(Vec<Atom>, Vec<StoredFact>), ProjectErr> {
+    project_atoms_inner(atoms).map(|(atoms, flat, _)| (atoms, flat))
+}
+
+/// As [`project_atoms`], additionally returning the ABSTRACTION MARKER relations that were
+/// suppressed. The caller must refuse those explicitly — see [`ProjectedRule::suppressed`].
+fn project_atoms_inner(
+    atoms: &[StoredFact],
+) -> Result<(Vec<Atom>, Vec<StoredFact>, Vec<String>), ProjectErr> {
     // Every atom must be Bare: a Past/Obligatory template fires flavour-polymorphically
-    // and v1 does not model that.
+    // and v1 does not model that. (This is also what keeps the GDPR-style
+    // `obligated(every X, event { … })` / `permitted(…)` rules out — they compile to
+    // Obligatory/Permitted stored facts, so only the plain `entitled` shape reaches the
+    // abstraction handling below.)
     if atoms.iter().any(|a| !matches!(a, StoredFact::Bare(_))) {
         return Err(ProjectErr::Flavoured);
     }
+
+    // ── ABSTRACTION PRE-PASS ──
+    //
+    // `entitled(every person, event { P() }).` compiles to a head carrying an abstraction
+    // referent: `event(sk_1(x))` and `__abs_<hash>(sk_1(x))` — TWO arity-1 atoms on one
+    // event term — plus `entitled_x2(sk_3(x), sk_1(x))`, the referent in a role VALUE.
+    // Untreated those are `AmbiguousAnchor` and `SkolemInValue`, which is why every
+    // abstraction-bearing rule was outside the saturation.
+    //
+    // The identity that crosses compiles is the marker RELATION NAME, not any term: it is
+    // `__abs_{fnv1a(canonical body):016x}`, byte-identical wherever the same body appears,
+    // and the engine matches abstractions by that marker rather than by re-deriving
+    // content. So the referent projects to the marker name as an opaque CONSTANT — the
+    // same move `nibli-verify/src/asp.rs`'s `abs_const_of` makes for clingo, reimplemented
+    // here rather than shared so the oracle stays independent.
+    //
+    // Collapsing `sk_1(adam)` and `sk_1(bel)` onto one constant is sound ONLY while the
+    // referent is used by exactly one role atom; more than one would be genuine cross-atom
+    // identity that the collapse would erase. Enforced below, as asp.rs enforces it.
+    let mut abs_const: HashMap<&GroundTerm, String> = HashMap::new();
+    let mut suppressed: Vec<String> = Vec::new();
+    for a in atoms {
+        let gf = a.inner();
+        if gf.args.len() == 1
+            && gf
+                .relation
+                .starts_with(crate::kb::ABSTRACTION_MARKER_PREFIX)
+        {
+            abs_const.insert(&gf.args[0], gf.relation.clone());
+            suppressed.push(gf.relation.clone());
+        }
+    }
+    if !abs_const.is_empty() {
+        // The referent may fill at most one role slot across the whole atom set.
+        for (referent, _) in abs_const.iter() {
+            let uses = atoms
+                .iter()
+                .filter(|a| {
+                    let gf = a.inner();
+                    gf.args.len() == 2 && &gf.args[1] == *referent
+                })
+                .count();
+            if uses > 1 {
+                return Err(ProjectErr::EventEscapes);
+            }
+        }
+        // The `event(·)` typing anchor rides in the same bucket and is suppressed with it.
+        for a in atoms {
+            let gf = a.inner();
+            if gf.args.len() == 1
+                && abs_const.contains_key(&gf.args[0])
+                && !gf
+                    .relation
+                    .starts_with(crate::kb::ABSTRACTION_MARKER_PREFIX)
+            {
+                suppressed.push(gf.relation.clone());
+            }
+        }
+    }
+    let referent_const = |t: &GroundTerm| -> Option<GroundTerm> {
+        abs_const.get(t).map(|m| GroundTerm::Constant(m.clone()))
+    };
 
     // Bucket by event term (argument 0). `order` keeps first-seen order so the output
     // is reproducible without sorting by a term type that has no natural key.
@@ -317,6 +397,11 @@ fn project_atoms(atoms: &[StoredFact]) -> Result<(Vec<Atom>, Vec<StoredFact>), P
 
     for a in atoms {
         let gf = a.inner();
+        // Suppress the whole marker bucket — both `__abs_<hash>(ref)` and the `event(ref)`
+        // typing anchor. It is abstraction TYPING, not a surface atom.
+        if gf.args.len() == 1 && abs_const.contains_key(&gf.args[0]) {
+            continue;
+        }
         match gf.args.len() {
             1 => {
                 let ev = &gf.args[0];
@@ -376,6 +461,12 @@ fn project_atoms(atoms: &[StoredFact]) -> Result<(Vec<Atom>, Vec<StoredFact>), P
             if v == ev {
                 return Err(ProjectErr::EventEscapes);
             }
+            // An abstraction referent in a value slot becomes its opaque marker constant.
+            // This is what dissolves the `SkolemInValue` refusal for `entitled_x2`.
+            if let Some(c) = referent_const(v) {
+                values.push(c);
+                continue;
+            }
             if is_function_term(v) {
                 return Err(ProjectErr::SkolemInValue);
             }
@@ -386,7 +477,9 @@ fn project_atoms(atoms: &[StoredFact]) -> Result<(Vec<Atom>, Vec<StoredFact>), P
             values,
         });
     }
-    Ok((out, flat))
+    suppressed.sort();
+    suppressed.dedup();
+    Ok((out, flat, suppressed))
 }
 
 /// Project a `~P` restrictor group. Its templates are one event group by construction
@@ -413,6 +506,15 @@ pub(super) struct ProjectedRule {
     pub(super) builtins: Vec<(StoredFact, bool)>,
     /// Head atoms — one per conclusion group. A rule may conclude several relations.
     pub(super) head: Vec<Atom>,
+    /// Abstraction TYPING relations the projection suppressed — the `__abs_<hash>` marker
+    /// and the `event(·)` anchor riding in its bucket.
+    ///
+    /// These MUST be refused explicitly by the caller, never merely omitted. `is_edb` is
+    /// `!rules.contains_key && !refused.contains_key`, and `saturate` marks an EDB relation
+    /// complete straight from its (empty) seed — so a suppressed marker left unrefused
+    /// would answer `~event(x)` TRUE where backward chaining derives `event(sk_1(adam))`
+    /// from the rule and answers FALSE. A definitive wrong verdict.
+    pub(super) suppressed: Vec<String>,
 }
 
 /// Flat conditions the saturator can decide itself, without a stored extension.
@@ -478,7 +580,8 @@ pub(super) fn project_rule(rule: &UniversalRuleRecord) -> Result<ProjectedRule, 
     // The head. `project_atoms` rejects a `SkolemFn` in a VALUE position but not in the
     // event slot, which is exactly right: the dependent Skolem that every `∀`-rule head
     // carries lives in the event slot and is what the projection eliminates.
-    let (head, head_flat) = project_atoms(&rule.typed_conclusions).map_err(&flav)?;
+    let (head, head_flat, suppressed) =
+        project_atoms_inner(&rule.typed_conclusions).map_err(&flav)?;
     if !head_flat.is_empty() || head.is_empty() {
         return Err(Ineligible::NotProjectable(label));
     }
@@ -520,6 +623,7 @@ pub(super) fn project_rule(rule: &UniversalRuleRecord) -> Result<ProjectedRule, 
         negative,
         builtins,
         head,
+        suppressed,
     })
 }
 
@@ -581,6 +685,17 @@ pub(super) fn eligible_relations(inner: &KnowledgeBaseInner) -> Eligibility {
     for r in distinct_rules(inner) {
         match project_rule(r) {
             Ok(pr) => {
+                // Abstraction TYPING relations the projection suppressed are REFUSED, not
+                // omitted. `is_edb` is "no rule and not refused", and `saturate` marks an
+                // EDB relation complete straight from its seed — so an omitted marker
+                // would be complete over an EMPTY extension, and `~event(x)` would answer
+                // TRUE where backward chaining derives `event(sk_1(adam))` from this very
+                // rule and answers FALSE. A definitive wrong verdict, silently.
+                for rel in &pr.suppressed {
+                    refused
+                        .entry(rel.clone())
+                        .or_insert(Ineligible::AbstractionTyping);
+                }
                 let pr = std::sync::Arc::new(pr);
                 for h in &pr.head {
                     rules
