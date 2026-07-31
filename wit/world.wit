@@ -11,7 +11,7 @@
 ///
 /// Data crossing the host↔component boundary uses flat index-based arrays
 /// (`u32` indices into parallel lists) — no heap pointers cross the WASM boundary.
-package nibli:engine@0.6.0;
+package nibli:engine@0.7.0;
 
 /// Structured error types shared across all Nibli components.
 interface error-types {
@@ -277,6 +277,25 @@ interface logic-types {
         /// Number of root formulas in this fact's logic buffer.
         root-count: u32,
     }
+
+    /// Why a relation could NOT be saturated bottom-up, paired with its name.
+    record materialization-refusal {
+        /// The surface relation that stayed on the backward-chaining path.
+        relation: string,
+        /// One-line explanation (a flavoured fact, a `du` equivalence class, a
+        /// compute condition, an unprojectable rule, a refused dependency, …).
+        reason: string,
+    }
+
+    /// What a query's stratum-ordered saturation covered.
+    record materialization-report {
+        /// Relations whose extension is COMPLETE — every `~p(x)` over one of these
+        /// is answered by set membership rather than by a proof attempt. Sorted.
+        complete: list<string>,
+        /// Relations that were wanted but not completed, each with its reason.
+        /// Sorted by relation name.
+        refused: list<materialization-refusal>,
+    }
 }
 
 /// Host-provided external predicate evaluation.
@@ -325,7 +344,7 @@ interface compute-backend {
 /// (e.g., the REPL nibli-host; the in-browser surfaces nibli-ui/nibli-wasm embed
 /// the same crates natively rather than through this component).
 interface engine {
-    use logic-types.{fact-id, fact-summary, logic-buffer, logical-term, proof-trace, query-result, witness-binding};
+    use logic-types.{fact-id, fact-summary, logic-buffer, logical-term, materialization-report, proof-trace, query-result, witness-binding};
     use error-types.{nibli-error};
 
     /// A user-facing session that wraps the full pipeline.
@@ -379,6 +398,22 @@ interface engine {
         /// mints a presupposition witness so `∃x. dog(x)` holds. Off gives the
         /// clean-core `some` = plain classical ∃ profile (no phantom witness).
         set-existential-import: func(enabled: bool);
+        /// Enable/disable STRATUM-ORDERED MATERIALISATION (default ON): when on,
+        /// the surface relations a query reads under `~` are saturated bottom-up
+        /// in stratum order, so each negation-as-failure check is a
+        /// set-membership test instead of an exhaustive proof attempt. Off sends
+        /// every NAF back through backward chaining. Affects only how fast a
+        /// verdict is reached, never which verdict.
+        set-materialization: func(enabled: bool);
+        /// What the last query's saturation covered: the relations completed, and
+        /// for each relation NOT completed, a one-line reason. Empty until a query
+        /// has run (the saturation is lazy) and after any knowledge-base mutation.
+        ///
+        /// This exists because the optimisation is invisible when it fails: a
+        /// knowledge base whose `~p(x)` is still slow, or whose find/count refuses
+        /// rather than undercounting, has no other way to learn WHICH relation fell
+        /// out of the materialisable fragment or why.
+        materialization-report: func() -> materialization-report;
     }
 }
 

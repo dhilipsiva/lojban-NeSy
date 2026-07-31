@@ -709,6 +709,46 @@ impl Repl {
         Ok((store, pipeline, session_handle))
     }
 
+    /// Print what the last query's stratum-ordered saturation covered.
+    ///
+    /// The saturation is built lazily per query, so before any query has run — or after
+    /// any KB mutation — both lists are empty, and saying so plainly is more useful than
+    /// printing two blank headings. This is the surface that makes the optimisation
+    /// legible: without it a knowledge base whose `~p(x)` is still slow, or whose
+    /// find/count refuses rather than undercounting, cannot tell WHICH relation fell out
+    /// of the materialisable fragment.
+    fn print_materialization_report(&mut self) {
+        self.prepare_session();
+        let session = self.pipeline.nibli_engine_engine().session();
+        let report = match session.call_materialization_report(&mut self.store, self.session_handle)
+        {
+            Ok(r) => r,
+            Err(e) => {
+                println!("{}", format_host_error(&e));
+                self.needs_rebuild = true;
+                return;
+            }
+        };
+        if report.complete.is_empty() && report.refused.is_empty() {
+            println!(
+                "[Materialize] No saturation yet — it is built per query, and dropped by any \
+                 assertion or retraction. Run a query first."
+            );
+            return;
+        }
+        if report.complete.is_empty() {
+            println!("[Materialize] Saturated: (none)");
+        } else {
+            println!("[Materialize] Saturated: {}", report.complete.join(", "));
+        }
+        for r in &report.refused {
+            println!(
+                "[Materialize]   not saturated: {} — {}",
+                r.relation, r.reason
+            );
+        }
+    }
+
     /// Make the session callable for the next command: rebuild lazily if a
     /// trap poisoned the instance, then refuel.
     fn prepare_session(&mut self) {
@@ -1120,6 +1160,9 @@ impl Repl {
                 println!(
                     "  :existential-import [on|off]  Show or set xorlo witness minting (off = clean-core ∃)"
                 );
+                println!(
+                    "  :materialize [on|off]  Show the saturation report, or set NAF-by-lookup"
+                );
                 println!("  :reset              Clear all facts (fresh KB)");
                 println!("  :quit               Exit");
                 return false;
@@ -1146,6 +1189,19 @@ impl Repl {
                         "mints no witness — `some` = plain ∃"
                     }
                 );
+                return false;
+            }
+            ":materialize" => {
+                println!(
+                    "[Materialize] {} (each `~p(x)` {})",
+                    if self.materialization { "ON" } else { "OFF" },
+                    if self.materialization {
+                        "is a lookup into a saturated extension"
+                    } else {
+                        "re-proves its positive"
+                    }
+                );
+                self.print_materialization_report();
                 return false;
             }
             _ => {}
@@ -1192,6 +1248,29 @@ impl Repl {
                 Ok(()) => {
                     self.existential_import = on;
                     println!("[ExistentialImport] {}", if on { "ON" } else { "OFF" });
+                }
+                Err(e) => {
+                    println!("{}", format_host_error(&e));
+                    self.needs_rebuild = true;
+                }
+            }
+            return false;
+        }
+        if let Some(mode) = input.strip_prefix(":materialize ") {
+            let on = match mode.trim() {
+                "on" => true,
+                "off" => false,
+                other => {
+                    println!("[Materialize] Unknown mode '{other}' — use :materialize on|off");
+                    return false;
+                }
+            };
+            self.prepare_session();
+            let session = self.pipeline.nibli_engine_engine().session();
+            match session.call_set_materialization(&mut self.store, self.session_handle, on) {
+                Ok(()) => {
+                    self.materialization = on;
+                    println!("[Materialize] {}", if on { "ON" } else { "OFF" });
                 }
                 Err(e) => {
                     println!("{}", format_host_error(&e));
@@ -1781,7 +1860,7 @@ fn main() -> Result<()> {
     let use_script_mode = script_path.is_some() || !std::io::stdin().is_terminal();
 
     println!(
-        "Ready. Commands: :quit :reset :load <file> :facts :retract <id> :debug <text> :compute <name> :assert <rel> <args..> :backend [addr] :fuel [n] :memory [mb] :strict [on|off] :existential-import [on|off] :db :help"
+        "Ready. Commands: :quit :reset :load <file> :facts :retract <id> :debug <text> :compute <name> :assert <rel> <args..> :backend [addr] :fuel [n] :memory [mb] :strict [on|off] :existential-import [on|off] :materialize [on|off] :db :help"
     );
     println!(
         "Prefix '?' for queries with proof trace, '??' for find, plain text for assertions.\n"

@@ -316,6 +316,33 @@ smoke-host-existential-import: build-wasm build-host
         echo "$env" | grep -qF '[Query] FALSE' || { echo 'FAIL: NIBLI_EXISTENTIAL_IMPORT=0 must NOT presuppose a dog'; exit 1; }; \
         echo 'PASS: existential-import env + :existential-import toggle works end to end'
 
+# Stratum-ordered materialisation across the WIT boundary: the `:materialize` toggle,
+# the NIBLI_MATERIALIZE=0 startup opt-out, and the saturation REPORT — the last is the
+# reason the WIT surface exists at all (an error message that names a remedy only a
+# native embedder can reach is not a remedy). Verdicts must be IDENTICAL either way:
+# materialisation changes how fast a verdict is reached, never which verdict.
+smoke-host-materialize: build-wasm build-host
+    @echo "Smoke-testing gasnu materialisation (report + :materialize toggle + env)..."
+    @kb='person(Ara).\nall $x: person($x) & ~rotten($x) -> fit($x).\n? fit(Ara).\n'; \
+        on=$(printf "$kb:materialize\n" \
+        | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$on"; \
+        echo "$on" | grep -qF '[Query] TRUE' || { echo 'FAIL: nothing makes Ara rotten, so fit(Ara) must be TRUE'; exit 1; }; \
+        echo "$on" | grep -qF '[Materialize] ON' || { echo 'FAIL: materialisation should default ON'; exit 1; }; \
+        echo "$on" | grep -qF '[Materialize] Saturated:' || { echo 'FAIL: report did not reach the host across the WIT boundary'; exit 1; }; \
+        echo "$on" | grep -qF 'rotten' || { echo 'FAIL: `rotten` is read under ~ and is pure EDB — it must appear in the report'; exit 1; }; \
+        off=$(printf ":materialize off\n$kb" \
+        | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$off"; \
+        echo "$off" | grep -qF '[Materialize] OFF' || { echo 'FAIL: :materialize off did not take'; exit 1; }; \
+        echo "$off" | grep -qF '[Query] TRUE' || { echo 'FAIL: verdict changed with materialisation off — it must not'; exit 1; }; \
+        env=$(printf "$kb" \
+        | NIBLI_MATERIALIZE=0 NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$env"; \
+        echo "$env" | grep -qF 'Materialisation: OFF' || { echo 'FAIL: NIBLI_MATERIALIZE=0 startup banner missing'; exit 1; }; \
+        echo "$env" | grep -qF '[Query] TRUE' || { echo 'FAIL: NIBLI_MATERIALIZE=0 changed the verdict — it must not'; exit 1; }; \
+        echo 'PASS: materialisation report + toggle + env opt-out work end to end, verdicts unchanged'
+
 # Executes the full pipeline: Builds WASM modules, then boots the native REPL
 run: build-wasm
     @echo "Launching Neuro-Symbolic Engine ({{profile}})..."
@@ -429,7 +456,7 @@ ci: fmt-check clippy-runtime test test-engine test-host test-ui test-formalize t
 # them all: fuel exhaustion + post-trap recovery + journal replay
 # (trap-recovery), plus the script transcript, persist-replay, NAF-note,
 # :debug round-trip, and the determinism corpus.
-ci-wasm: smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-determinism verify-wasm-node
+ci-wasm: smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
 
 # Three-way determinism, WASMTIME leg: the shared determinism-corpus.nibli must produce
 # exactly its pinned annotations through the lasna component under gasnu. The

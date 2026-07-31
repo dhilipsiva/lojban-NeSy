@@ -543,9 +543,10 @@ impl KnowledgeBase {
         // `KnowledgeBase::materialization_report` names which relations those are.
         const INCOMPLETE_MSG: &str = "witness enumeration incomplete: a witness leaf could not be decided \
              (a compute predicate, or a relation outside the materialised fragment), so \
-             find/count/aggregate would undercount — see `materialization_report` for which \
-             relations were not saturated, or raise the depth limit if the KB is one the \
-             engine falls back to backward chaining on";
+             find/count/aggregate would undercount — run `:materialize` (or call \
+             `materialization_report`) to see which relations were not saturated and why; \
+             raising the depth limit helps only for a relation the engine falls back to \
+             backward chaining on";
         self.ensure_materialized(&logic);
         let mut inner = self.inner.borrow_mut();
         clear_and_enable_pred_cache(&inner);

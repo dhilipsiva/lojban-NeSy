@@ -139,6 +139,12 @@ impl CoreSession {
         self.kb.set_materialization(on);
     }
 
+    /// What the last query's saturation covered: `(complete, [(relation, why not)])`.
+    /// Empty until a query has run and after any KB mutation.
+    pub fn materialization_report(&self) -> (Vec<String>, Vec<(String, String)>) {
+        self.kb.materialization_report()
+    }
+
     /// THE compile chain against this session's compute-predicate set.
     pub fn compile_text(&self, text: &str) -> Result<LogicBuffer, NibliError> {
         compile_text(text, &self.compute_predicates)

@@ -409,6 +409,25 @@ impl GuestSession for Session {
         self.core.borrow().set_existential_import(enabled);
     }
 
+    fn set_materialization(&self, enabled: bool) {
+        self.core.borrow().set_materialization(enabled);
+    }
+
+    /// The saturation report, shaped for the WIT boundary. `nibli_session` returns a
+    /// pair of plain vectors; the record form is what makes the two lists nameable on
+    /// the other side (a bare `tuple<list<string>, list<tuple<string,string>>>` reads
+    /// as nothing at a REPL).
+    fn materialization_report(&self) -> export_logic::MaterializationReport {
+        let (complete, refused) = self.core.borrow().materialization_report();
+        export_logic::MaterializationReport {
+            complete,
+            refused: refused
+                .into_iter()
+                .map(|(relation, reason)| export_logic::MaterializationRefusal { relation, reason })
+                .collect(),
+        }
+    }
+
     /// Assert KR text, splitting a multi-statement input into one independent
     /// fact per root (`split_roots` — connectives compile to a single root and
     /// stay one compound fact, matching the native surfaces). Returns one
