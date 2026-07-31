@@ -255,6 +255,7 @@ mod descriptions_events;
 mod disjunctive;
 mod existential;
 mod find_aggregates;
+mod materialization;
 mod memo_regressions;
 mod numeric_compute;
 mod provenance;

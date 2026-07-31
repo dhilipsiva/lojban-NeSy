@@ -720,6 +720,14 @@ import FILE *ARGS:
 bench-book:
     cargo run --release -p nibli --bin nibli-bench-book
 
+# Timing for negation-as-failure evaluation: release-profile, native in-process
+# engine, utopia.nibli corpus (the worst NAF shape the shipped corpora contain —
+# `false/1` is concluded by a 3-variable/15-conjunct rule and read under `~`),
+# min/median/max over NIBLI_BENCH_RUNS runs (default 5) with verdicts asserted.
+# The `lookup` leg is the same-KB control. The source for any NAF latency figure.
+bench-naf:
+    cargo run --release -p nibli --bin nibli-bench-naf
+
 # Count the test suite: unit = workspace lib targets; plus the native
 # integration/bin test binaries (nibli-engine, gasnu, nibli-verify — the ones
 # CI links and runs; lasna's cdylib test target cannot link). The derivation

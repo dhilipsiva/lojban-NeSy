@@ -110,6 +110,22 @@ impl NibliEngine {
         self.core.kb().set_existential_import(on);
     }
 
+    /// Enable/disable STRATUM-ORDERED MATERIALISATION (default ON). When on, the
+    /// relations a query reads under `~` are saturated bottom-up in stratum order and
+    /// each NAF check becomes a set-membership test. OFF restores the pure
+    /// backward-chaining path. The runtime surfaces read `NIBLI_MATERIALIZE=0`
+    /// (nibli-host forwards it into the guest, where `nibli-pipeline::Session::new`
+    /// applies it).
+    pub fn set_materialization(&self, on: bool) {
+        self.core.kb().set_materialization(on);
+    }
+
+    /// What the last query's saturation covered: `(completed, [(relation, why not)])`.
+    /// The only way to see whether a slow `~p(x)` actually got the lookup.
+    pub fn materialization_report(&self) -> (Vec<String>, Vec<(String, String)>) {
+        self.core.kb().materialization_report()
+    }
+
     /// Register this engine's external compute dispatch (per-instance). Without
     /// it, external predicates (e.g. `tenfa`/`dugri`) return an error; built-in
     /// arithmetic (pilji/sumji/dilcu) works regardless. Replaces the old

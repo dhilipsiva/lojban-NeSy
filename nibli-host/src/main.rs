@@ -634,6 +634,10 @@ struct Repl {
     /// at startup, toggled by `:existential-import on|off`; forwarded to the
     /// guest at (re)instantiation and re-applied to the live session on toggle.
     existential_import: bool,
+    /// Stratum-ordered materialisation (default ON). Set from `NIBLI_MATERIALIZE=0`
+    /// at startup and forwarded into the guest WASI env. No runtime toggle: it
+    /// affects only how fast a verdict is reached, never which verdict.
+    materialization: bool,
 }
 
 impl Repl {
@@ -650,6 +654,7 @@ impl Repl {
         quiet: bool,
         strict: bool,
         existential_import: bool,
+        materialization: bool,
     ) -> Result<(Store<HostState>, pipeline_bind::NibliPipeline, ResourceAny)> {
         // Forward the quiet flag into the guest's WASI environment: the ctx
         // otherwise inherits only stdio, so `nibli-pipeline::Session::new` cannot see
@@ -668,6 +673,13 @@ impl Repl {
             // only when clean-core is active.
             if !existential_import {
                 b.env("NIBLI_EXISTENTIAL_IMPORT", "0");
+            }
+            // Stratum-ordered materialisation defaults ON in the guest; forward the
+            // opt-OUT only. Unlike strict / existential-import there is no WIT
+            // re-application after a rebuild, because a rebuilt session re-reads this
+            // env and materialisation affects only speed, never a verdict.
+            if !materialization {
+                b.env("NIBLI_MATERIALIZE", "0");
             }
             b.build()
         };
@@ -731,6 +743,7 @@ impl Repl {
             self.quiet,
             self.strict,
             self.existential_import,
+            self.materialization,
         ) {
             Ok((store, pipeline, session_handle)) => {
                 // The old store (with the dead session resource inside it) is
@@ -1684,6 +1697,14 @@ fn main() -> Result<()> {
         );
     }
 
+    // Stratum-ordered materialisation: default ON (each `~p(x)` is a lookup into a
+    // saturated extension). `NIBLI_MATERIALIZE=0` forces every NAF back through
+    // backward chaining — the kill switch, and the OFF side of the ON/OFF differential.
+    let materialization = std::env::var("NIBLI_MATERIALIZE").ok().as_deref() != Some("0");
+    if !materialization {
+        println!("Materialisation: OFF (every negation-as-failure re-proves its positive)");
+    }
+
     let script_path: Option<String> = {
         let args: Vec<String> = std::env::args().collect();
         args.windows(2)
@@ -1705,6 +1726,7 @@ fn main() -> Result<()> {
         quiet,
         strict,
         existential_import,
+        materialization,
     )?;
 
     // ── Persistent store (optional) ──
@@ -1743,6 +1765,7 @@ fn main() -> Result<()> {
         quiet,
         strict,
         existential_import,
+        materialization,
     };
 
     // Migrate a legacy v2 store to v3 (recompile any Text rows), then replay the

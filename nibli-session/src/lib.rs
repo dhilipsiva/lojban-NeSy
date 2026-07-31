@@ -133,6 +133,12 @@ impl CoreSession {
         self.kb.set_existential_import(on);
     }
 
+    /// STRATUM-ORDERED MATERIALISATION (default ON). OFF sends every
+    /// negation-as-failure check back through backward chaining.
+    pub fn set_materialization(&self, on: bool) {
+        self.kb.set_materialization(on);
+    }
+
     /// THE compile chain against this session's compute-predicate set.
     pub fn compile_text(&self, text: &str) -> Result<LogicBuffer, NibliError> {
         compile_text(text, &self.compute_predicates)

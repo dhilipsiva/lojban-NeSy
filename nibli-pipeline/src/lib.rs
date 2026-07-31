@@ -383,6 +383,17 @@ impl GuestSession for Session {
         if std::env::var("NIBLI_EXISTENTIAL_IMPORT").ok().as_deref() == Some("0") {
             core.set_existential_import(false);
         }
+        // STRATUM-ORDERED MATERIALISATION defaults ON: the relations a query reads
+        // under `~` are saturated bottom-up so each NAF check is a lookup. The host
+        // forwards `NIBLI_MATERIALIZE=0` into the WASI env to force every NAF back
+        // through backward chaining — the kill switch, and the OFF side of the
+        // ON/OFF differential. There is deliberately NO WIT method for this (unlike
+        // strict / existential-import): materialisation cannot change a verdict, only
+        // how fast one is reached, so it does not need to be re-applied after a
+        // post-trap rebuild — this constructor re-reads the env either way.
+        if std::env::var("NIBLI_MATERIALIZE").ok().as_deref() == Some("0") {
+            core.set_materialization(false);
+        }
         Session {
             core: RefCell::new(core),
             linter: RefCell::new(nibli_kr::lint::Linter::new()),

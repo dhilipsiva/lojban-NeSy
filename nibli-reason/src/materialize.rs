@@ -1,0 +1,1305 @@
+//! Stratum-ordered materialisation: saturate the extension of a relation bottom-up
+//! so negation-as-failure becomes a LOOKUP instead of an exhaustive proof attempt.
+//!
+//! # Why this module exists
+//!
+//! `~p(x)` is answered by trying to prove `p(x)` and failing ([`crate::reasoning`]'s
+//! `NotNode` arm, the flat negated-condition inversion, and `eval_negated_exists_group`
+//! all bottom out in `check_predicate_in_kb_typed`). When `p` is concluded by a wide
+//! multi-variable rule, each negated occurrence pays for a domain cartesian.
+//!
+//! Stratification already tells us that cannot be necessary: `check_stratification`
+//! ([`crate::rules`]) proves a valid stratum ordering EXISTS — negated relations can be
+//! completed before the relations that read them. The engine used that ordering only to
+//! REJECT unstratifiable programs and then threw the assignment away. This module keeps
+//! it and evaluates with it.
+//!
+//! # Why the obvious version does not work
+//!
+//! The compiled program is not function-free Datalog. Neo-Davidsonian decomposition
+//! means `false($x)` compiles to `∃ev. false(ev) ∧ false_x1(ev, $x)`, and an `∃` in a
+//! rule consequent under a `∀` becomes a DEPENDENT SKOLEM FUNCTION in the head
+//! ([`crate::rules`]'s `dependent_skolems` / `skolem_fn_registry`). Essentially every
+//! `∀`-rule therefore has a function symbol in its head, so a naive bottom-up fixpoint
+//! is not guaranteed to terminate — and an eligibility rule of "no Skolem heads" would
+//! admit nothing at all.
+//!
+//! The escape is the same one `nibli-verify`'s ASP translator takes to keep clingo's
+//! grounding finite: REGROUP the decomposition back to function-free surface atoms.
+//! `∃ev. rel(ev) ∧ rel_x1(ev,a1) ∧ … ∧ rel_xN(ev,aN)` projects to `rel(a1,…,aN)`,
+//! which is sound here because an event variable has no cross-atom identity — it only
+//! ties the roles of ONE atom together. Eliminating it keeps the Herbrand base finite,
+//! so saturation terminates: no rule can invent a term.
+//!
+//! That projection is deliberately REIMPLEMENTED here rather than shared with
+//! `nibli-verify/src/asp.rs`. The ASP oracle checks this engine's NAF verdicts against
+//! clingo's perfect model; an oracle that shared its regrouping code with the engine it
+//! checks would stop being independent exactly where NAF soundness is decided. The two
+//! implementations can drift — and the clingo differential is what fires when they do.
+//!
+//! # Fail-closed
+//!
+//! Everything here is an OPTIMISATION with one unsound failure mode: if a saturation
+//! under-derives, `~p(x)` flips from FALSE to a wrong TRUE. So a relation is admitted
+//! only when every rule that can conclude it is provably projectable and every relation
+//! beneath it is admitted too ([`eligible_relations`]). Anything not admitted is simply
+//! absent from the completed set and keeps today's backward-chaining behaviour exactly.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::kb::{
+    GroundTerm, KnowledgeBaseInner, NegatedExistsGroup, StoredFact, UniversalRuleRecord,
+};
+
+/// Stratum 0 is the EDB / pure-positive layer. A relation read under `~` by a stratum-`n`
+/// rule sits at stratum `< n`, so its extension is complete before that rule is evaluated.
+pub(super) type Strata = HashMap<String, usize>;
+
+/// Assign every relation in the dependency graph a stratum index.
+///
+/// The condensation of [`crate::rules::compute_sccs`] is a DAG (SCCs are maximal, so no
+/// cycle survives contraction). Label each component by the longest path into it,
+/// counting a negative edge as +1 and a positive edge as +0 — the textbook stratification.
+/// Members of one SCC share a stratum by construction, which is exactly right: a positive
+/// cycle is evaluated as one mutually-recursive block.
+///
+/// TOTALITY. This terminates and produces a finite label for every node precisely when
+/// `check_stratification` returned `Ok` — a negative edge inside an SCC would make the
+/// "+1 within a component" demand unsatisfiable, and that is the case the engine already
+/// rejects at rule-registration time. Since the graph on a live KB has always passed that
+/// check, this cannot fail; it is nonetheless written to be total on ANY graph (a negative
+/// intra-SCC edge is absorbed rather than looped on), because a panic here would turn a
+/// read-side optimisation into a crash.
+///
+/// Determinism: `compute_sccs` already sorts its node scan, each node's neighbour list,
+/// and each component's members, so the partition is canonical regardless of `HashMap`
+/// layout or rule-registration order. The relaxation below is order-independent anyway
+/// (it iterates to a fixpoint), so the labelling is reproducible run to run.
+pub(super) fn compute_strata(graph: &HashMap<String, Vec<(String, bool)>>) -> Strata {
+    let sccs = crate::rules::compute_sccs(graph);
+
+    // node → its component index.
+    let mut comp_of: HashMap<&str, usize> = HashMap::new();
+    for (i, scc) in sccs.iter().enumerate() {
+        for node in scc {
+            comp_of.insert(node.as_str(), i);
+        }
+    }
+
+    // Condensation edges, carrying the strongest (negative wins) label between components.
+    // Self-edges are dropped: an intra-SCC edge cannot raise the stratum of its own
+    // component, and a negative one is the unstratifiable case the registration gate
+    // already refused.
+    let mut cond_edges: Vec<Vec<(usize, bool)>> = vec![Vec::new(); sccs.len()];
+    for (head, deps) in graph {
+        let Some(&h) = comp_of.get(head.as_str()) else {
+            continue;
+        };
+        for (dep, is_neg) in deps {
+            let Some(&d) = comp_of.get(dep.as_str()) else {
+                continue;
+            };
+            if d != h {
+                // Edge head → dep means "head reads dep", so dep must be no LATER
+                // than head; store it as a constraint on `h` keyed by `d`.
+                cond_edges[h].push((d, *is_neg));
+            }
+        }
+    }
+
+    // Longest-path relaxation to a fixpoint. Bounded by |components| passes: each pass
+    // either raises at least one label or the labels are stable, and no label can exceed
+    // the number of components (a strictly longer chain would revisit a component, which
+    // the condensation makes impossible).
+    let mut level: Vec<usize> = vec![0; sccs.len()];
+    for _ in 0..=sccs.len() {
+        let mut changed = false;
+        for h in 0..sccs.len() {
+            for &(d, is_neg) in &cond_edges[h] {
+                let want = level[d] + usize::from(is_neg);
+                if want > level[h] {
+                    level[h] = want;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut out = Strata::new();
+    for (i, scc) in sccs.iter().enumerate() {
+        for node in scc {
+            out.insert(node.clone(), level[i]);
+        }
+    }
+    out
+}
+
+/// Why a relation was NOT admitted for materialisation. Surfaced by
+/// `KnowledgeBase::materialization_report` — without it a knowledge base cannot tell
+/// whether it actually got the lookup, only that its query is still slow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ineligible {
+    /// A rule concluding it has a Skolem function surviving the event projection —
+    /// the head invents a term, so saturation may not terminate.
+    SkolemHead(String),
+    /// A rule's conditions do not partition into per-atom role groups (an event
+    /// variable is shared across groups, or appears in an individual position), so the
+    /// `∃ev` projection would change what the rule means.
+    NotProjectable(String),
+    /// A head variable does not occur in a positive body literal, so the rule is not
+    /// range-restricted and its saturation is not finite.
+    NotRangeRestricted(String),
+    /// A condition dispatches to the compute backend / arithmetic. Its domain is not
+    /// enumerable, so its extension is not a finite set to saturate.
+    ComputeCondition(String),
+    /// The fact or a rule template carries a tense or deontic flavour. Rule firing is
+    /// flavour-polymorphic (`apply_tense_to_fact`); v1 does not reproduce that.
+    Flavoured(String),
+    /// The KB has a non-empty `du`-equivalence, so fact lookup is modulo union-find and
+    /// a plain set-membership test would miss equivalent variants.
+    Equality,
+    /// A `~P` restrictor group that does not project cleanly.
+    NegatedGroup(String),
+    /// Admitted on its own merits, but something it depends on was not.
+    DependsOn(String),
+}
+
+impl Ineligible {
+    /// One-line explanation, for `materialization_report`.
+    pub fn reason(&self) -> String {
+        match self {
+            Ineligible::SkolemHead(r) => {
+                format!("rule '{r}' has a Skolem function in its head after projection")
+            }
+            Ineligible::NotProjectable(r) => {
+                format!("rule '{r}' conditions do not partition into per-atom role groups")
+            }
+            Ineligible::NotRangeRestricted(r) => {
+                format!("rule '{r}' is not range-restricted (a head variable is unbound)")
+            }
+            Ineligible::ComputeCondition(r) => {
+                format!("rule '{r}' has a compute-backend condition (domain not enumerable)")
+            }
+            Ineligible::Flavoured(r) => {
+                format!("rule '{r}' carries a tense/deontic flavour (not reproduced in v1)")
+            }
+            Ineligible::Equality => {
+                "the KB has `=` equivalence classes (lookup is modulo union-find)".to_string()
+            }
+            Ineligible::NegatedGroup(r) => {
+                format!("rule '{r}' has a `~` restrictor group that does not project cleanly")
+            }
+            Ineligible::DependsOn(d) => format!("depends on '{d}', which is not materialisable"),
+        }
+    }
+}
+
+// ─── The event projection ─────────────────────────────────────────────────────
+//
+// Neo-Davidsonian decomposition turns a surface atom into an anchor plus one role
+// atom per place, all sharing a fresh event term:
+//
+//     teaches(Esa, Fin).
+//       ⇒ teaches(ev) ∧ teaches_x1(ev, esa) ∧ teaches_x2(ev, fin) ∧ teaches_x3..x5(ev, _)
+//
+// and in a rule head the event term is a dependent Skolem FUNCTION
+// (`SkolemFn("sk_12", x__v2)`), which is exactly what would make a bottom-up fixpoint
+// invent terms forever. Projecting the event away — keeping only the role VALUES —
+// restores a function-free atom `teaches#(esa, fin, _, _, _)` over a fixed finite
+// domain, so saturation terminates.
+//
+// The projection is sound only while the event variable has no cross-atom identity:
+// it must tie the roles of ONE atom together and appear nowhere else. Every check
+// below exists to enforce that, and to REFUSE (never silently mistranslate) when it
+// does not hold.
+
+/// A projected atom: a surface relation and its role values, event eliminated.
+/// Values may contain `PatternVar`s when this came from a rule template.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Atom {
+    pub(super) relation: String,
+    pub(super) values: Vec<GroundTerm>,
+}
+
+/// Why a projection was refused. Carried into [`Ineligible`] by the caller, which
+/// knows the rule label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ProjectErr {
+    /// An atom is neither an anchor `R(ev)` nor a role `R_xN(ev, v)`.
+    NotRoleShaped,
+    /// A group has no anchor atom, so we cannot name the surface relation.
+    NoAnchor,
+    /// Role places are not the contiguous run `x1..xN`.
+    GappedRoles,
+    /// The event term occurs in a role VALUE — it has cross-atom identity, so
+    /// eliminating it would change what the rule means.
+    EventEscapes,
+    /// Two anchors share one event term (`R(ev) ∧ S(ev)`) — same objection.
+    AmbiguousAnchor,
+    /// A tense/deontic flavour: rule firing is flavour-polymorphic and v1 does not
+    /// reproduce that.
+    Flavoured,
+    /// A `SkolemFn`/`DepPair` survives in a role value (not just the event slot).
+    SkolemInValue,
+}
+
+/// The surface relation a decomposed predicate name belongs to: `teaches_x2` and the
+/// anchor `teaches` both answer `"teaches"`.
+pub(super) fn surface_relation(name: &str) -> &str {
+    split_role(name).map(|(b, _)| b).unwrap_or(name)
+}
+
+/// Split a role predicate name into `(base, place)`: `teaches_x2` → `("teaches", 2)`.
+/// Returns `None` for a name that is not role-shaped. A genuine corpus relation
+/// literally named `foo_x1` cannot be mistaken for a role of `foo`, because a group is
+/// only formed when the ANCHOR `foo(ev)` shares the same event term.
+fn split_role(name: &str) -> Option<(&str, usize)> {
+    let (base, idx) = name.rsplit_once("_x")?;
+    if base.is_empty() {
+        return None;
+    }
+    let place: usize = idx.parse().ok()?;
+    if place == 0 {
+        None
+    } else {
+        Some((base, place))
+    }
+}
+
+/// True for a term the projection must never leave in a value position.
+fn is_function_term(t: &GroundTerm) -> bool {
+    matches!(t, GroundTerm::SkolemFn(_, _) | GroundTerm::DepPair(_, _))
+}
+
+/// Project a set of decomposed atoms into surface atoms, one per event group.
+///
+/// Returns the projected atoms in a deterministic order (by relation, then by the
+/// order their anchor appeared), or the first structural objection found. Atoms that
+/// are FLAT (no event group — e.g. the `equals` built-in) are returned separately, so
+/// the caller can decide whether it knows how to evaluate them.
+#[allow(clippy::type_complexity)]
+fn project_atoms(atoms: &[StoredFact]) -> Result<(Vec<Atom>, Vec<StoredFact>), ProjectErr> {
+    // Every atom must be Bare: a Past/Obligatory template fires flavour-polymorphically
+    // and v1 does not model that.
+    if atoms.iter().any(|a| !matches!(a, StoredFact::Bare(_))) {
+        return Err(ProjectErr::Flavoured);
+    }
+
+    // Bucket by event term (argument 0). `order` keeps first-seen order so the output
+    // is reproducible without sorting by a term type that has no natural key.
+    let mut anchor_of: HashMap<&GroundTerm, &str> = HashMap::new();
+    let mut roles_of: HashMap<&GroundTerm, Vec<(usize, &GroundTerm, &str)>> = HashMap::new();
+    let mut order: Vec<&GroundTerm> = Vec::new();
+    let mut flat: Vec<StoredFact> = Vec::new();
+
+    for a in atoms {
+        let gf = a.inner();
+        match gf.args.len() {
+            1 => {
+                let ev = &gf.args[0];
+                if anchor_of.insert(ev, gf.relation.as_str()).is_some() {
+                    return Err(ProjectErr::AmbiguousAnchor);
+                }
+                if !roles_of.contains_key(ev) {
+                    order.push(ev);
+                    roles_of.entry(ev).or_default();
+                }
+            }
+            2 => match split_role(&gf.relation) {
+                Some((_, place)) => {
+                    let ev = &gf.args[0];
+                    if !roles_of.contains_key(ev) {
+                        order.push(ev);
+                    }
+                    roles_of.entry(ev).or_default().push((
+                        place,
+                        &gf.args[1],
+                        gf.relation.as_str(),
+                    ));
+                }
+                // An arity-2 non-role atom is FLAT (`equals(a, b)`), not part of any
+                // event group.
+                None => flat.push(a.clone()),
+            },
+            // Arity 0 or ≥3 is not a decomposed shape at all.
+            _ => flat.push(a.clone()),
+        }
+    }
+
+    let mut out = Vec::with_capacity(order.len());
+    for ev in order {
+        let Some(&base) = anchor_of.get(ev) else {
+            return Err(ProjectErr::NoAnchor);
+        };
+        let mut roles = roles_of.remove(ev).unwrap_or_default();
+        // Every role must belong to THIS anchor's relation.
+        for (_, _, rel) in &roles {
+            match split_role(rel) {
+                Some((b, _)) if b == base => {}
+                _ => return Err(ProjectErr::NotRoleShaped),
+            }
+        }
+        roles.sort_by_key(|(place, _, _)| *place);
+        // Contiguous x1..xN, no gaps, no duplicates.
+        for (i, (place, _, _)) in roles.iter().enumerate() {
+            if *place != i + 1 {
+                return Err(ProjectErr::GappedRoles);
+            }
+        }
+        let mut values = Vec::with_capacity(roles.len());
+        for (_, v, _) in roles {
+            // The event must not leak into a value: that would be cross-atom identity,
+            // which the projection cannot preserve.
+            if v == ev {
+                return Err(ProjectErr::EventEscapes);
+            }
+            if is_function_term(v) {
+                return Err(ProjectErr::SkolemInValue);
+            }
+            values.push(v.clone());
+        }
+        out.push(Atom {
+            relation: base.to_string(),
+            values,
+        });
+    }
+    Ok((out, flat))
+}
+
+/// Project a `~P` restrictor group. Its templates are one event group by construction
+/// (`detect_negated_exists_group` only admits that shape), so exactly one atom must
+/// come out and nothing may be left flat.
+fn project_negated_group(group: &NegatedExistsGroup) -> Result<Atom, ProjectErr> {
+    let (mut atoms, flat) = project_atoms(&group.conditions)?;
+    if atoms.len() != 1 || !flat.is_empty() {
+        return Err(ProjectErr::NotRoleShaped);
+    }
+    Ok(atoms.remove(0))
+}
+
+/// A rule rewritten as function-free surface Datalog. `None` for any rule the
+/// projection refuses — the caller turns that into an [`Ineligible`] with the reason.
+pub(super) struct ProjectedRule {
+    pub(super) label: String,
+    /// Positive body atoms, joined left to right.
+    pub(super) positive: Vec<Atom>,
+    /// Negated body atoms, checked by lookup once the positives have bound everything.
+    pub(super) negative: Vec<Atom>,
+    /// Flat built-in conditions we know how to decide, with their negation flag.
+    /// Today this is exactly `equals` (see [`BUILTIN_RELATIONS`]).
+    pub(super) builtins: Vec<(StoredFact, bool)>,
+    /// Head atoms — one per conclusion group. A rule may conclude several relations.
+    pub(super) head: Vec<Atom>,
+}
+
+/// Flat conditions the saturator can decide itself, without a stored extension.
+/// `equals` is decidable from the term structure alone (reflexivity), and the
+/// union-find path is excluded separately by [`Ineligible::Equality`], so a plain
+/// structural comparison is exact here.
+const BUILTIN_RELATIONS: &[&str] = &[nibli_types::relations::IDENTITY];
+
+fn is_builtin(rel: &str) -> bool {
+    BUILTIN_RELATIONS.contains(&rel)
+}
+
+/// Rewrite one compiled rule as function-free surface Datalog.
+pub(super) fn project_rule(rule: &UniversalRuleRecord) -> Result<ProjectedRule, Ineligible> {
+    let label = rule.label.clone();
+    let flav = |e: ProjectErr| -> Ineligible {
+        match e {
+            ProjectErr::Flavoured => Ineligible::Flavoured(label.clone()),
+            ProjectErr::SkolemInValue => Ineligible::SkolemHead(label.clone()),
+            _ => Ineligible::NotProjectable(label.clone()),
+        }
+    };
+
+    // Split the conditions into the positively- and negatively-flagged halves FIRST:
+    // a flat negated literal and a positive one project identically, but they must not
+    // be merged into one event group by accident.
+    let mut pos_conds: Vec<StoredFact> = Vec::new();
+    let mut neg_conds: Vec<StoredFact> = Vec::new();
+    for (i, c) in rule.typed_conditions.iter().enumerate() {
+        if rule.negated_condition_indices.contains(&i) {
+            neg_conds.push(c.clone());
+        } else {
+            pos_conds.push(c.clone());
+        }
+    }
+
+    let (positive, pos_flat) = project_atoms(&pos_conds).map_err(&flav)?;
+    let (neg_flat_atoms, neg_flat) = project_atoms(&neg_conds).map_err(&flav)?;
+
+    let mut builtins: Vec<(StoredFact, bool)> = Vec::new();
+    for (f, negated) in pos_flat
+        .into_iter()
+        .map(|f| (f, false))
+        .chain(neg_flat.into_iter().map(|f| (f, true)))
+    {
+        if !is_builtin(f.relation()) {
+            // A flat condition we cannot decide — most often a compute predicate,
+            // whose domain is not enumerable.
+            return Err(Ineligible::ComputeCondition(label.clone()));
+        }
+        builtins.push((f, negated));
+    }
+
+    let mut negative = neg_flat_atoms;
+    for g in &rule.negated_exists_groups {
+        match project_negated_group(g) {
+            Ok(a) => negative.push(a),
+            Err(ProjectErr::Flavoured) => return Err(Ineligible::Flavoured(label)),
+            Err(_) => return Err(Ineligible::NegatedGroup(label)),
+        }
+    }
+
+    // The head. `project_atoms` rejects a `SkolemFn` in a VALUE position but not in the
+    // event slot, which is exactly right: the dependent Skolem that every `∀`-rule head
+    // carries lives in the event slot and is what the projection eliminates.
+    let (head, head_flat) = project_atoms(&rule.typed_conclusions).map_err(&flav)?;
+    if !head_flat.is_empty() || head.is_empty() {
+        return Err(Ineligible::NotProjectable(label));
+    }
+    // A rule that DERIVES a built-in would invalidate the built-in evaluator below,
+    // which decides `equals` from term structure alone. Refuse rather than evaluate a
+    // relation two different ways in one saturation.
+    if head.iter().any(|a| is_builtin(&a.relation)) {
+        return Err(Ineligible::NotProjectable(label));
+    }
+
+    // RANGE RESTRICTION. Every variable in a head value, in a negated atom, or in a
+    // built-in must be bound by a positive body atom — otherwise the rule ranges over
+    // terms the saturation never enumerates and its extension would be under-derived,
+    // which is the one way this optimisation can turn a NAF FALSE into a wrong TRUE.
+    let mut bound: HashSet<&str> = HashSet::new();
+    for a in &positive {
+        for v in &a.values {
+            if let GroundTerm::PatternVar(n) = v {
+                bound.insert(n.as_str());
+            }
+        }
+    }
+    let unbound = |vals: &[GroundTerm]| -> bool {
+        vals.iter()
+            .any(|v| matches!(v, GroundTerm::PatternVar(n) if !bound.contains(n.as_str())))
+    };
+    if head.iter().any(|a| unbound(&a.values))
+        || negative.iter().any(|a| unbound(&a.values))
+        || builtins
+            .iter()
+            .any(|(f, _)| unbound(f.inner().args.as_slice()))
+    {
+        return Err(Ineligible::NotRangeRestricted(label));
+    }
+
+    Ok(ProjectedRule {
+        label,
+        positive,
+        negative,
+        builtins,
+        head,
+    })
+}
+
+/// Every distinct rule in the KB, once. `universal_rules` indexes the SAME `Arc` under
+/// every relation the rule concludes, so a naive iteration would visit a multi-headed
+/// rule several times.
+pub(super) fn distinct_rules(
+    inner: &KnowledgeBaseInner,
+) -> Vec<&std::sync::Arc<UniversalRuleRecord>> {
+    let mut seen: HashSet<*const UniversalRuleRecord> = HashSet::new();
+    let mut keys: Vec<&String> = inner.universal_rules.keys().collect();
+    keys.sort();
+    let mut out = Vec::new();
+    for k in keys {
+        for r in &inner.universal_rules[k] {
+            if seen.insert(std::sync::Arc::as_ptr(r)) {
+                out.push(r);
+            }
+        }
+    }
+    out
+}
+
+/// The outcome of the eligibility analysis: which surface relations may be saturated,
+/// and why each of the others may not.
+pub(super) struct Eligibility {
+    pub(super) eligible: HashSet<String>,
+    pub(super) refused: HashMap<String, Ineligible>,
+    /// The projected form of every rule that survived, keyed by head relation.
+    pub(super) rules: HashMap<String, Vec<std::sync::Arc<ProjectedRule>>>,
+}
+
+/// Decide which surface relations can be saturated bottom-up.
+///
+/// Two passes. First, project every rule: a rule that refuses poisons every relation it
+/// concludes. Second, close DOWNWARD — a relation stays eligible only while every
+/// relation its surviving rules read is itself eligible, pure EDB, or a built-in. The
+/// closure is a shrinking fixpoint, so it is order-independent and terminates.
+pub(super) fn eligible_relations(inner: &KnowledgeBaseInner) -> Eligibility {
+    let mut refused: HashMap<String, Ineligible> = HashMap::new();
+    let mut rules: HashMap<String, Vec<std::sync::Arc<ProjectedRule>>> = HashMap::new();
+
+    // The `du` union-find makes fact lookup modulo equivalence classes; a plain
+    // set-membership test on a projected tuple would miss an equivalent variant, so a
+    // NAF answered by lookup could wrongly report "no witness". Refuse the whole KB.
+    if !inner.equivalence_parent.is_empty() {
+        for r in distinct_rules(inner) {
+            for c in &r.typed_conclusions {
+                refused.insert(c.relation().to_string(), Ineligible::Equality);
+            }
+        }
+        return Eligibility {
+            eligible: HashSet::new(),
+            refused,
+            rules,
+        };
+    }
+
+    for r in distinct_rules(inner) {
+        match project_rule(r) {
+            Ok(pr) => {
+                let pr = std::sync::Arc::new(pr);
+                for h in &pr.head {
+                    rules
+                        .entry(h.relation.clone())
+                        .or_default()
+                        .push(pr.clone());
+                }
+            }
+            Err(why) => {
+                // Name every relation this rule could have concluded. The conclusion
+                // templates are decomposed, so the surface name is the anchor's — but a
+                // refused projection may not have found one, so fall back to stripping
+                // the role suffix.
+                for c in &r.typed_conclusions {
+                    let rel = split_role(c.relation())
+                        .map(|(b, _)| b.to_string())
+                        .unwrap_or_else(|| c.relation().to_string());
+                    refused.entry(rel).or_insert_with(|| why.clone());
+                }
+            }
+        }
+    }
+
+    // Candidate set: every relation with at least one surviving rule, minus the refused.
+    let mut eligible: HashSet<String> = rules
+        .keys()
+        .filter(|r| !refused.contains_key(*r))
+        .cloned()
+        .collect();
+
+    // A relation is pure EDB when nothing can DERIVE it: no surviving rule concludes it
+    // AND no refused rule concluded it either. The second half is load-bearing — a
+    // relation whose only rule failed to project has no entry in `rules`, and calling
+    // that EDB would silently read just its asserted facts and miss every derived one,
+    // which is exactly the under-derivation that turns a NAF FALSE into a wrong TRUE.
+    fn is_edb(
+        rel: &str,
+        rules: &HashMap<String, Vec<std::sync::Arc<ProjectedRule>>>,
+        refused: &HashMap<String, Ineligible>,
+    ) -> bool {
+        !rules.contains_key(rel) && !refused.contains_key(rel)
+    }
+
+    // Downward closure to a fixpoint. Bounded by |eligible| passes: each pass either
+    // removes at least one relation or stops.
+    loop {
+        let mut drop_rel: Option<(String, String)> = None;
+        'outer: for rel in &eligible {
+            for pr in rules.get(rel).into_iter().flatten() {
+                for dep in pr.positive.iter().chain(pr.negative.iter()) {
+                    if eligible.contains(&dep.relation) || is_edb(&dep.relation, &rules, &refused) {
+                        continue;
+                    }
+                    drop_rel = Some((rel.clone(), dep.relation.clone()));
+                    break 'outer;
+                }
+            }
+        }
+        match drop_rel {
+            Some((rel, dep)) => {
+                eligible.remove(&rel);
+                refused.entry(rel).or_insert(Ineligible::DependsOn(dep));
+            }
+            None => break,
+        }
+    }
+
+    Eligibility {
+        eligible,
+        refused,
+        rules,
+    }
+}
+
+// ─── Saturation ───────────────────────────────────────────────────────────────
+
+/// Extensions of the projected relations: surface relation → set of role-value tuples.
+pub(super) type Extensions = HashMap<String, HashSet<Vec<GroundTerm>>>;
+
+/// Total derived-tuple budget for one saturation.
+///
+/// Saturation is an OPTIMISATION. A KB whose least model is enormous would spend more
+/// time saturating than the backward search it replaces, so the budget is a
+/// stop-loss, not a correctness device: exceeding it abandons the stratum and leaves
+/// its relations INCOMPLETE, which means every NAF over them falls back to today's
+/// path. Deliberately generous — the shipped corpora derive in the hundreds.
+const MAX_MATERIALIZED_TUPLES: usize = 2_000_000;
+
+/// The result of a saturation: which relations were completed, their extensions, and
+/// why each of the others was not.
+pub(super) struct Materialized {
+    pub(super) ext: Extensions,
+    pub(super) complete: HashSet<String>,
+    pub(super) refused: HashMap<String, Ineligible>,
+    /// Projected arity per relation — how many role places its tuples carry.
+    pub(super) arity: HashMap<String, usize>,
+}
+
+impl Materialized {
+    pub(super) fn empty() -> Self {
+        Materialized {
+            ext: Extensions::new(),
+            complete: HashSet::new(),
+            refused: HashMap::new(),
+            arity: HashMap::new(),
+        }
+    }
+
+    /// May a probe of `arity` role places read this relation's extension as complete?
+    ///
+    /// The arity check is not belt-and-braces. A probe with FEWER places than the stored
+    /// tuples would miss every tuple and read as "nothing derived" — but the engine's own
+    /// group check only tests the atoms the template actually carries, so it WOULD find
+    /// that witness. That mismatch is a wrong definitive NAF TRUE. KR text cannot produce
+    /// it (arity is fixed by the corpus), but `nibli-import` and the programmatic API can,
+    /// so the guard is structural rather than trusting the front-end.
+    ///
+    /// An EMPTY extension records no arity and answers at every width — "nothing derived"
+    /// is correct however many places the probe carries, and that is the case the whole
+    /// optimisation turns on (`~false($t)` when nobody has been voided).
+    pub(super) fn is_complete_for(&self, relation: &str, arity: usize) -> bool {
+        self.complete.contains(relation) && self.arity.get(relation).is_none_or(|&a| a == arity)
+    }
+
+    /// Membership in a COMPLETE extension. The caller must have checked
+    /// [`Self::is_complete_for`] first — an absent relation here is "nothing derived",
+    /// not "not saturated", and confusing the two is how a NAF gets a wrong TRUE.
+    pub(super) fn contains(&self, relation: &str, tuple: &[GroundTerm]) -> bool {
+        self.ext
+            .get(relation)
+            .is_some_and(|set| set.contains(tuple))
+    }
+}
+
+/// Project the fact store into surface tuples — the EDB seed.
+///
+/// Returns the seed plus the set of relations that carry a tense/deontic flavour
+/// anywhere in the store. Those are excluded rather than refusing the whole KB: a
+/// flavoured `past P(x)` and a bare `P(x)` are DIFFERENT facts to the engine, and a
+/// projection that dropped the flavour would merge them.
+fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashSet<String>) {
+    let mut anchors: HashSet<(String, GroundTerm)> = HashSet::new();
+    let mut roles: HashMap<(String, GroundTerm), Vec<(usize, GroundTerm)>> = HashMap::new();
+    let mut flavoured: HashSet<String> = HashSet::new();
+
+    for f in inner.fact_store.all_facts() {
+        let gf = f.inner();
+        let bare = matches!(f, StoredFact::Bare(_));
+        match gf.args.len() {
+            1 => {
+                if !bare {
+                    flavoured.insert(gf.relation.clone());
+                    continue;
+                }
+                anchors.insert((gf.relation.clone(), gf.args[0].clone()));
+            }
+            2 => {
+                if let Some((base, place)) = split_role(&gf.relation) {
+                    if !bare {
+                        flavoured.insert(base.to_string());
+                        continue;
+                    }
+                    roles
+                        .entry((base.to_string(), gf.args[0].clone()))
+                        .or_default()
+                        .push((place, gf.args[1].clone()));
+                }
+                // A flat arity-2 fact (`equals`) is not a projected relation.
+            }
+            _ => {}
+        }
+    }
+
+    let mut ext = Extensions::new();
+    for (rel, ev) in anchors {
+        if flavoured.contains(&rel) {
+            continue;
+        }
+        let mut rs = roles.remove(&(rel.clone(), ev)).unwrap_or_default();
+        rs.sort_by_key(|(p, _)| *p);
+        // Contiguous x1..xN. A gap means the store holds a partially-retracted or
+        // hand-built decomposition we cannot read as one surface atom — skip the group
+        // and mark the relation flavoured-style ineligible via the caller's checks
+        // rather than inventing a tuple with a hole in it.
+        if rs.iter().enumerate().any(|(i, (p, _))| *p != i + 1) {
+            flavoured.insert(rel);
+            continue;
+        }
+        let tuple: Vec<GroundTerm> = rs.into_iter().map(|(_, v)| v).collect();
+        ext.entry(rel).or_default().insert(tuple);
+    }
+    // ARITY AGREEMENT. Two stored atoms of one relation with different place counts mean
+    // there is no single surface arity to project onto, so a probe of either width would
+    // silently miss the other width's tuples. KR text cannot spell this (arity comes from
+    // the corpus), but RDF import and the programmatic API can — exclude the relation.
+    for (rel, tuples) in &ext {
+        let mut widths = tuples.iter().map(Vec::len);
+        let first = widths.next().unwrap_or(0);
+        if widths.any(|w| w != first) {
+            flavoured.insert(rel.clone());
+        }
+    }
+    // A relation found to be gap-shaped or arity-clashing after some of its tuples were
+    // already seeded must not keep those partial tuples.
+    for rel in &flavoured {
+        ext.remove(rel);
+    }
+    (ext, flavoured)
+}
+
+/// Bind a projected atom's template values against a concrete tuple.
+/// Returns the extended bindings, or `None` on mismatch.
+fn bind_tuple(
+    template: &[GroundTerm],
+    tuple: &[GroundTerm],
+    bindings: &HashMap<String, GroundTerm>,
+) -> Option<HashMap<String, GroundTerm>> {
+    if template.len() != tuple.len() {
+        return None;
+    }
+    let mut out = bindings.clone();
+    for (t, v) in template.iter().zip(tuple.iter()) {
+        match t {
+            GroundTerm::PatternVar(n) => match out.get(n) {
+                Some(prev) if prev != v => return None,
+                Some(_) => {}
+                None => {
+                    out.insert(n.clone(), v.clone());
+                }
+            },
+            other if other == v => {}
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Substitute bindings into a template value list. Returns `None` if any variable is
+/// still unbound — range restriction should make that unreachable, so it is a
+/// fail-closed assertion rather than an expected path.
+fn ground_values(
+    template: &[GroundTerm],
+    bindings: &HashMap<String, GroundTerm>,
+) -> Option<Vec<GroundTerm>> {
+    template
+        .iter()
+        .map(|t| match t {
+            GroundTerm::PatternVar(n) => bindings.get(n).cloned(),
+            other => Some(other.clone()),
+        })
+        .collect()
+}
+
+/// Decide a flat built-in condition under the current bindings.
+///
+/// Only `equals` today. Eligibility guarantees an empty `du` union-find, so identity is
+/// exactly structural equality — the same answer `check_predicate_in_kb_typed`'s
+/// reflexivity arm gives, with no equivalence classes to consult.
+fn builtin_holds(fact: &StoredFact, bindings: &HashMap<String, GroundTerm>) -> Option<bool> {
+    let gf = fact.inner();
+    if gf.relation != nibli_types::relations::IDENTITY {
+        return None;
+    }
+    let args = ground_values(&gf.args, bindings)?;
+    // A `du` atom is arity 2 in the flat shape the engine stores; anything else is not
+    // the identity predicate we know how to decide.
+    if args.len() != 2 {
+        return None;
+    }
+    Some(args[0] == args[1])
+}
+
+/// Evaluate one projected rule, appending every head tuple it derives.
+///
+/// `delta_pos` is the semi-naive marker: when `Some(i)`, positive atom `i` is joined
+/// against `delta` (the tuples discovered in the previous round) instead of the full
+/// extension, so a round only re-derives what the previous round could have enabled.
+/// When `None` the rule is evaluated against the full extensions (the seeding round).
+fn eval_rule(
+    pr: &ProjectedRule,
+    ext: &Extensions,
+    delta: &Extensions,
+    delta_pos: Option<usize>,
+    out: &mut Vec<(String, Vec<GroundTerm>)>,
+) {
+    fn walk(
+        pr: &ProjectedRule,
+        ext: &Extensions,
+        delta: &Extensions,
+        delta_pos: Option<usize>,
+        i: usize,
+        bindings: HashMap<String, GroundTerm>,
+        out: &mut Vec<(String, Vec<GroundTerm>)>,
+    ) {
+        if i == pr.positive.len() {
+            // Built-ins first: they are the cheapest and often the most selective
+            // (`~($a = $b)` cuts the diagonal out of a self-join).
+            for (f, negated) in &pr.builtins {
+                match builtin_holds(f, &bindings) {
+                    Some(holds) if holds != *negated => {}
+                    // Either the built-in fails, or we could not decide it. An
+                    // undecidable built-in must kill the derivation, never be assumed
+                    // true: this saturation's whole value is that a MISSING tuple means
+                    // "not derivable".
+                    _ => return,
+                }
+            }
+            // Negated atoms: a lookup into a strictly-lower, already-complete stratum.
+            for n in &pr.negative {
+                let Some(t) = ground_values(&n.values, &bindings) else {
+                    return;
+                };
+                if ext.get(&n.relation).is_some_and(|s| s.contains(&t)) {
+                    return;
+                }
+            }
+            for h in &pr.head {
+                if let Some(t) = ground_values(&h.values, &bindings) {
+                    out.push((h.relation.clone(), t));
+                }
+            }
+            return;
+        }
+        let atom = &pr.positive[i];
+        let source = if delta_pos == Some(i) { delta } else { ext };
+        let Some(tuples) = source.get(&atom.relation) else {
+            return;
+        };
+        for tuple in tuples {
+            if let Some(b) = bind_tuple(&atom.values, tuple, &bindings) {
+                walk(pr, ext, delta, delta_pos, i + 1, b, out);
+            }
+        }
+    }
+    walk(pr, ext, delta, delta_pos, 0, HashMap::new(), out);
+}
+
+/// Saturate `targets` and everything they depend on, stratum by stratum.
+///
+/// This is the whole point of the module: when it returns, every relation in
+/// `complete` has its FULL extension in `ext`, so `~p(x)` is answered by asking whether
+/// a tuple is in a set — no proof attempt, no depth bound, no domain cartesian.
+pub(super) fn saturate(
+    inner: &KnowledgeBaseInner,
+    elig: &Eligibility,
+    strata: &Strata,
+    targets: &HashSet<String>,
+) -> Materialized {
+    // EQUALITY GUARD — repeated here, not only in `eligible_relations`.
+    //
+    // `eligible_relations` refuses every RULE-derived relation when a `du` union-find
+    // exists, but that is not enough on its own: the loop below also marks a rule-less
+    // EDB relation complete straight from its seed, and a seed is a set of stored tuples
+    // with no equivalence expansion. With `Ara = Bel` and a stored `rotten(Bel)`, the
+    // seed for `rotten` omits `rotten(Ara)` — so `~rotten(Ara)` would look like "no
+    // witness" and answer TRUE where backward chaining, which expands equivalence
+    // variants in `typed_fact_is_asserted`, correctly answers FALSE. That is a WRONG
+    // definitive verdict, the exact failure this module must never produce.
+    //
+    // (Caught by `equality_classes_refuse_the_whole_kb`, which is why that test asserts
+    // on the verdicts and not merely on the report.)
+    if !inner.equivalence_parent.is_empty() {
+        let mut refused = elig.refused.clone();
+        for rel in targets {
+            refused.entry(rel.clone()).or_insert(Ineligible::Equality);
+        }
+        return Materialized {
+            ext: Extensions::new(),
+            complete: HashSet::new(),
+            refused,
+            arity: HashMap::new(),
+        };
+    }
+
+    let (mut ext, flavoured) = seed_edb(inner);
+    let mut refused = elig.refused.clone();
+    for rel in &flavoured {
+        refused
+            .entry(rel.clone())
+            .or_insert_with(|| Ineligible::Flavoured(format!("stored fact of '{rel}'")));
+    }
+
+    // Dependency closure of the targets over eligible relations. A target that is not
+    // eligible simply never enters, and its NAF keeps today's behaviour.
+    let mut wanted: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = targets.iter().cloned().collect();
+    stack.sort();
+    while let Some(rel) = stack.pop() {
+        if flavoured.contains(&rel) || !wanted.insert(rel.clone()) {
+            continue;
+        }
+        for pr in elig.rules.get(&rel).into_iter().flatten() {
+            for dep in pr.positive.iter().chain(pr.negative.iter()) {
+                stack.push(dep.relation.clone());
+            }
+        }
+    }
+    // Only relations we are actually allowed to saturate.
+    let saturable: HashSet<&String> = wanted
+        .iter()
+        .filter(|r| elig.eligible.contains(*r))
+        .collect();
+
+    // Ascending stratum order. A relation with no rules is EDB: already seeded, so it
+    // is complete the moment we know nothing can derive more of it.
+    let mut by_stratum: Vec<(usize, String)> = wanted
+        .iter()
+        .map(|r| (strata.get(r).copied().unwrap_or(0), r.clone()))
+        .collect();
+    by_stratum.sort();
+
+    let mut complete: HashSet<String> = HashSet::new();
+    let mut budget = MAX_MATERIALIZED_TUPLES;
+    let mut idx = 0usize;
+    while idx < by_stratum.len() {
+        let level = by_stratum[idx].0;
+        let mut rels: Vec<&String> = Vec::new();
+        while idx < by_stratum.len() && by_stratum[idx].0 == level {
+            rels.push(&by_stratum[idx].1);
+            idx += 1;
+        }
+
+        // Every rule concluding a relation in this stratum, once.
+        let mut stratum_rules: Vec<&std::sync::Arc<ProjectedRule>> = Vec::new();
+        let mut seen: HashSet<*const ProjectedRule> = HashSet::new();
+        let mut derived_here: Vec<&String> = Vec::new();
+        for rel in &rels {
+            if flavoured.contains(*rel) {
+                continue;
+            }
+            if !saturable.contains(*rel) {
+                // Not saturable. If it has rules we cannot evaluate, it stays
+                // incomplete; if it has none it is EDB and its seed IS complete.
+                if !elig.rules.contains_key(*rel) && !refused.contains_key(*rel) {
+                    complete.insert((*rel).clone());
+                }
+                continue;
+            }
+            derived_here.push(rel);
+            for pr in elig.rules.get(*rel).into_iter().flatten() {
+                if seen.insert(std::sync::Arc::as_ptr(pr)) {
+                    stratum_rules.push(pr);
+                }
+            }
+        }
+        if derived_here.is_empty() {
+            continue;
+        }
+
+        // Semi-naive fixpoint for this stratum.
+        //
+        // Round 0 evaluates every rule against the full extensions (which already hold
+        // the EDB seed plus every completed lower stratum). Later rounds join each rule
+        // once per positive position against the PREVIOUS round's delta, so a tuple
+        // combination is only revisited when one of its inputs is new.
+        let mut delta: Extensions = Extensions::new();
+        let mut round = 0usize;
+        let mut overflowed = false;
+        loop {
+            let mut produced: Vec<(String, Vec<GroundTerm>)> = Vec::new();
+            for pr in &stratum_rules {
+                if round == 0 {
+                    eval_rule(pr, &ext, &delta, None, &mut produced);
+                } else {
+                    for pos in 0..pr.positive.len() {
+                        // Skip positions whose relation gained nothing last round —
+                        // the join would be over an empty delta.
+                        if delta
+                            .get(&pr.positive[pos].relation)
+                            .is_none_or(HashSet::is_empty)
+                        {
+                            continue;
+                        }
+                        eval_rule(pr, &ext, &delta, Some(pos), &mut produced);
+                    }
+                }
+            }
+            let mut next: Extensions = Extensions::new();
+            for (rel, tuple) in produced {
+                if ext.get(&rel).is_some_and(|s| s.contains(&tuple)) {
+                    continue;
+                }
+                if budget == 0 {
+                    overflowed = true;
+                    break;
+                }
+                if next.entry(rel).or_default().insert(tuple) {
+                    budget -= 1;
+                }
+            }
+            if overflowed {
+                break;
+            }
+            let grew = next.values().any(|s| !s.is_empty());
+            for (rel, set) in &next {
+                ext.entry(rel.clone())
+                    .or_default()
+                    .extend(set.iter().cloned());
+            }
+            delta = next;
+            if !grew {
+                break;
+            }
+            round += 1;
+        }
+
+        if overflowed {
+            // Stop-loss. Leave this stratum's relations INCOMPLETE — and every later
+            // stratum too, since their negated lookups would read a partial extension.
+            for rel in derived_here {
+                refused
+                    .entry(rel.clone())
+                    .or_insert_with(|| Ineligible::DependsOn("the materialisation budget".into()));
+            }
+            break;
+        }
+        for rel in derived_here {
+            complete.insert(rel.clone());
+        }
+    }
+
+    // Anything wanted but never completed is reported, so `materialization_report` can
+    // say why a query is still paying for a proof search.
+    for rel in &wanted {
+        if !complete.contains(rel) {
+            refused
+                .entry(rel.clone())
+                .or_insert_with(|| Ineligible::DependsOn("an unsaturated dependency".into()));
+        }
+    }
+
+    // One projected arity per relation, taken from its saturated tuples.
+    //
+    // Recorded ONLY when tuples exist and agree on a width. An EMPTY extension records
+    // nothing, and that is deliberate rather than a gap: "nothing derived" is the answer
+    // at every width, and it is also the most important case the optimisation has —
+    // `~false($t)` when nobody has been voided is exactly an empty extension, and it must
+    // answer TRUE, not fall back. A DISAGREEING width records nothing either, and the
+    // relation loses its `complete` status below: there is no single surface arity to
+    // probe against, so a probe of one width would silently miss the other's tuples.
+    let mut arity: HashMap<String, usize> = HashMap::new();
+    let mut clashing: HashSet<String> = HashSet::new();
+    for (rel, tuples) in &ext {
+        let mut widths = tuples.iter().map(Vec::len);
+        let Some(first) = widths.next() else { continue };
+        if widths.all(|w| w == first) {
+            arity.insert(rel.clone(), first);
+        } else {
+            clashing.insert(rel.clone());
+        }
+    }
+    let complete: HashSet<String> = complete
+        .into_iter()
+        .filter(|rel| !clashing.contains(rel))
+        .collect();
+    for rel in &clashing {
+        refused
+            .entry(rel.clone())
+            .or_insert_with(|| Ineligible::Flavoured(format!("mixed arities for '{rel}'")));
+    }
+
+    Materialized {
+        ext,
+        complete,
+        refused,
+        arity,
+    }
+}
+
+/// Every surface relation occurring under a `NotNode` in a compiled buffer — the
+/// query-side half of the materialisation target set.
+///
+/// Deliberately over-approximating: it collects every predicate reachable from any
+/// negation, not just the immediate ones. Naming a relation that turns out not to need
+/// saturating costs a little work; MISSING one only costs the optimisation, and neither
+/// can change a verdict.
+pub(super) fn collect_negated_relations(
+    buffer: &nibli_types::logic::LogicBuffer,
+    out: &mut HashSet<String>,
+) {
+    use nibli_types::logic::LogicNode;
+    fn walk(
+        buffer: &nibli_types::logic::LogicBuffer,
+        id: u32,
+        under_not: bool,
+        out: &mut HashSet<String>,
+        seen: &mut HashSet<u32>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        let Some(node) = buffer.nodes.get(id as usize) else {
+            return;
+        };
+        match node {
+            LogicNode::Predicate((rel, _)) | LogicNode::ComputeNode((rel, _)) => {
+                if under_not {
+                    out.insert(surface_relation(rel).to_string());
+                }
+            }
+            LogicNode::NotNode(inner) => walk(buffer, *inner, true, out, seen),
+            LogicNode::AndNode((l, r)) | LogicNode::OrNode((l, r)) => {
+                walk(buffer, *l, under_not, out, seen);
+                walk(buffer, *r, under_not, out, seen);
+            }
+            LogicNode::ExistsNode((_, body))
+            | LogicNode::ForAllNode((_, body))
+            | LogicNode::CountNode((_, _, body)) => walk(buffer, *body, under_not, out, seen),
+            LogicNode::PastNode(b)
+            | LogicNode::PresentNode(b)
+            | LogicNode::FutureNode(b)
+            | LogicNode::ObligatoryNode(b)
+            | LogicNode::PermittedNode(b) => walk(buffer, *b, under_not, out, seen),
+        }
+    }
+    for &root in &buffer.roots {
+        // A fresh `seen` per root: sub-buffers share one node arena
+        // (`LogicBuffer::split_roots`), so a node reachable from two roots under
+        // different polarity must be visited for each.
+        walk(buffer, root, false, out, &mut HashSet::new());
+    }
+}
+
+/// Project a `~P` group under a rule's current bindings into a ground surface tuple —
+/// the probe [`crate::reasoning::eval_negated_exists_group`] uses to replace its
+/// candidate sweep with a set membership test.
+///
+/// Returns `None` whenever the shortcut does not apply (unprojectable group, a value
+/// still unbound, a flavour), and the caller then takes the ordinary search path. Never
+/// guesses.
+pub(super) fn probe_negated_group(
+    group: &NegatedExistsGroup,
+    bindings: &HashMap<String, GroundTerm>,
+) -> Option<(String, Vec<GroundTerm>)> {
+    let atom = project_negated_group(group).ok()?;
+    let tuple = ground_values(&atom.values, bindings)?;
+    if tuple.iter().any(|t| matches!(t, GroundTerm::PatternVar(_))) {
+        return None;
+    }
+    Some((atom.relation, tuple))
+}
+
+#[cfg(test)]
+mod strata_tests {
+    use super::*;
+
+    fn g(edges: &[(&str, &str, bool)]) -> HashMap<String, Vec<(String, bool)>> {
+        let mut m: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+        for (h, d, n) in edges {
+            m.entry(h.to_string())
+                .or_default()
+                .push((d.to_string(), *n));
+        }
+        m
+    }
+
+    #[test]
+    fn edb_only_graph_is_all_stratum_zero() {
+        let s = compute_strata(&g(&[("b", "a", false), ("c", "b", false)]));
+        assert_eq!(s.get("a"), Some(&0));
+        assert_eq!(s.get("b"), Some(&0));
+        assert_eq!(s.get("c"), Some(&0));
+    }
+
+    #[test]
+    fn a_negative_edge_raises_the_reader_one_stratum() {
+        // reward ⟵ ~false : `false` must be complete before `reward` is evaluated.
+        let s = compute_strata(&g(&[
+            ("reward", "false", true),
+            ("false", "capture", false),
+        ]));
+        assert_eq!(s.get("capture"), Some(&0));
+        assert_eq!(s.get("false"), Some(&0));
+        assert_eq!(s.get("reward"), Some(&1));
+    }
+
+    #[test]
+    fn negative_edges_stack_along_a_chain() {
+        let s = compute_strata(&g(&[("c", "b", true), ("b", "a", true)]));
+        assert_eq!(s.get("a"), Some(&0));
+        assert_eq!(s.get("b"), Some(&1));
+        assert_eq!(s.get("c"), Some(&2));
+    }
+
+    #[test]
+    fn the_longest_negative_path_wins_not_the_first_found() {
+        // d reads c (positive) and a (negative); c reads b (negative) reads a (negative).
+        // The long way round is 2 negative hops, so d must sit at stratum 2, not 1.
+        let s = compute_strata(&g(&[
+            ("d", "c", false),
+            ("d", "a", true),
+            ("c", "b", true),
+            ("b", "a", true),
+        ]));
+        assert_eq!(s.get("a"), Some(&0));
+        assert_eq!(s.get("d"), Some(&2));
+    }
+
+    #[test]
+    fn a_positive_cycle_shares_one_stratum() {
+        // Mutual positive recursion is ONE evaluation block, not a chain.
+        let s = compute_strata(&g(&[
+            ("p", "q", false),
+            ("q", "p", false),
+            ("r", "p", true),
+        ]));
+        assert_eq!(s.get("p"), s.get("q"));
+        assert_eq!(s.get("r"), Some(&(s["p"] + 1)));
+    }
+
+    /// A leaf predicate is an edge TARGET but never a graph key. `compute_sccs` includes
+    /// edge targets in its node set, so it must still get a stratum — otherwise the
+    /// eligibility closure would treat every EDB relation as unknown and admit nothing.
+    #[test]
+    fn condition_only_leaf_predicates_are_labelled() {
+        let s = compute_strata(&g(&[("head", "leaf", false)]));
+        assert_eq!(s.get("leaf"), Some(&0));
+    }
+
+    /// Totality guard: the registration gate rejects this shape, but a panic in a
+    /// read-side optimisation would be far worse than a meaningless-but-finite label.
+    #[test]
+    fn a_negative_self_loop_terminates_rather_than_diverging() {
+        let s = compute_strata(&g(&[("p", "p", true)]));
+        assert_eq!(s.get("p"), Some(&0));
+    }
+
+    /// `saturate` orders its work by `(stratum, relation name)`, so the saturation
+    /// sequence is byte-reproducible across runs and processes regardless of HashMap
+    /// layout. That ordering is only meaningful if the labels themselves are stable.
+    #[test]
+    fn labels_are_stable_across_repeated_computation() {
+        let graph = g(&[("c", "b", true), ("b", "a", true), ("z", "a", false)]);
+        let first = compute_strata(&graph);
+        for _ in 0..8 {
+            assert_eq!(compute_strata(&graph), first);
+        }
+        let mut order: Vec<(usize, &str)> = first.iter().map(|(k, v)| (*v, k.as_str())).collect();
+        order.sort();
+        assert_eq!(order, vec![(0, "a"), (0, "z"), (1, "b"), (2, "c")]);
+    }
+}

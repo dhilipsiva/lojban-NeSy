@@ -718,6 +718,23 @@ pub(super) struct KnowledgeBaseInner {
     /// but have no error channel — their entries are cleared at the next
     /// assertion boundary.
     pub(super) strict_violations: Vec<String>,
+    /// STRATUM-ORDERED MATERIALISATION (see [`crate::materialize`]): the saturated
+    /// extensions of the surface relations read under `~`, so a NAF check is a set
+    /// membership test instead of an exhaustive proof attempt.
+    ///
+    /// Built lazily at query start and dropped by `invalidate_materialization` at every
+    /// KB MUTATION — not at query start, unlike `pred_cache`: this is a claim about the
+    /// KB's content, so an unchanged KB should answer its second query from the same
+    /// extension. Empty in `Clone`/`new`. It is ALSO cleared inside `rebuild_inner`,
+    /// because `KnowledgeBase::rebuild` is the one rebuild entry point that does not
+    /// pair itself with `invalidate_pred_cache`, and a stale saturation surviving a
+    /// rebuild would answer `~p(x)` from a knowledge base that no longer exists.
+    pub(super) materialized: RefCell<Option<crate::materialize::Materialized>>,
+    /// MATERIALISATION MODE (default ON). Like `strict`/`existential_import` this is
+    /// session CONFIGURATION, not derived state — NOT cleared by `reset()`. Off means
+    /// every NAF takes the backward-chaining path, which is what the differential gate
+    /// compares against.
+    pub(super) materialization: bool,
     /// Transient (per `query_find`): set when witness enumeration drops a candidate
     /// because its leaf check hit the depth/cycle horizon (`ResourceExceeded` /
     /// `Unknown(CycleCut)` / …) rather than a genuine False. `query_find_inner`
@@ -773,6 +790,8 @@ impl Clone for KnowledgeBaseInner {
             derived_only: self.derived_only.clone(),
             strict_violations: Vec::new(),
             presupposition_witnesses: self.presupposition_witnesses.clone(),
+            materialized: RefCell::new(None),
+            materialization: self.materialization,
             find_horizon_hit: false,
         }
     }
@@ -826,6 +845,11 @@ impl KnowledgeBaseInner {
             derived_only: HashSet::new(),
             strict_violations: Vec::new(),
             presupposition_witnesses: HashSet::new(),
+            materialized: RefCell::new(None),
+            // Materialisation defaults ON. Turning it off restores the pure
+            // backward-chaining path byte-for-byte, which is what makes the ON/OFF
+            // differential in `nibli-verify` expressible.
+            materialization: true,
             find_horizon_hit: false,
         }
     }
@@ -866,8 +890,11 @@ impl KnowledgeBaseInner {
         self.pred_cache.borrow_mut().clear();
         self.pred_cache_enabled.set(false);
         self.depth_cut_table.borrow_mut().clear();
+        // The saturation is derived from facts+rules that no longer exist.
+        *self.materialized.borrow_mut() = None;
         // Note: integrity_constraints, compute_eval/compute_batch_eval, cancel,
-        // verbose, strict, and existential_import are NOT cleared on reset —
+        // verbose, strict, existential_import, and materialization are NOT cleared on
+        // reset —
         // they're structural declarations / configuration, not derived state.
         // (The `presupposition_witnesses` SET above IS cleared — it's derived,
         // re-minted on replay — but the flag that gates minting survives.)
@@ -1179,6 +1206,10 @@ pub(super) fn enable_pred_cache(inner: &KnowledgeBaseInner) {
 /// (assert, retract, reset) to prevent stale cached results.
 pub(super) fn invalidate_pred_cache(inner: &KnowledgeBaseInner) {
     clear_typed_pred_cache(inner);
+    // The saturated extensions are content-derived, so a mutation invalidates them too
+    // (see `invalidate_materialization` for why this is NOT folded into
+    // `clear_typed_pred_cache`).
+    invalidate_materialization(inner);
     inner.pred_cache_enabled.set(false);
 }
 

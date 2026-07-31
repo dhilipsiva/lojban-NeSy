@@ -265,6 +265,34 @@ fn eval_negated_exists_group(
     visited: &mut HashSet<StoredFact>,
     tense_fact: Option<&StoredFact>,
 ) -> QueryResult {
+    // MATERIALISED FAST PATH — the whole point of `crate::materialize`.
+    //
+    // When the group's surface relation has a COMPLETE saturated extension, "does a
+    // witness exist" is a set membership test, not a candidate sweep: absent from a
+    // complete extension IS "not derivable", which is exactly what NAF asks. This is
+    // what turns a rule like utopia's `teaches($t,$s) & ~false($t) -> reward($t)` from
+    // a full re-derivation of the fifteen-conjunct void rule per candidate into a hash
+    // lookup — measured 1037 ms → 11 ms on `utopia.nibli` (`just bench-naf`).
+    //
+    // Guarded on `tense_fact.is_none()` and the UNLIFTED group: a temporal-lifting phase
+    // asks about a FLAVOURED witness, and the saturation only ever holds Bare tuples
+    // (eligibility refuses flavoured relations outright). `probe_negated_group` returns
+    // `None` for anything it cannot project or fully ground, and `is_complete_for` is
+    // false unless the extension is both complete and arity-matched — so every case the
+    // shortcut does not cover falls through to the search below, unchanged.
+    if tense_fact.is_none()
+        && inner.materialization
+        && let Some(m) = inner.materialized.borrow().as_ref()
+        && let Some((rel, tuple)) = crate::materialize::probe_negated_group(group, bindings)
+        && m.is_complete_for(&rel, tuple.len())
+    {
+        return negate_result(if m.contains(&rel, &tuple) {
+            QueryResult::True
+        } else {
+            QueryResult::False
+        });
+    }
+
     // Flavor-exact NAF: the group's inner templates already carry any EXPLICIT
     // restrictor flavor (`past ~P` → Past templates, built at construction). In
     // the TEMPORAL-LIFTING phase (`tense_fact = Some(query)`), a BARE template is
@@ -1485,6 +1513,23 @@ pub(super) fn clear_typed_pred_cache(inner: &KnowledgeBaseInner) {
     // The depth-cut table shares the pred_cache lifecycle exactly (query
     // start clear + every-mutation invalidation route through here).
     inner.depth_cut_table.borrow_mut().clear();
+}
+
+/// Drop the stratum-ordered saturation ([`crate::materialize`]).
+///
+/// DELIBERATELY NOT part of `clear_typed_pred_cache`. That funnel runs at query START
+/// as well as at mutation, and the saturation is a claim about the KB's CONTENT, not
+/// about one query — re-deriving it per query would throw away the whole point on the
+/// second query against an unchanged KB. So it is dropped at exactly the mutation
+/// points instead: the two structural ones (`assert_typed_fact` / `unassert_typed_fact`,
+/// which is what covers the mid-query compute auto-assert and forward chaining), the
+/// `invalidate_pred_cache` wrapper every assert/retract/reset already calls, and
+/// `rebuild_inner` / `reset` directly.
+///
+/// Getting this wrong is not a performance bug: a stale extension answers `~p(x)` TRUE
+/// for a `p` the new fact just made derivable.
+pub(super) fn invalidate_materialization(inner: &KnowledgeBaseInner) {
+    *inner.materialized.borrow_mut() = None;
 }
 
 /// Check if a typed fact is asserted in the typed fact store.

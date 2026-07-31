@@ -792,6 +792,7 @@ fn unassert_typed_fact(fact: &StoredFact, inner: &mut KnowledgeBaseInner) {
         }
     }
     clear_typed_pred_cache(inner);
+    invalidate_materialization(inner);
     inner.domain_members_dirty = true;
 }
 
@@ -942,6 +943,10 @@ pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner
     // termination-safe. During normal assertion the cache is disabled+empty,
     // so this is a free no-op there.
     clear_typed_pred_cache(inner);
+    // Same reasoning one level up: the saturated extensions are a claim about the fact
+    // store, which just changed. Structural invariant at the mutation point — this is
+    // the site that covers the mid-query compute auto-assert and forward chaining.
+    invalidate_materialization(inner);
 
     // Check integrity constraints (permissive default: warn, don't reject;
     // STRICT MODE: roll the fact back out and record the violation).

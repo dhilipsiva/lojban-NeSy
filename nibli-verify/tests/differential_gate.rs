@@ -734,3 +734,89 @@ fn retraction_is_equivalent_to_never_asserted() {
          near-vacuous"
     );
 }
+
+/// Materialisation metamorphic differential (`nibli_verify::materialize_diff`):
+/// saturated ≡ backward-chained. Every seeded random stratified-NAF program is run on
+/// two fresh engines — stratum-ordered materialisation ON and OFF — over an
+/// entity×predicate battery. A definitive verdict may never change; the only permitted
+/// difference is OFF non-definitive → ON definitive, the completeness gain a saturated
+/// extension buys by being complete regardless of `max_chain_depth`.
+///
+/// This is the gate that stands between the optimisation and its one unsound failure
+/// mode: a saturation that UNDER-derives makes a missing tuple read as "not derivable",
+/// so the NAF flips from FALSE to a wrong TRUE — definitively, with a well-formed proof
+/// trace, and faster than before. Nothing else in the suite would notice.
+///
+/// The generator mixes in the shapes materialisation must REFUSE rather than
+/// approximate (`du` identity links, `past`-flavoured facts, recursion through a
+/// positive cycle), so a refusal that decayed into an approximation fails here.
+/// Native-only, never skips — no external solver involved.
+#[test]
+fn materialization_is_equivalent_to_backward_chaining() {
+    use nibli_verify::materialize_diff::{self, MatOutcome};
+
+    // 60 rather than the 200-300 the other differentials use: the OFF side is
+    // deliberately the slow path this optimisation exists to remove, so every program
+    // costs an order of magnitude more here than in `strat_diff`/`retract_diff`. The
+    // shapes matter more than the count — see the generator.
+    let count: u64 = std::env::var("NIBLI_VERIFY_MATERIALIZE_RANDOM_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+
+    let mut agree = 0usize;
+    let mut checked = 0usize;
+    let mut gained = 0usize;
+    let mut divergences: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for seed in 0..count {
+        match materialize_diff::run_case(&materialize_diff::random_materialize_case(seed)) {
+            MatOutcome::Agree {
+                checked: c,
+                gained: g,
+                ..
+            } => {
+                agree += 1;
+                checked += c;
+                gained += g;
+            }
+            MatOutcome::Diverge {
+                name,
+                query,
+                on,
+                off,
+            } => divergences.push(format!(
+                "{name}: {query} — materialisation ON gave {on}, OFF gave {off} \
+                 (a DEFINITIVE verdict changed)"
+            )),
+            MatOutcome::LessDefinite {
+                name,
+                query,
+                on,
+                off,
+            } => divergences.push(format!(
+                "{name}: {query} — materialisation ON gave {on}, OFF gave {off} \
+                 (ON is LESS definitive; the saturation is losing information)"
+            )),
+            MatOutcome::Error { name, detail } => errors.push(format!("{name}: {detail}")),
+        }
+    }
+    eprintln!(
+        "nibli-verify materialize: {agree} agree / {} diverge / {} error \
+         ({checked} battery queries, {gained} became definitive, across {count} programs)",
+        divergences.len(),
+        errors.len()
+    );
+
+    assert!(errors.is_empty(), "harness errors:\n{}", errors.join("\n"));
+    assert!(
+        divergences.is_empty(),
+        "materialisation changed a verdict:\n{}",
+        divergences.join("\n")
+    );
+    // Non-vacuity: the battery must actually have run.
+    assert!(
+        checked as u64 >= count * 10,
+        "only {checked} battery queries across {count} programs; near-vacuous"
+    );
+}

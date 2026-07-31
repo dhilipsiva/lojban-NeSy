@@ -36,3 +36,8 @@ path = "src/bin/pin.rs"
 name = "nibli-bench-book"
 description = "Release-profile timing pins for the book's quoted figures"
 path = "src/bin/bench_book.rs"
+
+[[bin]]
+name = "nibli-bench-naf"
+description = "Release-profile timing for negation-as-failure evaluation"
+path = "src/bin/bench_naf.rs"

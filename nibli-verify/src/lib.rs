@@ -21,6 +21,7 @@ pub mod corpus;
 pub mod corpus_naf;
 pub mod filter;
 pub mod generator;
+pub mod materialize_diff;
 pub mod nibli_kr_battery;
 pub mod nibli_kr_seam;
 pub mod oracle;

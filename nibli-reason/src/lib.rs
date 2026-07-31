@@ -35,8 +35,11 @@ use std::sync::Arc;
 mod compute;
 /// Fact store abstraction (trait + in-memory implementation).
 pub mod fact_store;
+mod materialize;
 mod reasoning;
 mod rules;
+
+pub use materialize::Ineligible;
 
 pub use compute::ComputeRequest;
 
@@ -340,6 +343,12 @@ impl KnowledgeBase {
         inner.rule_source_map.clear();
         inner.negative_facts.clear();
         inner.disjunctive_constraints.clear();
+        // The saturated extensions are derived from the rules and facts being cleared
+        // right above. Cleared HERE rather than left to the callers' pairing with
+        // `invalidate_pred_cache`, because `KnowledgeBase::rebuild` is the one rebuild
+        // entry point that does NOT invalidate — a stale extension surviving it would
+        // answer `~p(x)` from the pre-rebuild knowledge base.
+        *inner.materialized.borrow_mut() = None;
 
         // Collect non-retracted buffers + their ids ordered by ID (owned, to avoid
         // a borrow conflict with the mutable replay below).
@@ -420,6 +429,50 @@ impl KnowledgeBase {
         self.inner.borrow_mut().max_chain_depth = depth.max(1);
     }
 
+    /// Saturate the relations this query will read under `~`, so the NAF checks below
+    /// are set-membership tests instead of exhaustive proof attempts.
+    ///
+    /// Called ONCE per query, before the iterative-deepening loop — the extension does
+    /// not depend on the depth budget, so re-deriving it per pass would be pure waste.
+    /// Everything here is best-effort: a relation that cannot be saturated is simply
+    /// absent from the completed set, and its NAF takes the ordinary path.
+    ///
+    /// TARGETS. The relations read under `~`: those under a `NotNode` in the query
+    /// buffer, plus the negated conditions and `~` restrictor groups of every
+    /// registered rule. Rule-body NAF is included unconditionally rather than by
+    /// reachability from the query's head, because backward chaining reaches rules
+    /// through the fact store and the equality fallback as well as through the
+    /// dependency graph — an under-approximated target set would silently lose the
+    /// optimisation, and the saturation is scoped by the dependency closure anyway.
+    fn ensure_materialized(&self, logic: &LogicBuffer) {
+        let inner = self.inner.borrow();
+        if !inner.materialization || inner.materialized.borrow().is_some() {
+            return;
+        }
+        let mut targets: HashSet<String> = HashSet::new();
+        materialize::collect_negated_relations(logic, &mut targets);
+        for rule in materialize::distinct_rules(&inner) {
+            for (i, c) in rule.typed_conditions.iter().enumerate() {
+                if rule.negated_condition_indices.contains(&i) {
+                    targets.insert(materialize::surface_relation(c.relation()).to_string());
+                }
+            }
+            for g in &rule.negated_exists_groups {
+                for c in &g.conditions {
+                    targets.insert(materialize::surface_relation(c.relation()).to_string());
+                }
+            }
+        }
+        if targets.is_empty() {
+            *inner.materialized.borrow_mut() = Some(materialize::Materialized::empty());
+            return;
+        }
+        let elig = materialize::eligible_relations(&inner);
+        let strata = materialize::compute_strata(&inner.pred_dep_graph);
+        let m = materialize::saturate(&inner, &elig, &strata, &targets);
+        *inner.materialized.borrow_mut() = Some(m);
+    }
+
     /// Single-pass entailment check at the current max_chain_depth.
     fn run_entailment_check(&self, logic: &LogicBuffer) -> Result<QueryResult, String> {
         // Enable WITHOUT clearing: the cache is cleared once before the
@@ -442,6 +495,7 @@ impl KnowledgeBase {
     /// Guarantees finding the shallowest proof.
     fn query_entailment_inner(&self, logic: LogicBuffer) -> Result<QueryResult, String> {
         // Tabling: clear once, persist across depth iterations.
+        self.ensure_materialized(&logic);
         let configured_max = {
             let inner = self.inner.borrow();
             clear_and_enable_pred_cache(&inner);
@@ -476,8 +530,23 @@ impl KnowledgeBase {
         // than silently report a wrong quantity. See `find_witnesses` /
         // `find_horizon_hit` — this is the find-path analog of the entailment path's
         // `ResourceExceeded(Depth)` verdict.
-        const INCOMPLETE_MSG: &str = "witness enumeration incomplete: a witness exceeds the depth/cycle budget, so \
-             find/count/aggregate would undercount — raise the depth limit or simplify the rules";
+        //
+        // WHAT THIS MEANS SINCE STRATUM-ORDERED MATERIALISATION. A saturated relation
+        // returns only definitive verdicts, so `witness_search_cut` never fires for a
+        // leaf inside the materialised fragment and this refusal never triggers there —
+        // no code change was needed for that, it falls out. What remains is the genuine
+        // residue: compute predicates (an infinite numeric domain, not a finite set to
+        // saturate) and any relation the eligibility analysis refused. So the refusal
+        // stopped meaning "your search was too deep" and now means "this query reached
+        // the fragment the engine cannot complete" — and the advice changed with it,
+        // because raising the depth limit does nothing for an unsaturable relation.
+        // `KnowledgeBase::materialization_report` names which relations those are.
+        const INCOMPLETE_MSG: &str = "witness enumeration incomplete: a witness leaf could not be decided \
+             (a compute predicate, or a relation outside the materialised fragment), so \
+             find/count/aggregate would undercount — see `materialization_report` for which \
+             relations were not saturated, or raise the depth limit if the KB is one the \
+             engine falls back to backward chaining on";
+        self.ensure_materialized(&logic);
         let mut inner = self.inner.borrow_mut();
         clear_and_enable_pred_cache(&inner);
         inner.ensure_domain_members_cached();
@@ -660,6 +729,9 @@ impl KnowledgeBase {
         &self,
         logic: LogicBuffer,
     ) -> Result<(QueryResult, ProofTrace), String> {
+        // Same saturation the untraced path uses — a traced verdict that disagreed with
+        // its untraced twin would be a proof of the wrong thing.
+        self.ensure_materialized(&logic);
         // Tabling: clear once, persist across phases.
         let configured_max = {
             let inner = self.inner.borrow();
@@ -800,6 +872,52 @@ impl KnowledgeBase {
     /// Whether existential-import (xorlo witness minting) is enabled.
     pub fn is_existential_import(&self) -> bool {
         self.inner.borrow().existential_import
+    }
+
+    /// Enable/disable STRATUM-ORDERED MATERIALISATION (default ON — see
+    /// [`crate::materialize`]). When on, the relations a query reads under `~` are
+    /// saturated bottom-up in stratum order before the query runs, and each NAF check
+    /// becomes a set-membership test instead of an exhaustive proof attempt. When off,
+    /// every NAF takes the backward-chaining path — byte-identical to the pre-2026-07-31
+    /// engine, which is what the ON/OFF differential in `nibli-verify` compares against.
+    ///
+    /// Configuration, not derived state — survives `reset()`. Turning it OFF drops any
+    /// existing saturation immediately, so the switch takes effect on the next query
+    /// rather than at the next mutation.
+    pub fn set_materialization(&self, on: bool) {
+        let mut inner = self.inner.borrow_mut();
+        inner.materialization = on;
+        *inner.materialized.borrow_mut() = None;
+    }
+
+    /// Whether stratum-ordered materialisation is enabled.
+    pub fn is_materialization(&self) -> bool {
+        self.inner.borrow().materialization
+    }
+
+    /// What the last query's saturation actually covered: `(completed relations, why
+    /// each refused relation was not)`, both sorted for reproducible output.
+    ///
+    /// This exists because the optimisation is INVISIBLE when it fails. A knowledge base
+    /// whose `~p(x)` still takes seconds has no other way to learn that `p` fell out of
+    /// the materialisable fragment, or which of its dependencies did. Empty until a
+    /// query has run (the saturation is built lazily) and after any mutation.
+    pub fn materialization_report(&self) -> (Vec<String>, Vec<(String, String)>) {
+        let inner = self.inner.borrow();
+        let m = inner.materialized.borrow();
+        let Some(m) = m.as_ref() else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut complete: Vec<String> = m.complete.iter().cloned().collect();
+        complete.sort();
+        let mut refused: Vec<(String, String)> = m
+            .refused
+            .iter()
+            .filter(|(rel, _)| !m.complete.contains(*rel))
+            .map(|(rel, why)| (rel.clone(), why.reason()))
+            .collect();
+        refused.sort();
+        (complete, refused)
     }
 
     /// Declare `relation` DERIVED-ONLY (intensional / IDB): thereafter it may be

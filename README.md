@@ -362,6 +362,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Ground conjunction flattening:** top-level `And` trees flattened before assertion; ground material conditionals auto-registered as zero-variable rules for modus ponens
 - **Equality reasoning:** `du` (identity) with union-find congruence closure
 - **Stratification enforcement:** predicate dependency graph analysis prevents unsound negative cycles
+- **Stratum-ordered materialisation:** the stratification is also USED, not only checked — the relations a query reads under `~` are saturated bottom-up in stratum order, so `~p(x)` is a set-membership test rather than an exhaustive attempt to prove `p(x)` and fail. Fail-closed: tense/deontic flavours, `du` equivalence classes, compute conditions and non-projectable rules are refused and keep the ordinary backward-chaining path. `NIBLI_MATERIALIZE=0` turns it off
 - **Integrity constraints:** `deny` rules enforce assertion-time invariants
 - **Defeasible rules:** priority-ordered rule matching (`priority: u32`)
 - **Sorted logic:** type hierarchy with subsort checking
