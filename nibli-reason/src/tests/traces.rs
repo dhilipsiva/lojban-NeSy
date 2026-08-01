@@ -188,15 +188,82 @@ fn exact_count_with_unresolved_member_bounds() {
     );
 }
 
+/// Shared body for the two batch-path tests below: `sum(_v0, 2, 3)` as a bare
+/// ComputeNode — raw-FOL-only (the surface pipeline never leaves one bare).
+fn flat_sum_body(nodes: &mut Vec<LogicNode>) -> u32 {
+    compute(
+        nodes,
+        "sum",
+        vec![
+            LogicalTerm::Variable("_v0".to_string()),
+            LogicalTerm::Number(2.0),
+            LogicalTerm::Number(3.0),
+        ],
+    )
+}
+
 /// The ForAll/Count-over-ComputeNode BATCH fast path
-/// (`batch_evaluate_compute_for_members`) — raw-FOL-only (the surface pipeline
-/// never leaves a bare ComputeNode body). Its decisive per-member branches need
-/// NUMERIC members, and numbers never enter the quantifier domain (asserting
-/// `namcu(4.0)`/`namcu(5.0)` below adds NO member — pinned at the engine level
-/// too, `numeric_terms_are_not_universal_domain_members`). With real (constant)
-/// members the arithmetic is non-evaluable and no backend is configured, so the
-/// batch must stay NON-DEFINITIVE — never a fabricated True/False — except where
-/// the count sum-bound is decisive regardless of the unresolved member.
+/// (`batch_evaluate_compute_for_members`) over an all-numeric domain. Since the
+/// numbers-join-the-domain change, asserting `namcu(4.0)`/`namcu(5.0)` DOES add
+/// members (pinned engine-level by `numeric_terms_are_universal_domain_members`),
+/// so the batch's decisive per-member branches are reachable from asserted
+/// facts: every member evaluates locally and the verdicts are definitive.
+#[test]
+fn flat_forall_and_count_over_compute_batch_is_decisive_over_numeric_members() {
+    let kb = new_kb();
+    for n in [4.0, 5.0] {
+        let mut nodes = Vec::new();
+        let root = pred(&mut nodes, "namcu", vec![LogicalTerm::Number(n)]);
+        assert_buf(
+            &kb,
+            LogicBuffer {
+                nodes,
+                roots: vec![root],
+            },
+        );
+    }
+
+    let mut nodes = Vec::new();
+    let body = flat_sum_body(&mut nodes);
+    let root = forall(&mut nodes, "_v0", body);
+    assert_eq!(
+        query_result(
+            &kb,
+            LogicBuffer {
+                nodes,
+                roots: vec![root],
+            }
+        ),
+        QueryResult::False,
+        "4 ≠ 2 + 3: the batch finds the numeric counterexample"
+    );
+
+    for (cnt, expected) in [(1u32, QueryResult::True), (2u32, QueryResult::False)] {
+        let mut nodes = Vec::new();
+        let body = flat_sum_body(&mut nodes);
+        let root = count(&mut nodes, "_v0", cnt, body);
+        assert_eq!(
+            query_result(
+                &kb,
+                LogicBuffer {
+                    nodes,
+                    roots: vec![root],
+                }
+            ),
+            expected,
+            "count {cnt}: exactly one member (5.0) satisfies sum(v, 2, 3)"
+        );
+    }
+}
+
+/// The same batch shapes with a CONSTANT member mixed in: the arithmetic is
+/// non-evaluable for it and no backend is configured, so the non-definitive
+/// discipline that remains must hold — a False counterexample still dominates
+/// the ForAll (False outranks Unknown), but neither count bound is decisive
+/// once the unresolved member could tip the tally, so the count verdicts are
+/// NEVER a guess. (Pre-domain-change, count 2 was a decisive FALSE via the
+/// sum bound `0 + 1 < 2`; with 5.0 now a satisfying member the bound reads
+/// `1 + 1 < 2` and the verdict correctly degrades to non-definitive.)
 #[test]
 fn flat_forall_and_count_over_compute_batch_stays_non_definitive() {
     let kb = new_kb();
@@ -213,20 +280,8 @@ fn flat_forall_and_count_over_compute_batch_stays_non_definitive() {
     }
     assert_buf(&kb, make_assertion("alis", "prenu"));
 
-    let compute_body = |nodes: &mut Vec<LogicNode>| {
-        compute(
-            nodes,
-            "sum",
-            vec![
-                LogicalTerm::Variable("_v0".to_string()),
-                LogicalTerm::Number(2.0),
-                LogicalTerm::Number(3.0),
-            ],
-        )
-    };
-
     let mut nodes = Vec::new();
-    let body = compute_body(&mut nodes);
+    let body = flat_sum_body(&mut nodes);
     let root = forall(&mut nodes, "_v0", body);
     assert_eq!(
         query_result(
@@ -236,20 +291,13 @@ fn flat_forall_and_count_over_compute_batch_stays_non_definitive() {
                 roots: vec![root],
             }
         ),
-        QueryResult::Unknown(UnknownReason::BackendUnavailable),
-        "forall over an un-evaluable compute member is non-definitive"
+        QueryResult::False,
+        "the numeric counterexample (4.0) outranks the constant member's Unknown"
     );
 
-    for (cnt, expected) in [
-        (
-            1u32,
-            QueryResult::Unknown(UnknownReason::BackendUnavailable),
-        ),
-        // 0 satisfying + 1 unresolved < 2: the sum bound is decisive.
-        (2u32, QueryResult::False),
-    ] {
+    for cnt in [1u32, 2u32] {
         let mut nodes = Vec::new();
-        let body = compute_body(&mut nodes);
+        let body = flat_sum_body(&mut nodes);
         let root = count(&mut nodes, "_v0", cnt, body);
         assert_eq!(
             query_result(
@@ -259,8 +307,8 @@ fn flat_forall_and_count_over_compute_batch_stays_non_definitive() {
                     roots: vec![root],
                 }
             ),
-            expected,
-            "count {cnt} over an un-evaluable compute member"
+            QueryResult::Unknown(UnknownReason::BackendUnavailable),
+            "count {cnt}: 1 satisfying + 1 unresolved — neither bound decisive, never a guess"
         );
     }
 }

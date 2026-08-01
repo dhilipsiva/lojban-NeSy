@@ -1791,21 +1791,57 @@ fn x3_conversion_swaps_x1_and_x3() {
 }
 
 #[test]
-fn numeric_terms_are_not_universal_domain_members() {
-    // Current semantics (pinned): a `li` number asserted into a predicate does
-    // NOT become a quantifier-domain member — a universal restricted to it is
-    // VACUOUSLY true (both compute bodies below, one arithmetically true and
-    // one false, give TRUE). This is the sharp edge that keeps the stored-number
-    // compute-arg path (GroundTerm::as_f64 on bound variables) surface-
-    // unreachable; the literal path is pinned by builtin_arithmetic_verdicts.
+fn numeric_terms_are_universal_domain_members() {
+    // A number asserted into a predicate IS a quantifier-domain member
+    // (GUARANTEES §Disclosed Sharp Edges, the numbers-join-the-domain change):
+    // the universal below is TRUE by CHECKING 5, not vacuously, and an
+    // arithmetically false body finds 5 as its counterexample. Pre-change both
+    // answered TRUE — the disclosed vacuous-universal sharp edge this replaces.
     let engine = engine_with_facts(&["big(5)."]);
     assert_true(
         &engine.query_holds("sum(every big, 2, 3).").unwrap(),
-        "vacuous universal (numbers are not domain members)",
+        "5 = 2 + 3 holds of the one member",
+    );
+    assert_false(
+        &engine.query_holds("sum(every big, 2, 2).").unwrap(),
+        "5 ≠ 2 + 2 — the number is enumerated and fails the body",
+    );
+}
+
+#[test]
+fn exact_count_ranges_over_asserted_numbers() {
+    // The TODO §Reasoning/evaluation repro verbatim: with `big(5). dog(5).`
+    // entailed, `dog(no big).` used to answer TRUE (the count enumerated a
+    // number-free domain) while `dog(some big).` answered TRUE via the index —
+    // jointly inconsistent verdicts. The count now ranges over the numbers.
+    let engine = engine_with_facts(&["big(5).", "dog(5).", "dog(Rex)."]);
+    assert_false(
+        &engine.query_holds("dog(no big).").unwrap(),
+        "5 is big and a dog — 'no big thing is a dog' must be FALSE",
     );
     assert_true(
-        &engine.query_holds("sum(every big, 2, 2).").unwrap(),
-        "vacuous even for an arithmetically false body — numbers never enumerate",
+        &engine.query_holds("dog(exactly 1 big).").unwrap(),
+        "exactly one big thing (5) is a dog",
+    );
+    assert_true(
+        &engine.query_holds("dog(some big).").unwrap(),
+        "the existential agrees with the count",
+    );
+}
+
+#[test]
+fn presupposition_witnesses_stay_out_of_numeric_counts() {
+    // Asserting a description universal mints an existential-import
+    // presupposition witness for the restrictor; that phantom must not count,
+    // and the number must not leak into an unrelated predicate's tally.
+    let engine = engine_with_facts(&["big(5).", "animal(every big)."]);
+    assert_true(
+        &engine.query_holds("animal(exactly 1 big).").unwrap(),
+        "the witness is skipped: only the number 5 counts as big",
+    );
+    assert_true(
+        &engine.query_holds("dog(exactly 0 big).").unwrap(),
+        "5 is not a dog — the member is enumerated and fails the body",
     );
 }
 

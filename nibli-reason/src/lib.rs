@@ -359,6 +359,7 @@ impl KnowledgeBase {
         inner.known_entities.clear();
         inner.known_event_entities.clear();
         inner.known_descriptions.clear();
+        inner.known_numbers.clear();
         inner.known_rules.clear();
         inner.skolem_fn_registry.clear();
         inner.fact_store.clear();

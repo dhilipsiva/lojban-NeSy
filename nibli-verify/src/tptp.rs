@@ -116,6 +116,10 @@ fn render_term(t: &LogicalTerm, vars: &mut VarMap) -> String {
         LogicalTerm::Constant(c) => sanitize_functor(c),
         LogicalTerm::Description(d) => sanitize_functor(&format!("le_{d}")),
         // Numbers belong to the compute fragment (filtered out); render defensively.
+        // If numbers ever enter the mappable fragment: a bare `num_<n>` Herbrand
+        // constant IS a domain member here, matching the engine since the
+        // numbers-join-the-domain change (asserted numbers are quantifier-domain
+        // members — GUARANTEES §Disclosed Sharp Edges).
         LogicalTerm::Number(n) => sanitize_functor(&format!("num_{n}")),
         // `zo'e` is a single RIGID unspecified referent — one shared constant, NOT an
         // existential drop-to-`$true`. That matches nibli's closed-world semantics: a role

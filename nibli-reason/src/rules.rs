@@ -494,6 +494,7 @@ pub(super) fn collect_and_note_constants(
                 match arg {
                     LogicalTerm::Constant(c) => inner.note_entity(c),
                     LogicalTerm::Description(d) => inner.note_description(d),
+                    LogicalTerm::Number(n) => inner.note_number(*n),
                     _ => {}
                 }
             }

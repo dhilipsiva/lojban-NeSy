@@ -96,32 +96,7 @@ fn summarize_true(trace: &ProofTrace, register: Register) -> Option<String> {
     if trace.naf_dependent {
         s.push_str(" (Under the closed-world assumption — nothing known contradicts it.)");
     }
-    // The numeric-quantifier-domain caveat rides the SAME channel as the closed-world
-    // note, and for the same reason: it is the honesty qualifier on a TRUE, so it belongs
-    // in the one-line summary rather than only deep in the tree. Without this the [Why]
-    // line reads as pure corroboration ("Because rex is big; and because rex is an
-    // animal.") while a number in the restrictor was never enumerated at all —
-    // i.e. the disclosed sharp edge would still be silent on the most-read surface.
-    if let Some(gap) = numeric_domain_gap_caveat(trace) {
-        s.push_str(&format!(" ({gap})"));
-    }
     Some(s)
-}
-
-/// The `numeric_domain_gap` step's caveat, if this proof carries one.
-///
-/// Deliberately read off the step rather than a `ProofTrace` flag: the step is already
-/// the wire-format carrier (a `PredicateCheck` with a reserved `method`), so nothing new
-/// crosses the WIT boundary. `collect_extras` cannot serve here — it harvests only
-/// `ComputeCheck`/`EqualitySubstitution`, and its output is phrased as supporting
-/// evidence, which is exactly the wrong register for a caveat.
-fn numeric_domain_gap_caveat(trace: &ProofTrace) -> Option<String> {
-    trace.steps.iter().find_map(|step| match &step.rule {
-        ProofRule::PredicateCheck { method, detail } if method == "numeric_domain_gap" => {
-            Some(detail.clone())
-        }
-        _ => None,
-    })
 }
 
 /// Append narrative clauses describing how the proof's derived conclusions follow
@@ -662,49 +637,6 @@ mod tests {
         assert!(s.contains("animal"), "conclusion missing: {s}");
         // No bare algebra variable leaks into the explanation.
         assert!(!s.contains('X'), "bare variable leaked: {s}");
-    }
-
-    #[test]
-    fn summarize_appends_the_numeric_domain_gap_caveat() {
-        // The [Why] line is the most-read surface — nibli-host prints it and nibli-ui
-        // shows it above the tree. Without this the summary read as pure corroboration
-        // ("Because rex is big; and because rex is an animal.") while a number in the
-        // restrictor was never enumerated, i.e. the disclosed sharp edge stayed silent
-        // exactly where a reader would look. Rides the same channel as the NAF note.
-        let trace = ProofTrace {
-            steps: vec![
-                step(
-                    ProofRule::Asserted {
-                        fact: "dog_x1(sk_2, adam)".to_string(),
-                    },
-                    true,
-                    vec![],
-                ),
-                step(
-                    ProofRule::PredicateCheck {
-                        method: "numeric_domain_gap".to_string(),
-                        detail: "this universal's restrictor (over big) holds of the \
-                                 number 5, which is not a quantifier-domain member"
-                            .to_string(),
-                    },
-                    true,
-                    vec![],
-                ),
-                step(ProofRule::Negation, true, vec![0, 1]),
-            ],
-            root: 2,
-            naf_dependent: false,
-            cwa_false: false,
-        };
-        let s = summarize_proof(&trace, Register::Spec).unwrap();
-        assert!(
-            s.contains("quantifier-domain member"),
-            "the numeric-domain-gap caveat must reach the one-line summary: {s}"
-        );
-        assert!(
-            s.contains("the number 5"),
-            "the caveat must name the skipped value: {s}"
-        );
     }
 
     #[test]

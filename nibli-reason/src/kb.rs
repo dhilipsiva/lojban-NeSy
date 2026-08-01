@@ -535,6 +535,13 @@ pub(super) struct KnowledgeBaseInner {
     pub(super) known_event_entities: HashSet<String>,
     /// Known description terms (from `le` determiner), tracked separately for InDomain.
     pub(super) known_descriptions: HashSet<String>,
+    /// Finite numbers asserted into predicate facts (f64 bit patterns) —
+    /// quantifier-domain members of the INDIVIDUAL sort, so `every` /
+    /// `exactly N` / `some` all range over them (GUARANTEES §Disclosed Sharp
+    /// Edges). Populated by `note_number` from `collect_and_note_constants`
+    /// (the assertion path ONLY — mid-query compute auto-asserts deliberately
+    /// do not note: query evaluation must not grow the quantifier domain).
+    pub(super) known_numbers: HashSet<u64>,
     pub(super) known_rules: HashSet<u64>,
     pub(super) skolem_fn_registry: Vec<SkolemFnEntry>,
     /// Pluggable fact store (in-memory or persistent).
@@ -764,16 +771,6 @@ pub(super) struct KnowledgeBaseInner {
     /// cannot reach — turning a TRUE into `ResourceExceeded(Depth)`. Both phases must
     /// agree on which evaluator they are using.
     pub(super) positive_lookup: Cell<bool>,
-    /// Per-QUERY latch for the numeric-quantifier-domain `[Domain]` echo: messages already
-    /// announced during this query. Reset by `clear_and_enable_pred_cache`, the one
-    /// per-query entry point both the traced and untraced paths call.
-    ///
-    /// Needed because a universal is re-evaluated more than once per query — the
-    /// deepening loop revisits it per depth, and a traced query runs the whole thing
-    /// twice (untraced probe, then one recording build). Without the latch a single
-    /// `?` would print the same diagnostic up to `max_chain_depth` times. Keyed on the
-    /// message so two DIFFERENT number-bearing universals in one query each announce.
-    pub(super) announced_gaps: RefCell<HashSet<String>>,
     /// Transient (per `query_find`): set when witness enumeration drops a candidate
     /// because its leaf check hit the depth/cycle horizon (`ResourceExceeded` /
     /// `Unknown(CycleCut)` / …) rather than a genuine False. `query_find_inner`
@@ -790,6 +787,7 @@ impl Clone for KnowledgeBaseInner {
             known_entities: self.known_entities.clone(),
             known_event_entities: self.known_event_entities.clone(),
             known_descriptions: self.known_descriptions.clone(),
+            known_numbers: self.known_numbers.clone(),
             known_rules: self.known_rules.clone(),
             skolem_fn_registry: self.skolem_fn_registry.clone(),
             fact_store: self.fact_store.clone_box(),
@@ -833,7 +831,6 @@ impl Clone for KnowledgeBaseInner {
             materialized: RefCell::new(None),
             materialization: self.materialization,
             positive_lookup: Cell::new(true),
-            announced_gaps: RefCell::new(HashSet::new()),
             find_horizon_hit: false,
         }
     }
@@ -846,6 +843,7 @@ impl KnowledgeBaseInner {
             known_entities: HashSet::new(),
             known_event_entities: HashSet::new(),
             known_descriptions: HashSet::new(),
+            known_numbers: HashSet::new(),
             known_rules: HashSet::new(),
             skolem_fn_registry: Vec::new(),
             fact_store: Box::new(crate::fact_store::InMemoryFactStore::new()),
@@ -894,7 +892,6 @@ impl KnowledgeBaseInner {
             // differential in `nibli-verify` expressible.
             materialization: true,
             positive_lookup: Cell::new(true),
-            announced_gaps: RefCell::new(HashSet::new()),
             find_horizon_hit: false,
         }
     }
@@ -904,6 +901,7 @@ impl KnowledgeBaseInner {
         self.known_entities.clear();
         self.known_event_entities.clear();
         self.known_descriptions.clear();
+        self.known_numbers.clear();
         self.known_rules.clear();
         self.skolem_fn_registry.clear();
         self.fact_store.clear();
@@ -987,6 +985,16 @@ impl KnowledgeBaseInner {
         }
     }
 
+    /// Track a finite number asserted into a predicate fact as a quantifier-
+    /// domain member. Non-finite values (NaN/±inf) are skipped fail-closed:
+    /// they satisfy no arithmetic and would pollute counterexample reporting
+    /// (their evaluation already surfaces `Unknown(NonFinite)`).
+    pub(super) fn note_number(&mut self, value: f64) {
+        if value.is_finite() && self.known_numbers.insert(value.to_bits()) {
+            self.domain_members_dirty = true;
+        }
+    }
+
     /// Return all known domain members as (representation, LogicalTerm) pairs.
     /// Ensure the domain members cache is up-to-date. Call before any query.
     pub(super) fn ensure_domain_members_cached(&mut self) {
@@ -1008,6 +1016,13 @@ impl KnowledgeBaseInner {
         }
         for d in &self.known_descriptions {
             let t = GroundTerm::Description(d.clone());
+            typed_members.push(t.clone());
+            non_event_members.push(t);
+        }
+        for bits in &self.known_numbers {
+            // Asserted numbers are INDIVIDUAL-sort members: both caches, so
+            // universal, count, and existential evaluation all reach them.
+            let t = GroundTerm::Number(*bits);
             typed_members.push(t.clone());
             non_event_members.push(t);
         }
@@ -1240,9 +1255,6 @@ impl<'a> Iterator for GroundTermCartesianProduct<'a> {
 pub(super) fn clear_and_enable_pred_cache(inner: &KnowledgeBaseInner) {
     clear_typed_pred_cache(inner);
     inner.pred_cache_enabled.set(true);
-    // Per-QUERY, so it resets HERE and not in `clear_typed_pred_cache` (which also runs
-    // on every mutation): the latch scopes one query's diagnostics, not one KB epoch's.
-    inner.announced_gaps.borrow_mut().clear();
 }
 
 /// Enable the predicate cache without clearing. Used within iterative

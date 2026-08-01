@@ -75,6 +75,21 @@ fn test_count_witnesses_zero() {
 }
 
 #[test]
+fn find_reaches_rule_derived_numeric_witnesses() {
+    // Face 4 of the numeric-domain TODO: `extract_rule_candidates_for_entailment`
+    // instantiates a rule conclusion's PatternVar position over the domain
+    // members, so a rule-DERIVED fact about a number was invisible to
+    // find/count/aggregate — a definitive undercount with no refusal, the one
+    // place the gap escaped as a NUMBER a user pastes into a report. With
+    // numbers in the domain the derived witness is enumerated.
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("big(5)."));
+    assert_buf(&kb, compile_surface("all $x: big($x) -> animal($x)."));
+    let count = kb.count_witnesses(make_event_find_query("animal")).unwrap();
+    assert_eq!(count, 1, "the derived animal(5) must be found");
+}
+
+#[test]
 fn test_count_witnesses_multiple() {
     let kb = new_kb();
     assert_buf(&kb, make_assertion("alis", "gerku"));

@@ -643,6 +643,10 @@ fn term(buf: &LogicBuffer, t: &LogicalTerm, vars: &mut VarMap) -> AspTerm {
         LogicalTerm::Constant(c) => AspTerm::Const(sanitize(c)),
         LogicalTerm::Description(d) => AspTerm::Const(sanitize(&format!("le_{d}"))),
         // Numbers belong to the compute fragment (filtered out); render defensively.
+        // If numbers ever enter the mappable fragment: a bare `num_<n>` Herbrand
+        // constant IS a domain member here, matching the engine since the
+        // numbers-join-the-domain change (asserted numbers are quantifier-domain
+        // members — GUARANTEES §Disclosed Sharp Edges).
         LogicalTerm::Number(n) => AspTerm::Const(sanitize(&format!("num_{n}"))),
         // `zo'e` is a single RIGID unspecified referent — one shared constant, exactly as
         // `tptp.rs`. A role filled with a specific constant must NOT satisfy a `something` query

@@ -3,6 +3,59 @@ use super::*;
 // ── Compute result ingestion tests ──
 
 #[test]
+fn query_time_compute_ingest_does_not_grow_the_domain() {
+    // The trusted-oracle ingest (`assert_typed_fact`) stores `product(6,2,3)`
+    // as a ground fact mid-query, but deliberately does NOT note 6 as a
+    // quantifier-domain member: query evaluation must not grow the domain —
+    // the one residual of the numbers-join-the-domain change (GUARANTEES
+    // §Disclosed Sharp Edges; the assertion path notes via
+    // `collect_and_note_constants`, this path never does).
+    let kb = new_kb();
+    let ground = |nodes: &mut Vec<LogicNode>| {
+        compute(
+            nodes,
+            "product",
+            vec![
+                LogicalTerm::Number(6.0),
+                LogicalTerm::Number(2.0),
+                LogicalTerm::Number(3.0),
+            ],
+        )
+    };
+    let mut q_nodes = Vec::new();
+    let q_root = ground(&mut q_nodes);
+    assert!(query(
+        &kb,
+        LogicBuffer {
+            nodes: q_nodes,
+            roots: vec![q_root]
+        }
+    ));
+
+    // If the ingest had noted 6, this universal would find it as a
+    // counterexample (6 ≠ 2 + 2 → FALSE); the still-empty domain keeps it
+    // vacuously TRUE instead.
+    let mut u_nodes = Vec::new();
+    let body = compute(
+        &mut u_nodes,
+        "product",
+        vec![
+            LogicalTerm::Variable("_v0".to_string()),
+            LogicalTerm::Number(2.0),
+            LogicalTerm::Number(2.0),
+        ],
+    );
+    let u_root = forall(&mut u_nodes, "_v0", body);
+    assert!(query(
+        &kb,
+        LogicBuffer {
+            nodes: u_nodes,
+            roots: vec![u_root]
+        }
+    ));
+}
+
+#[test]
 fn test_compute_result_ingested_into_kb() {
     let kb = new_kb();
 
