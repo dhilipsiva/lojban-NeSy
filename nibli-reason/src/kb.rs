@@ -2327,6 +2327,17 @@ pub(super) fn collect_entailment_candidates(
 ) -> Option<Vec<GroundTerm>> {
     let mut anchors = Vec::new();
     collect_mandatory_anchors(buffer, body_id, var_name, subs, tense, &mut anchors);
+    // A role predicate of a compute relation must not anchor even when the
+    // relation is externally REGISTERED rather than built-in (`exponential_x1`):
+    // the static classifier cannot know the registry, but the registered head is
+    // visible in this very body subtree as a ComputeNode — refuse any anchor
+    // sharing its surface relation.
+    let mut compute_heads: HashSet<&str> = HashSet::new();
+    collect_compute_heads(buffer, body_id, &mut compute_heads);
+    if !compute_heads.is_empty() {
+        anchors
+            .retain(|a| !compute_heads.contains(crate::materialize::surface_relation(&a.relation)));
+    }
     if anchors.is_empty() {
         return None;
     }
@@ -2353,9 +2364,19 @@ pub(super) fn collect_entailment_candidates(
 }
 
 /// Relations whose truth is not store-backed (query-time evaluation /
-/// equivalence machinery) — never sound to narrow candidates from.
-fn is_non_indexable_relation(rel: &str) -> bool {
-    nibli_types::relations::is_identity(rel) || nibli_types::relations::is_numeric_comparison(rel)
+/// equivalence machinery) — never sound to narrow candidates from. Classifies
+/// the SURFACE relation, so a decomposed role predicate of an arithmetic or
+/// comparison relation (`sum_x1`, `greater_x2`) is refused like its base: its
+/// store extension is populated lazily by compute auto-ingest (or never —
+/// `asserted_numeric_comparison` refuses comparison facts outright), so an
+/// empty index entry is not "no witness", and a mandatory anchor built on one
+/// let its empty candidate set win the narrowing pick — turning
+/// `sum(some big, 2, 3).` into a definitive FALSE.
+pub(crate) fn is_non_indexable_relation(rel: &str) -> bool {
+    let base = crate::materialize::surface_relation(rel);
+    nibli_types::relations::is_identity(base)
+        || nibli_types::relations::is_numeric_comparison(base)
+        || nibli_types::relations::is_builtin_arithmetic(base)
 }
 
 /// Candidate narrowing for a negated-exists group's event variable — the
@@ -2474,6 +2495,40 @@ fn collect_mandatory_anchors(
         // OrNode: optional branches can't narrow. NotNode: negated predicates
         // can't anchor. CountNode/ComputeNode/others: not store-backed anchors.
         _ => {}
+    }
+}
+
+/// Collect every `ComputeNode` head relation in the subtree. Companion to the
+/// anchor sweep: `collect_mandatory_anchors` ignores ComputeNodes themselves,
+/// but their ROLE predicates (`exponential_x1`) look like ordinary store-backed
+/// predicates, and for a REGISTERED (non-built-in) compute relation only the
+/// head's presence in the body marks the relation as query-time-evaluated.
+fn collect_compute_heads<'b>(buffer: &'b LogicBuffer, node_id: u32, heads: &mut HashSet<&'b str>) {
+    let Ok(node) = get_node(buffer, node_id) else {
+        return;
+    };
+    match node {
+        LogicNode::ComputeNode((rel, _)) => {
+            heads.insert(rel.as_str());
+        }
+        LogicNode::Predicate(_) => {}
+        LogicNode::AndNode((l, r)) | LogicNode::OrNode((l, r)) => {
+            collect_compute_heads(buffer, *l, heads);
+            collect_compute_heads(buffer, *r, heads);
+        }
+        LogicNode::NotNode(id)
+        | LogicNode::ExistsNode((_, id))
+        | LogicNode::ForAllNode((_, id))
+        | LogicNode::PastNode(id)
+        | LogicNode::PresentNode(id)
+        | LogicNode::FutureNode(id)
+        | LogicNode::ObligatoryNode(id)
+        | LogicNode::PermittedNode(id) => {
+            collect_compute_heads(buffer, *id, heads);
+        }
+        LogicNode::CountNode((_, _, body)) => {
+            collect_compute_heads(buffer, *body, heads);
+        }
     }
 }
 

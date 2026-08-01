@@ -1810,6 +1810,61 @@ fn numeric_terms_are_not_universal_domain_members() {
 }
 
 #[test]
+fn compute_role_predicates_do_not_anchor_existential_narrowing() {
+    // `sum_x1` (role predicate of a compute relation) has a lazily-populated
+    // store extension — empty until an auto-ingest — so admitting it as a
+    // MANDATORY anchor let its empty candidate set win the min-cardinality
+    // narrowing pick: `sum(some big, 2, 3).` answered a definitive FALSE while
+    // both `big(5).` and `sum(5, 2, 3).` are TRUE (TODO §Reasoning/evaluation,
+    // wrong-verdict face 2). The witness must come from the `big_x1` index.
+    let engine = engine_with_facts(&["big(5)."]);
+    assert_true(
+        &engine.query_holds("sum(some big, 2, 3).").unwrap(),
+        "the existential must reach the number 5 via the big_x1 index",
+    );
+    assert_false(
+        &engine.query_holds("sum(some big, 2, 2).").unwrap(),
+        "an arithmetically false body still fails — the fix widens candidates, not truth",
+    );
+}
+
+#[test]
+fn naf_over_a_numeric_existential_inverts_the_corrected_verdict() {
+    // `~` purely negates the inner verdict, so the anchor bug's wrong FALSE
+    // surfaced as a wrong definitive TRUE — strictly worse, since a definitive
+    // TRUE reads as a positive finding. Pin both directions post-fix.
+    let engine = engine_with_facts(&["big(5)."]);
+    assert_false(
+        &engine.query_holds("~sum(some big, 2, 3).").unwrap(),
+        "NAF over the now-TRUE existential must be FALSE",
+    );
+    assert_true(
+        &engine.query_holds("~sum(some big, 2, 2).").unwrap(),
+        "NAF over the arithmetically false body stays TRUE",
+    );
+}
+
+#[test]
+fn entity_existentials_are_untouched_by_the_anchor_fix() {
+    // Controls: ordinary store-backed narrowing must be unchanged, and a
+    // NON-numeric witness still fails a compute body closed-world (the same
+    // empty-extension mechanism, no numbers anywhere).
+    let engine = engine_with_facts(&["big(5).", "dog(Rex)."]);
+    assert_true(
+        &engine.query_holds("dog(some dog).").unwrap(),
+        "entity narrowing control",
+    );
+    assert_false(
+        &engine.query_holds("dog(some big).").unwrap(),
+        "nothing big is a dog — the 5 candidate fails the dog body",
+    );
+    assert_false(
+        &engine.query_holds("sum(some dog, 2, 3).").unwrap(),
+        "a non-numeric witness fails the compute body — closed-world FALSE",
+    );
+}
+
+#[test]
 fn lo_under_connective_is_per_occurrence_existential() {
     // `bite(some dog, Adam) & bite(some dog, Bel).` splits over the sentence-
     // level `&` into two propositions, each with a PER-OCCURRENCE existential:

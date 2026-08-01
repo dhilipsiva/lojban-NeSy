@@ -592,6 +592,36 @@ fn test_compute_node_kb_fallback() {
     ));
 }
 
+#[test]
+fn compute_and_comparison_role_predicates_are_non_indexable() {
+    // Anchor-narrowing classifier: a query-time-evaluated relation must never
+    // narrow entailment candidates, and that covers its decomposed ROLE
+    // predicates too — `sum_x1`'s extension is populated lazily by auto-ingest
+    // (a comparison's never), so an empty index entry is not "no witness".
+    // Before the surface-relation check, `sum_x1` anchored `sum(some big, 2, 3).`
+    // and its empty candidate set won the narrowing pick: a definitive FALSE.
+    use crate::kb::is_non_indexable_relation as non_indexable;
+    for rel in [
+        "equals",
+        "sum",
+        "product",
+        "quotient",
+        "greater",
+        "less",
+        "num_equal",
+        "sum_x1",
+        "product_x2",
+        "quotient_x3",
+        "greater_x2",
+        "num_equal_x1",
+    ] {
+        assert!(non_indexable(rel), "{rel} must be refused as an anchor");
+    }
+    for rel in ["dog", "dog_x1", "sum_x", "sum_x0", "summary", "foo_x12"] {
+        assert!(!non_indexable(rel), "{rel} must stay indexable");
+    }
+}
+
 // ─── Numeric quantifier-domain gap (GUARANTEES §Disclosed Sharp Edges) ────────
 //
 // `LogicalTerm::Number` is dropped by `collect_and_note_constants`, so a number never
