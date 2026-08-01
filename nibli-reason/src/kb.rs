@@ -705,6 +705,25 @@ pub(super) struct KnowledgeBaseInner {
     /// `reset()`, which wipes the KB: unlike `strict`/`existential_import` this is
     /// KB content declared in the KB text, not session configuration.
     pub(super) derived_only: HashSet<String>,
+    /// ADMITTED (closed) base vocabulary — declared in the KB itself by
+    /// `admits("<relation>").`, or programmatically via
+    /// `KnowledgeBase::declare_admitted`. While this set is EMPTY the KB is OPEN
+    /// and every corpus name may be asserted, which is v0.1's behaviour and stays
+    /// the default. The FIRST declaration CLOSES the vocabulary: from then on a
+    /// ground assertion whose relation is not admitted is REJECTED fail-closed in
+    /// `process_assertion`, atomically, with the same shape `derived_only` uses.
+    ///
+    /// It is the DUAL of `derived_only`, and the two together close the extensional
+    /// side completely: `derived_only(R)` says R may not be asserted, `admits(R)`
+    /// says only R (and its fellows) may be. Without the second half a knowledge
+    /// base can state what it refuses to take as evidence but not what it TAKES —
+    /// so any corpus name at all still enters, and a document claiming "the record
+    /// has exactly these entries" is claiming something the engine does not check.
+    ///
+    /// Same lifecycle as `derived_only`: absent from `rebuild_inner`'s clear list
+    /// (a retraction replay cannot re-open the vocabulary) but cleared by
+    /// `reset()`, because it is KB content rather than session configuration.
+    pub(super) admitted: HashSet<String>,
     /// Constants minted as existential-import PRESUPPOSITION witnesses at
     /// description-universal registration (`animal(every dog).` presupposes
     /// ≥1 dog — Lojban's xorlo rule, kept by design).
@@ -808,6 +827,7 @@ impl Clone for KnowledgeBaseInner {
             strict: self.strict,
             existential_import: self.existential_import,
             derived_only: self.derived_only.clone(),
+            admitted: self.admitted.clone(),
             strict_violations: Vec::new(),
             presupposition_witnesses: self.presupposition_witnesses.clone(),
             materialized: RefCell::new(None),
@@ -865,6 +885,7 @@ impl KnowledgeBaseInner {
             // byte-identical; clean-core opts OUT via `set_existential_import(false)`.
             existential_import: true,
             derived_only: HashSet::new(),
+            admitted: HashSet::new(),
             strict_violations: Vec::new(),
             presupposition_witnesses: HashSet::new(),
             materialized: RefCell::new(None),
@@ -911,6 +932,7 @@ impl KnowledgeBaseInner {
         // has its own clear list which deliberately omits `derived_only`, and the
         // declaration is re-asserted by replay regardless.
         self.derived_only.clear();
+        self.admitted.clear();
         self.pred_cache.borrow_mut().clear();
         self.pred_cache_enabled.set(false);
         self.depth_cut_table.borrow_mut().clear();
@@ -1990,8 +2012,27 @@ pub(super) fn process_assertion(
                 ));
             }
 
+            // CLOSED VOCABULARY. The dual of the check above: `derived_only` says
+            // which relations may not be asserted, `admits` says which may. While
+            // `admitted` is empty the KB is OPEN and nothing changes — that is the
+            // v0.1 behaviour and every existing knowledge base keeps it.
+            //
+            // Same leaf discipline as `derived_only`: only the bare event-TYPE leaf
+            // is tested, never the `_xN` role leaves, so a relation is judged by the
+            // name its author wrote rather than by a decomposition artifact.
+            if let Some(rel) = asserted_unadmitted(&typed_leaves, &inner.admitted) {
+                return Err(format!(
+                    "`{rel}` is not admitted vocabulary: this knowledge base declared its \
+                     base vocabulary closed with `admits(\"…\")`, and `{rel}` is not in it. \
+                     Add `admits(\"{rel}\")` ABOVE the first `{rel}` assertion if this \
+                     relation really belongs in the record — a visible, reviewable edit, \
+                     which is the point."
+                ));
+            }
+
             let nothing_collected = typed_leaves.is_empty();
             let mut pending_declarations: Vec<String> = Vec::new();
+            let mut pending_admits: Vec<String> = Vec::new();
             for fact in &typed_leaves {
                 // Intercept `du` facts for equality equivalence indexing.
                 if let StoredFact::Bare(gf) = fact {
@@ -2009,6 +2050,13 @@ pub(super) fn process_assertion(
                     && let Some(GroundTerm::Constant(rel)) = gf.args.get(1)
                 {
                     pending_declarations.push(rel.clone());
+                }
+                // Same interception for the `admits("<relation>")` declaration.
+                if let StoredFact::Bare(gf) = fact
+                    && gf.relation == ADMITS_ROLE
+                    && let Some(GroundTerm::Constant(rel)) = gf.args.get(1)
+                {
+                    pending_admits.push(rel.clone());
                 }
             }
 
@@ -2042,6 +2090,32 @@ pub(super) fn process_assertion(
             }
             for rel in pending_declarations {
                 inner.derived_only.insert(rel);
+            }
+
+            // FAIL CLOSED ON ORDER, for the same reason `derived_only` does — but
+            // the hazard is the mirror image. A `derived_only` placed too late
+            // protects nothing; an `admits` placed too late silently GRANDFATHERS
+            // everything already asserted, so the vocabulary a reader counts in the
+            // file is not the vocabulary the engine closed. Both are false greens.
+            //
+            // The whole admits block must therefore precede every ground fact: at
+            // the moment the vocabulary CLOSES, the store must hold nothing but
+            // declarations. That is checkable without knowing the rest of the block
+            // (which has not been read yet), and it makes the reading order the
+            // writing order.
+            if !pending_admits.is_empty() && inner.admitted.is_empty() {
+                if let Some(rel) = first_non_declaration_relation(inner) {
+                    return Err(format!(
+                        "`admits(\"{}\")` comes too late: `{rel}` was already asserted, so \
+                         closing the vocabulary here would silently admit it along with \
+                         everything else above. Move the whole `admits` block ABOVE the \
+                         first ordinary assertion.",
+                        pending_admits[0]
+                    ));
+                }
+            }
+            for rel in pending_admits {
+                inner.admitted.insert(rel);
             }
 
             for fact in typed_leaves {
@@ -2108,6 +2182,8 @@ pub(super) fn process_assertion(
 /// assertion event-decomposes to `derived_only(ev) ∧ derived_only_x1(ev, "rel")`.
 pub(super) const DERIVED_ONLY: &str = "derived_only";
 pub(super) const DERIVED_ONLY_ROLE: &str = "derived_only_x1";
+pub(super) const ADMITS: &str = "admits";
+pub(super) const ADMITS_ROLE: &str = "admits_x1";
 
 /// Detect a direct ground assertion of a DERIVED-ONLY relation among the
 /// collected leaves. Returns the offending relation name.
@@ -2125,6 +2201,55 @@ fn asserted_derived_only(leaves: &[StoredFact], closed: &HashSet<String>) -> Opt
         (gf.relation != DERIVED_ONLY && closed.contains(gf.relation.as_str()))
             .then(|| gf.relation.clone())
     })
+}
+
+/// Detect a ground assertion of a relation OUTSIDE the admitted vocabulary.
+/// Returns the offending relation name. The mirror of `asserted_derived_only`,
+/// and it shares that function's leaf discipline exactly: only the bare
+/// event-TYPE leaf is judged, never the `_xN` role leaves.
+///
+/// An EMPTY `admitted` set means the vocabulary was never closed, so nothing is
+/// refused — that is the default and the whole v0.1 corpus keeps working.
+///
+/// Both DECLARATION relations are exempt, and must be: `admits("admits")` could
+/// not otherwise store its own declaration, and a KB that closes its vocabulary
+/// still has to be able to write `derived_only("…")` beside it. Exempting them is
+/// safe because neither carries model content — they are the KB talking about
+/// itself, and both are already refused as ordinary vocabulary by having no
+/// meaning outside this interception.
+fn asserted_unadmitted(leaves: &[StoredFact], admitted: &HashSet<String>) -> Option<String> {
+    if admitted.is_empty() {
+        return None;
+    }
+    leaves.iter().find_map(|f| {
+        let gf = f.inner();
+        let rel = gf.relation.as_str();
+        (rel != ADMITS
+            && rel != DERIVED_ONLY
+            && !admitted.contains(rel)
+            && crate::materialize::surface_relation(rel) == rel)
+            .then(|| gf.relation.clone())
+    })
+}
+
+/// The first relation in the store that is not one of the two meta-declarations —
+/// i.e. evidence that ordinary assertions have already landed. Used to refuse an
+/// `admits` block that arrives after the facts it would silently grandfather.
+fn first_non_declaration_relation(inner: &KnowledgeBaseInner) -> Option<String> {
+    let mut found: Option<String> = None;
+    for f in inner.fact_store.all_facts() {
+        let rel = f.inner().relation.clone();
+        let base = crate::materialize::surface_relation(&rel).to_string();
+        if base == ADMITS || base == DERIVED_ONLY {
+            continue;
+        }
+        // Deterministic: the store iterates a HashSet, so take the minimum rather
+        // than whichever happens to come first.
+        if found.as_deref().is_none_or(|cur| base.as_str() < cur) {
+            found = Some(base);
+        }
+    }
+    found
 }
 
 /// Detect an asserted NUMERIC comparison (zmadu/mleca/dunli over number

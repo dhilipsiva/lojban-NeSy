@@ -1,0 +1,22 @@
+# MECHANISM PIN — the `admits` block must PRECEDE the facts it closes over.
+#
+# Fixture INLINE (mechanism pin). Companion to `closed-vocabulary.nibli`, split out
+# because it needs a KB where an ordinary fact lands FIRST.
+#
+# The hazard is the mirror image of `derived_only`'s "comes too late": a `derived_only`
+# placed below its facts protects nothing, and an `admits` placed below its facts
+# silently GRANDFATHERS everything above it — so the vocabulary a reader counts in the
+# file is not the vocabulary the engine closed. Both are false greens that load at zero
+# errors and look exactly like working closures, which is why this rejects rather than
+# warns. Ordering is load-bearing, and enforced rather than merely documented.
+person(Adam).
+
+:refuse reasoning /comes too late/
+admits("person").
+
+# The refusal is ATOMIC: the rejected declaration left nothing behind, so the KB is still
+# open and an ordinary assertion still lands.
+:accept
+rich(Bela).
+
+:expect-pins 2

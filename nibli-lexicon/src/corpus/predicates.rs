@@ -44,6 +44,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:generic] — lensisku: "$x_{1}$ (event) adjusts/regulates/changes $x_{2}$ (ka/ni) in amount/degr…"
     PredicateEntry { name: "adjust", source_gismu: "stika", swap: None, places: &["subject", "adjusts", "place3"], gloss: "adjust", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:generic, x2:prose] — lensisku: "$x_{1}$ (object) adorns/decorates $x_{2}$; $x_{1}$ is an adornment/decor…"
+    PredicateEntry { name: "admits", source_gismu: "zzmeta2", swap: None, places: &["relation"], gloss: "admitted vocabulary", template: Some("{x1} is admitted vocabulary"), tier: CorpusTier::Curated },
     PredicateEntry { name: "adorn", source_gismu: "jadni", swap: None, places: &["subject", "adorns"], gloss: "adorn", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:generic] — lensisku: "$x_{1}$ is an affair/organized activity involving person(s) $x_{2}$ (ind…"
     PredicateEntry { name: "affair", source_gismu: "cuntu", swap: None, places: &["affair", "object"], gloss: "affair", template: None, tier: CorpusTier::Generic },

@@ -1082,6 +1082,50 @@ impl KnowledgeBase {
             .insert(relation.to_string());
     }
 
+    /// Declare `relation` ADMITTED base vocabulary. The FIRST such declaration
+    /// CLOSES this knowledge base's vocabulary: thereafter a ground assertion of
+    /// any relation not admitted is rejected, atomically, the way `derived_only`
+    /// rejects. While nothing has been declared the KB is OPEN, which is the
+    /// default and what every v0.1 knowledge base gets.
+    ///
+    /// The KB-level spelling is `admits("<relation>").`; this is the programmatic
+    /// twin. It is the DUAL of [`Self::declare_derived`] — that one says a relation
+    /// may not be asserted, this one says which relations may — and the pair
+    /// together is what lets a document claim its record has exactly these entries
+    /// and have the engine hold it to that.
+    ///
+    /// ORDER IS LOAD-BEARING and enforced: the whole admits block must precede
+    /// every ordinary assertion, because a declaration that arrives later would
+    /// silently grandfather everything above it. Declaring is idempotent and
+    /// one-way within a session, for the same reason `declare_derived` is: a
+    /// vocabulary that could be re-opened at runtime gives back exactly the
+    /// capability the declaration exists to remove.
+    pub fn declare_admitted(&self, relation: &str) {
+        self.inner
+            .borrow_mut()
+            .admitted
+            .insert(relation.to_string());
+    }
+
+    /// Whether `relation` is admitted base vocabulary. Note an OPEN knowledge base
+    /// (nothing declared) returns `false` for everything while still admitting
+    /// everything — ask [`Self::vocabulary_is_closed`] first.
+    pub fn is_admitted(&self, relation: &str) -> bool {
+        self.inner.borrow().admitted.contains(relation)
+    }
+
+    /// Whether this KB has closed its vocabulary at all.
+    pub fn vocabulary_is_closed(&self) -> bool {
+        !self.inner.borrow().admitted.is_empty()
+    }
+
+    /// The admitted base vocabulary, sorted. Empty when the KB is open.
+    pub fn admitted_relations(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.inner.borrow().admitted.iter().cloned().collect();
+        v.sort();
+        v
+    }
+
     /// Whether `relation` is declared derived-only.
     pub fn is_derived_only(&self, relation: &str) -> bool {
         self.inner.borrow().derived_only.contains(relation)

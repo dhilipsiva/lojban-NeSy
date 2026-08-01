@@ -1,0 +1,63 @@
+# MECHANISM PIN — a KB may close its own base vocabulary.
+#
+# Fixture INLINE (mechanism pin): the subject is the ENGINE's closure, not any one KB.
+#
+# WHY. `derived_only("false")` says `false` may never be ASSERTED — but it says nothing
+# about what may. Any corpus name at all still entered a knowledge base, fail-open, so a
+# document claiming "the record has exactly these entries, and a further one cannot be
+# written" was claiming something the engine did not check. `admits("<relation>")` is the
+# missing dual: it names what this KB takes as evidence and refuses the rest at assert
+# time, with the same message shape and the same atomicity `derived_only` uses.
+#
+# The two together close the extensional side completely: `derived_only(R)` says R may not
+# be asserted, `admits(R)` says only R and its fellows may. Neither alone is enough.
+
+# ── THE DECLARATION BLOCK, WHICH MUST COME FIRST ─────────────────────────────
+admits("person").
+admits("home").
+
+# ── ADMITTED VOCABULARY ASSERTS ──────────────────────────────────────────────
+:accept
+person(Adam).
+
+:accept
+home(Adam).
+
+# ── EVERYTHING ELSE IS REFUSED, FAIL-CLOSED ──────────────────────────────────
+# Not linted, not warned: rejected, and the whole assertion unwinds atomically.
+:refuse reasoning /`rich` is not admitted vocabulary/
+rich(Adam).
+
+:refuse reasoning /not admitted vocabulary/
+banana(Adam).
+
+# ── THE CLOSURE IS EXTENSIONAL ONLY ──────────────────────────────────────────
+# A rule may still CONCLUDE a relation outside the admitted set — the dual of
+# `derived_only`, which permits derivation and refuses assertion. Closing the base
+# vocabulary must not silently close the derived one.
+:accept
+all $x: person($x) -> prisoner($x).
+
+? prisoner(Adam).
+# => TRUE
+
+# ...and the same relation still cannot be asserted directly.
+:refuse reasoning /not admitted vocabulary/
+prisoner(Bela).
+
+# ── THE DECLARATION RELATIONS STAY WRITABLE ──────────────────────────────────
+# `admits` and `derived_only` are exempt, and must be: a KB that closed its vocabulary
+# still has to be able to declare, and `admits("admits")` could not otherwise store its
+# own declaration.
+:accept
+derived_only("prisoner").
+
+:accept
+admits("free").
+
+# A relation admitted LATER is assertable from then on — the block is not frozen, it is
+# only required to precede the facts.
+:accept
+free(Adam).
+
+:expect-pins 10

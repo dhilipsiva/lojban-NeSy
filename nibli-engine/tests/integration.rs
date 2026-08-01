@@ -4806,3 +4806,111 @@ fn deep_chain_query_completes_within_watchdog() {
         .expect("deep-chain query exceeded the 10 s watchdog (cliff regression)");
     assert!(is_true, "the 8-hop chain must derive TRUE");
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Closed base vocabulary — `admits("<rel>")`, the dual of `derived_only`
+//
+// `derived_only` says which relations may NOT be asserted; it says nothing about
+// which may, so any corpus name at all still entered a knowledge base fail-open.
+// A document claiming "the record has exactly these entries, and a further one
+// cannot be written" was therefore claiming something the engine did not check.
+// `admits` names the base vocabulary and refuses the rest at assert time.
+// ════════════════════════════════════════════════════════════════════
+
+/// A KB that declared nothing stays OPEN — the closure is opt-in, and its absence
+/// must be silent or every existing knowledge base breaks.
+#[test]
+fn an_undeclared_kb_admits_everything() {
+    let engine = engine_with_facts(&["person(Adam).", "rich(Adam).", "banana(Adam)."]);
+    assert!(!engine.kb().vocabulary_is_closed());
+    assert!(engine.kb().admitted_relations().is_empty());
+    assert_true(
+        &engine.query_holds("rich(Adam).").unwrap(),
+        "open KB asserts",
+    );
+}
+
+/// The first declaration closes it; everything outside is refused atomically.
+#[test]
+fn admits_closes_the_vocabulary_fail_closed() {
+    let engine = engine_with_facts(&["admits(\"person\").", "person(Adam)."]);
+    assert!(engine.kb().vocabulary_is_closed());
+    assert_eq!(engine.kb().admitted_relations(), vec!["person".to_string()]);
+
+    let err = engine
+        .assert_text("rich(Adam).")
+        .expect_err("an unadmitted relation must be refused");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("not admitted vocabulary") && msg.contains("rich"),
+        "message must name the relation and the reason: {msg}"
+    );
+    // ATOMIC: the rejected assertion left nothing behind.
+    assert_false(
+        &engine.query_holds("rich(Adam).").unwrap(),
+        "a refused assertion must not half-land",
+    );
+}
+
+/// The closure is EXTENSIONAL only — a rule may still conclude outside the set,
+/// exactly as `derived_only` permits derivation while refusing assertion.
+#[test]
+fn a_closed_vocabulary_still_derives_outside_itself() {
+    let engine = engine_with_facts(&[
+        "admits(\"person\").",
+        "person(Adam).",
+        "all $x: person($x) -> prisoner($x).",
+    ]);
+    assert_true(
+        &engine.query_holds("prisoner(Adam).").unwrap(),
+        "closing the base vocabulary must not close the derived one",
+    );
+    assert!(engine.assert_text("prisoner(Bela).").is_err());
+}
+
+/// ORDER IS LOAD-BEARING, and enforced. An `admits` below the facts would silently
+/// grandfather them — the mirror of `derived_only`'s "comes too late".
+#[test]
+fn an_admits_block_below_the_facts_is_refused() {
+    let engine = engine_with_facts(&["person(Adam)."]);
+    let err = engine
+        .assert_text("admits(\"person\").")
+        .expect_err("a late declaration must be refused, not silently honoured");
+    assert!(
+        format!("{err}").contains("comes too late"),
+        "must say why: {err}"
+    );
+    assert!(
+        !engine.kb().vocabulary_is_closed(),
+        "the refusal is atomic — the vocabulary must NOT have closed"
+    );
+}
+
+/// A RETRACTION replay must not re-open the vocabulary. `rebuild_inner` clears the
+/// fact store and replays; `admitted` is deliberately absent from its clear list,
+/// for the same reason `derived_only` is.
+#[test]
+fn retraction_replay_does_not_reopen_the_vocabulary() {
+    let engine = engine_with_facts(&["admits(\"person\").", "person(Adam).", "person(Bela)."]);
+    let ids = engine.assert_text("person(Cira).").unwrap();
+    engine.retract_fact(ids[0]).expect("retract");
+    assert!(
+        engine.kb().vocabulary_is_closed(),
+        "a retraction must not re-open a closed vocabulary"
+    );
+    assert!(
+        engine.assert_text("rich(Adam).").is_err(),
+        "and the closure must still refuse after replay"
+    );
+}
+
+/// `reset()` wipes the KB, so it wipes the declaration too — it is KB CONTENT,
+/// not session configuration like `strict`/`existential_import`.
+#[test]
+fn reset_reopens_the_vocabulary() {
+    let engine = engine_with_facts(&["admits(\"person\").", "person(Adam)."]);
+    assert!(engine.kb().vocabulary_is_closed());
+    engine.reset();
+    assert!(!engine.kb().vocabulary_is_closed());
+    assert!(engine.assert_text("rich(Adam).").is_ok());
+}

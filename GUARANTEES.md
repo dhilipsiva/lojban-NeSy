@@ -184,6 +184,23 @@ Deliberate or accepted-but-surprising behaviors, each pinned by a test so any ch
 - **Intentional vagueness:** Legal terms like "reasonable" or "good faith" cannot be formalized. The engine handles the deductive, rule-based layer only.
 - **Arithmetic on time:** no clock, no interval arithmetic, no built-in comparison of two durations. A magnitude can be *stated* without a numeral (`year(Term, Two).` compiles, `Two` an opaque constant) and everything qualitative about time is expressible — see §Time and Order — but nothing FOLLOWS from a magnitude except what a rule says follows. "Is this term longer than that one?" is answerable only if the KB asserts the comparison itself; the engine will not compute it, and `greater`/`less` reach the arithmetic evaluator only for actual numbers.
 
+## Closed Base Vocabulary
+
+**Guarantee:** a knowledge base may declare which relations it admits as evidence, and the engine refuses every other ground assertion — fail-closed, atomically, at assert time.
+
+`admits("<relation>")` is the DUAL of `derived_only("<relation>")`. The latter says a relation may never be asserted (only derived); the former says which relations may. Neither alone closes the extensional side: with `derived_only` only, a knowledge base can state what it refuses to take as evidence but not what it takes, so any corpus name at all still enters and a document claiming *"the record has exactly these entries, and a further one cannot be written"* is claiming something the engine does not check.
+
+- **Open by default.** While nothing is declared the KB is open and every corpus name asserts — v0.1 behaviour, unchanged, and the closure is opt-in.
+- **The first declaration closes it.** Thereafter a ground assertion whose relation is not admitted is rejected with `NibliError::Reasoning`, and the whole assertion unwinds (the `rebuild_inner` rollback), so a multi-leaf conjunction cannot half-land.
+- **ORDER IS LOAD-BEARING, and enforced.** The `admits` block must precede every ordinary assertion. A declaration arriving later would silently GRANDFATHER everything above it — the mirror of `derived_only`'s "comes too late" — so it is refused rather than honoured. Both hazards are false greens that load at zero errors and look exactly like working closures, which is why each rejects rather than warns.
+- **Extensional only.** A rule may still conclude a relation outside the admitted set, exactly as `derived_only` permits derivation while refusing assertion. Closing the base vocabulary does not close the derived one.
+- **The two declaration relations are exempt** (`admits`, `derived_only`) — a KB that closed its vocabulary must still be able to declare, and `admits("admits")` could not otherwise store its own declaration.
+- **Lifecycle** mirrors `derived_only`: absent from `rebuild_inner`'s clear list, so a RETRACTION replay cannot re-open the vocabulary; cleared by `reset()`, because it is KB content rather than session configuration.
+
+Spelled as an ordinary arity-1 ground fact with no grammar form, so the declaration rides the store, `:export` and buffer replay like any assertion and reaches native/wasmtime/v8 identically. Programmatic twins: `declare_admitted` / `is_admitted` / `vocabulary_is_closed` / `admitted_relations`. Pinned by `pins/closed-vocabulary.nibli` and `pins/closed-vocabulary-order.nibli`.
+
+Honest scope: this closes what may be ASSERTED, not what may be *named*. A query or a rule may still mention any corpus relation; an unadmitted one simply has no facts. It is also not §14.1's `pred` — that v2 feature declares NEW vocabulary with its own places and replaces the dictionary lookup, where this closes a whitelist over the shipped corpus.
+
 ## Time and Order
 
 Time enters through ORDINARY corpus relations, not through a temporal operator, so all of it is numeral-free and rules can read it. Pinned end-to-end by `pins/temporal-order.nibli` (`just verify-pins`), which exists because these are guarantees rather than accidents of the corpus:
