@@ -74,6 +74,43 @@
 //! enforce, so pinning it would let a real trap go green under wasm. If a query
 //! returns it, that is reported as infrastructure failure.
 //!
+//! ── TWO KINDS OF PIN CONTENT ──────────────────────────────────────────────
+//!
+//! A pin usually encodes a GUARANTEE the artifact makes. Sometimes it encodes a
+//! DEFECT the artifact currently has — a flaw a chapter names and argues about,
+//! which must keep reproducing for the prose around it to stay true. Both are
+//! `? q.` + `# => VERDICT`, so without a marker a flip reports identically while
+//! meaning opposite things: a guarantee flipping is a regression, a defect
+//! flipping is the artifact IMPROVING. Conflating them trains a reader to ignore
+//! the one message that means "go update the prose".
+//!
+//! ```text
+//! :defect "narrowing the contamination rule"
+//! ? lose(Points, Cira).
+//! # => TRUE
+//! ```
+//!
+//! The reason is mandatory and says WHAT WOULD FLIP IT — a bare marker cannot
+//! tell a reader what to do when it fires. `:defect` is orthogonal to
+//! `:accept`/`:refuse` (it may precede one) and scoped to the NEXT pin only.
+//!
+//! ── PRECONDITIONS ─────────────────────────────────────────────────────────
+//!
+//! Some things a pin file rests on are ABSENCES, and an absence has no query:
+//! "nothing anywhere reads this predicate" is checkable by grep and not by `?`.
+//! `:require <shell>` runs one, in the runner's own working directory:
+//!
+//! ```text
+//! :require ! awk -F'->' '/^[^#]/ && /->/ && $1 ~ /owe/ {print}' kb.nibli | grep -q .
+//! ```
+//!
+//! GATED behind `--allow-shell`, and refused LOUDLY without it. The pin language
+//! is closed on purpose (see `--kb` above): nothing under `pins/` may execute
+//! shell during `just ci`, so the flag is how a suite you control opts in. A
+//! precondition that exits 127 is a BROKEN CHECK, not a failing one — that is a
+//! harness error, because blaming the artifact for a typo is exactly what the
+//! exit-2 class exists to prevent.
+//!
 //! ── EXIT CODES ────────────────────────────────────────────────────────────
 //!
 //! * `0` — every pin passed.
@@ -84,8 +121,15 @@
 //!   unpinnable pinned verdict, a resource-exceeded result, an `:expect-pins`
 //!   mismatch, or an unreadable file. Nothing was learned about the property.
 //!
-//! Keeping 1 and 2 distinct is the point: CI must not read "your pin file has a
-//! typo" as "the soundness firewall broke", nor the reverse.
+//! * `3` — a pin marked `:defect` NO LONGER REPRODUCES. Distinct from `1` on
+//!   purpose: the artifact got better, which is the intended outcome of the work
+//!   the chapter describes, and reporting it as a regression is how a suite
+//!   teaches its readers to ignore it. Still non-zero, because the pin and the
+//!   prose around it now describe something untrue and a human must say so.
+//!
+//! Keeping these distinct is the point: CI must not read "your pin file has a
+//! typo" as "the soundness firewall broke", nor either as "the flaw you were
+//! arguing about got fixed".
 
 use nibli_engine::{EngineError, NibliEngine};
 use std::path::Path;
@@ -94,6 +138,10 @@ use std::process::ExitCode;
 const EXIT_OK: u8 = 0;
 const EXIT_FINDING: u8 = 1;
 const EXIT_HARNESS: u8 = 2;
+/// A pin marked `:defect` stopped reproducing. Distinct from a FINDING on purpose:
+/// the artifact got better, and reporting that as a regression is how a suite trains
+/// its readers to ignore the one message that means "go update the prose".
+const EXIT_DEFECT_RESOLVED: u8 = 3;
 
 /// What the next statement is expected to do. Set by `:accept` / `:refuse`,
 /// consumed by the next statement — deliberately not sticky.
@@ -158,12 +206,75 @@ fn is_pinnable_verdict(v: &str) -> bool {
 #[derive(Debug)]
 struct Report {
     pins: usize,
+    /// Pins carrying a `:defect` marker whose verdict still holds — i.e. the defect
+    /// STILL REPRODUCES. Counted separately so a suite can say how much of its green
+    /// is "guarantee kept" and how much is "flaw still present".
+    defects: usize,
     findings: Vec<String>,
+    /// A `:defect` pin whose verdict CHANGED. Deliberately NOT a finding: the artifact
+    /// improved, which is the intended outcome, and reporting it as a regression trains
+    /// the reader to ignore the one message that means "go update the prose".
+    resolved: Vec<String>,
     harness: Vec<String>,
 }
 
 /// A pre-loaded fixture KB: `(display name, source)`.
 type KbFile = (String, String);
+
+/// Pull a double-quoted string out of a directive tail: `:defect "why"` -> `why`.
+fn parse_quoted(rest: &str) -> Option<String> {
+    let t = rest.trim();
+    let inner = t.strip_prefix('"')?.strip_suffix('"')?;
+    Some(inner.trim().to_string())
+}
+
+/// What a `:require` precondition did.
+enum PreconditionOutcome {
+    /// Exit 0 — the assumption still holds.
+    Met,
+    /// Non-zero — the assumption no longer holds. That is a statement about the
+    /// ARTIFACT, so it reports as a finding (or, if marked, as a resolved defect).
+    Unmet(String),
+    /// The command could not run at all (not found, spawn failure). Nothing was
+    /// learned about the artifact, so this is a harness error — the same distinction
+    /// exit 2 draws everywhere else in this runner.
+    Broken(String),
+}
+
+/// Run a `:require` precondition through `sh -c`, in the runner's own working
+/// directory (so a pin file's paths read the same as the command a human would type).
+fn run_precondition(cmd: &str) -> PreconditionOutcome {
+    match std::process::Command::new("sh").arg("-c").arg(cmd).output() {
+        Err(e) => PreconditionOutcome::Broken(format!("could not run: {e}")),
+        Ok(out) => {
+            // 127 is the shell's "command not found" — a broken check, not a failing
+            // one, and reporting it as a finding would blame the artifact for a typo.
+            if out.status.code() == Some(127) {
+                return PreconditionOutcome::Broken(
+                    "exited 127 (command not found) — the check itself is broken".to_string(),
+                );
+            }
+            if out.status.success() {
+                return PreconditionOutcome::Met;
+            }
+            let code = out
+                .status
+                .code()
+                .map_or_else(|| "signal".to_string(), |c| c.to_string());
+            let tail: String = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .chain(String::from_utf8_lossy(&out.stderr).lines())
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" / ");
+            PreconditionOutcome::Unmet(if tail.is_empty() {
+                format!("failed (exit {code})")
+            } else {
+                format!("failed (exit {code}): {tail}")
+            })
+        }
+    }
+}
 
 fn base_name(path: &str) -> String {
     Path::new(path)
@@ -178,6 +289,7 @@ fn main() -> ExitCode {
     let mut paths: Vec<String> = Vec::new();
     let mut argv_error: Option<String> = None;
     let mut strata_only = false;
+    let mut allow_shell = false;
 
     let mut it = argv.iter();
     while let Some(a) = it.next() {
@@ -187,6 +299,7 @@ fn main() -> ExitCode {
                 None => argv_error = Some("--kb needs a path".to_string()),
             },
             "--strata" => strata_only = true,
+            "--allow-shell" => allow_shell = true,
             other if other.starts_with("--") => {
                 argv_error = Some(format!("unknown flag {other:?}"));
             }
@@ -215,13 +328,18 @@ fn main() -> ExitCode {
         eprintln!("            rather than an inlined copy that can drift.");
         eprintln!("  --strata  load the --kb files and print the engine's STRATIFICATION to");
         eprintln!("            stdout as stable, sorted, diffable TSV, then exit. Runs no pins.");
+        eprintln!("  --allow-shell  permit `:require <shell>` preconditions in pin files.");
+        eprintln!("            OFF by default: the pin language is closed so nothing under");
+        eprintln!("            pins/ can execute shell during `just ci`. Opt in per suite.");
         eprintln!("  exit 0 = pins pass, 1 = a pin regressed, 2 = harness/script error");
         return ExitCode::from(EXIT_HARNESS);
     }
 
     let mut total = Report {
         pins: 0,
+        defects: 0,
         findings: Vec::new(),
+        resolved: Vec::new(),
         harness: Vec::new(),
     };
 
@@ -263,14 +381,27 @@ fn main() -> ExitCode {
         match std::fs::read_to_string(path) {
             Ok(src) => {
                 let name = base_name(path);
-                let r = run_file_with_kb(&name, &src, &kbs);
-                println!(
-                    "  {name}: {} pins, {} findings, {} harness errors",
-                    r.pins,
-                    r.findings.len(),
-                    r.harness.len()
-                );
+                let r = run_file_with_kb(&name, &src, &kbs, allow_shell);
+                if r.defects == 0 && r.resolved.is_empty() {
+                    println!(
+                        "  {name}: {} pins, {} findings, {} harness errors",
+                        r.pins,
+                        r.findings.len(),
+                        r.harness.len()
+                    );
+                } else {
+                    println!(
+                        "  {name}: {} pins ({} defects), {} findings, {} resolved, {} harness errors",
+                        r.pins,
+                        r.defects,
+                        r.findings.len(),
+                        r.resolved.len(),
+                        r.harness.len()
+                    );
+                }
                 total.pins += r.pins;
+                total.defects += r.defects;
+                total.resolved.extend(r.resolved);
                 total.findings.extend(r.findings);
                 total.harness.extend(r.harness);
             }
@@ -282,6 +413,15 @@ fn main() -> ExitCode {
         eprintln!("\nHARNESS/SCRIPT ERRORS ({}):", total.harness.len());
         for h in &total.harness {
             eprintln!("  ! {h}");
+        }
+    }
+    if !total.resolved.is_empty() {
+        eprintln!(
+            "\nRESOLVED DEFECTS ({}) — a pinned FLAW no longer reproduces:",
+            total.resolved.len()
+        );
+        for r in &total.resolved {
+            eprintln!("  ✓ {r}");
         }
     }
     if !total.findings.is_empty() {
@@ -307,7 +447,27 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(EXIT_FINDING);
     }
-    println!("nibli-pin: PASS — {} pins", total.pins);
+    // A resolved defect is NOT a finding — the artifact improved. It still exits
+    // non-zero, because the pin and the prose around it now describe something that
+    // is no longer true and a human has to go and say so.
+    if !total.resolved.is_empty() {
+        eprintln!(
+            "\nnibli-pin: {} PINNED DEFECT(S) NO LONGER REPRODUCE (exit {EXIT_DEFECT_RESOLVED}) \
+             — the artifact improved; update the pin and the prose that describes it",
+            total.resolved.len()
+        );
+        return ExitCode::from(EXIT_DEFECT_RESOLVED);
+    }
+    // Byte-identical to the pre-`:defect` line when no file uses the marker, so a
+    // suite that parses this output does not have to change to adopt the feature.
+    if total.defects == 0 {
+        println!("nibli-pin: PASS — {} pins", total.pins);
+    } else {
+        println!(
+            "nibli-pin: PASS — {} pins ({} encode defects that still reproduce)",
+            total.pins, total.defects
+        );
+    }
     ExitCode::from(EXIT_OK)
 }
 
@@ -341,7 +501,7 @@ fn parse_refuse(rest: &str) -> Result<Expect, String> {
 /// shape, where the fixture is inline in the pin file itself.
 #[cfg(test)]
 fn run_file(name: &str, src: &str) -> Report {
-    run_file_with_kb(name, src, &[])
+    run_file_with_kb(name, src, &[], false)
 }
 
 /// Load every fixture KB into a fresh engine, then run the pin file against it.
@@ -438,10 +598,12 @@ fn strata_dump(kbs: &[KbFile]) -> (String, Vec<String>) {
     (out, harness)
 }
 
-fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
+fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile], allow_shell: bool) -> Report {
     let mut rep = Report {
         pins: 0,
+        defects: 0,
         findings: Vec::new(),
+        resolved: Vec::new(),
         harness: Vec::new(),
     };
     let engine = NibliEngine::new();
@@ -476,6 +638,7 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
     }
 
     let mut expect = Expect::Default;
+    let mut defect: Option<String> = None;
     let mut expect_pins: Option<usize> = None;
 
     // Queries are `? <text>` and must be followed by a `# => <verdict>` line, so
@@ -534,6 +697,75 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
             }
             continue;
         }
+        // `:defect "<what flips it>"` — mark the NEXT pin as encoding a flaw the
+        // artifact currently HAS, not a guarantee it MAKES. Both are `? q.` + `# =>`,
+        // so without this a flip in either direction reports identically while meaning
+        // opposite things: one says the artifact broke, the other says it improved.
+        //
+        // Orthogonal to `:accept`/`:refuse` (which say what a STATEMENT must do), so it
+        // may precede one; it does not participate in their unconsumed-directive check.
+        if let Some(rest) = line.strip_prefix(":defect") {
+            if defect.is_some() {
+                rep.harness.push(format!(
+                    "{name}:{i}: `:defect` follows an unconsumed `:defect` — each applies \
+                     to the NEXT pin only"
+                ));
+            }
+            match parse_quoted(rest) {
+                Some(why) if !why.is_empty() => defect = Some(why),
+                _ => rep.harness.push(format!(
+                    "{name}:{i}: `:defect` needs a non-empty quoted reason saying WHAT WOULD \
+                     FLIP IT, e.g. `:defect \"narrowing the contamination rule\"` — the \
+                     reason is the whole value, since a bare marker cannot tell a reader \
+                     what to do when it fires"
+                )),
+            }
+            continue;
+        }
+        // `:require <shell>` — a precondition the file's pins rest on but cannot state
+        // as a query, typically an ABSENCE ("no rule reads this predicate"). GATED: a
+        // pin file must not be able to run shell during `just ci`, which is why the pin
+        // language is closed (see the module docs). Without `--allow-shell` this is a
+        // HARNESS error, never a silent skip.
+        if let Some(rest) = line.strip_prefix(":require") {
+            let cmd = rest.trim().to_string();
+            if cmd.is_empty() {
+                rep.harness
+                    .push(format!("{name}:{i}: `:require` needs a shell command"));
+                continue;
+            }
+            if !allow_shell {
+                rep.harness.push(format!(
+                    "{name}:{i}: `:require` needs --allow-shell. The pin language is closed \
+                     on purpose: nothing in a pin file may execute shell during `just ci`. \
+                     Pass --allow-shell to opt in for a suite you control."
+                ));
+                continue;
+            }
+            let marked = defect.take();
+            rep.pins += 1;
+            match run_precondition(&cmd) {
+                PreconditionOutcome::Met => {
+                    if marked.is_some() {
+                        rep.defects += 1;
+                    }
+                }
+                PreconditionOutcome::Unmet(detail) => {
+                    let msg = format!("{name}:{i}: precondition {cmd:?} {detail}");
+                    match &marked {
+                        Some(why) => rep
+                            .resolved
+                            .push(format!("{msg} — pinned as a defect ({why})")),
+                        None => rep.findings.push(msg),
+                    }
+                }
+                PreconditionOutcome::Broken(detail) => {
+                    rep.harness
+                        .push(format!("{name}:{i}: precondition {cmd:?} {detail}"));
+                }
+            }
+            continue;
+        }
         if line.starts_with(':') {
             rep.harness
                 .push(format!("{name}:{i}: unknown directive {line:?}"));
@@ -577,6 +809,7 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
             }
 
             rep.pins += 1;
+            let marked = defect.take();
             match engine.query_holds(qtext) {
                 Err(e) => {
                     // A query that will not COMPILE has no verdict at all — it must
@@ -595,9 +828,20 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
                              infrastructure outcome, not a verdict; pin excluded"
                         ));
                     } else if !verdict_matches(&pinned, &actual) {
-                        rep.findings.push(format!(
-                            "{name}:{i}: query {qtext:?} pinned {pinned:?} but got {actual:?}"
-                        ));
+                        // The one place the two kinds diverge. A guarantee that flipped is
+                        // a regression; a DEFECT that flipped is the artifact improving,
+                        // and calling that a regression teaches the reader to ignore it.
+                        match &marked {
+                            Some(why) => rep.resolved.push(format!(
+                                "{name}:{i}: query {qtext:?} was pinned {pinned:?} as a DEFECT \
+                                 ({why}) but now answers {actual:?}"
+                            )),
+                            None => rep.findings.push(format!(
+                                "{name}:{i}: query {qtext:?} pinned {pinned:?} but got {actual:?}"
+                            )),
+                        }
+                    } else if marked.is_some() {
+                        rep.defects += 1;
                     }
                 }
             }
@@ -607,47 +851,87 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
         // ── statement (assertion / rule) ──
         let outcome = engine.assert_text(line);
         let taken = std::mem::replace(&mut expect, Expect::Default);
+        let marked = defect.take();
+        let pins_before = rep.pins;
+        let fails_before = rep.findings.len() + rep.resolved.len();
+        // Route a statement pin's failure the same way a verdict pin's is routed: a
+        // marked pin that stops behaving as pinned means the DEFECT went away.
+        let fail = |rep: &mut Report, msg: String| match &marked {
+            Some(why) => rep
+                .resolved
+                .push(format!("{msg} — pinned as a DEFECT ({why})")),
+            None => rep.findings.push(msg),
+        };
         match (taken, outcome) {
             (Expect::Default, Ok(_)) => {}
             (Expect::Default, Err(e)) => {
-                rep.findings.push(format!(
-                    "{name}:{i}: {line:?} failed to load — [{}] {e}",
-                    Class::of(&e).name()
-                ));
+                fail(
+                    &mut rep,
+                    format!(
+                        "{name}:{i}: {line:?} failed to load — [{}] {e}",
+                        Class::of(&e).name()
+                    ),
+                );
             }
             (Expect::Accept, Ok(_)) => rep.pins += 1,
             (Expect::Accept, Err(e)) => {
                 rep.pins += 1;
-                rep.findings.push(format!(
-                    "{name}:{i}: :accept but {line:?} was REFUSED — [{}] {e}",
-                    Class::of(&e).name()
-                ));
+                fail(
+                    &mut rep,
+                    format!(
+                        "{name}:{i}: :accept but {line:?} was REFUSED — [{}] {e}",
+                        Class::of(&e).name()
+                    ),
+                );
             }
             (Expect::Refuse { class, needle }, Ok(_)) => {
                 rep.pins += 1;
-                rep.findings.push(format!(
-                    "{name}:{i}: :refuse {} /{needle}/ but {line:?} was ACCEPTED \
+                fail(
+                    &mut rep,
+                    format!(
+                        "{name}:{i}: :refuse {} /{needle}/ but {line:?} was ACCEPTED \
                      — the guarantee this pin protects is GONE",
-                    class.name()
-                ));
+                        class.name()
+                    ),
+                );
             }
             (Expect::Refuse { class, needle }, Err(e)) => {
                 rep.pins += 1;
                 let got = Class::of(&e);
                 let msg = e.to_string();
                 if got != class {
-                    rep.findings.push(format!(
-                        "{name}:{i}: :refuse {} but {line:?} failed as [{}] instead — {msg} \
+                    fail(
+                        &mut rep,
+                        format!(
+                            "{name}:{i}: :refuse {} but {line:?} failed as [{}] instead — {msg} \
                          (a different error class is NOT the property under test)",
-                        class.name(),
-                        got.name()
-                    ));
+                            class.name(),
+                            got.name()
+                        ),
+                    );
                 } else if !msg.contains(&needle) {
-                    rep.findings.push(format!(
-                        "{name}:{i}: :refuse {} /{needle}/ matched the class but not the message — got {msg}",
-                        class.name()
-                    ));
+                    fail(
+                        &mut rep,
+                        format!(
+                            "{name}:{i}: :refuse {} /{needle}/ matched the class but not the message — got {msg}",
+                            class.name()
+                        ),
+                    );
                 }
+            }
+        }
+        if marked.is_some() {
+            let counted = rep.pins > pins_before;
+            let failed = rep.findings.len() + rep.resolved.len() > fails_before;
+            if !counted {
+                // `:defect` on a plain statement marks nothing countable — a silent
+                // no-op, which is the failure mode this runner refuses everywhere.
+                rep.harness.push(format!(
+                    "{name}:{i}: `:defect` marks {line:?}, which is not a pin — put it before a \
+                     `?` query or an :accept/:refuse statement"
+                ));
+            } else if !failed {
+                rep.defects += 1;
             }
         }
     }
@@ -655,6 +939,14 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
     if !matches!(expect, Expect::Default) {
         rep.harness.push(format!(
             "{name}: file ends with an unconsumed :accept/:refuse directive"
+        ));
+    }
+    // A dangling `:defect` marks nothing, so the file would report a smaller defect
+    // count than it looks like it has — a silent no-op, which is the failure mode this
+    // runner refuses everywhere else.
+    if let Some(why) = &defect {
+        rep.harness.push(format!(
+            "{name}: file ends with an unconsumed `:defect` ({why}) — it marks no pin"
         ));
     }
     match expect_pins {
@@ -983,6 +1275,7 @@ mod tests {
              ? person(Ara).\n# => TRUE\n\
              :expect-pins 2\n",
             &kb(),
+            false,
         );
         assert_eq!(r.findings.len(), 0, "{r:?}");
         assert_eq!(r.harness.len(), 0, "{r:?}");
@@ -1007,7 +1300,12 @@ mod tests {
             "bad.nibli".to_string(),
             "person(Ara).\nzzznotaword(Bet).\n".into(),
         )];
-        let r = run_file_with_kb("t", "? person(Ara).\n# => TRUE\n:expect-pins 1\n", &broken);
+        let r = run_file_with_kb(
+            "t",
+            "? person(Ara).\n# => TRUE\n:expect-pins 1\n",
+            &broken,
+            false,
+        );
         assert_eq!(
             r.findings.len(),
             0,
@@ -1031,6 +1329,7 @@ mod tests {
                 "t",
                 "? person(Ara).\n# => UNKNOWN\n:expect-pins 1\n",
                 &[("bad.nibli".to_string(), bad.to_string())],
+                false,
             );
             assert!(
                 r.harness.iter().any(|h| h.contains("plain KB text")),
@@ -1051,13 +1350,19 @@ mod tests {
             "t",
             "? person(Ara).\n# => TRUE\n? dog(Rex).\n# => TRUE\n:expect-pins 2\n",
             &two,
+            false,
         );
         assert_eq!(r.findings.len(), 0, "{r:?}");
         // A second run with the same fixtures starts clean: a fact asserted by
         // the FIRST pin file must not be visible to the second.
-        let first = run_file_with_kb("t1", "person(Bet).\n:expect-pins 0\n", &two);
+        let first = run_file_with_kb("t1", "person(Bet).\n:expect-pins 0\n", &two, false);
         assert_eq!(first.harness.len(), 0, "{first:?}");
-        let second = run_file_with_kb("t2", "? person(Bet).\n# => FALSE\n:expect-pins 1\n", &two);
+        let second = run_file_with_kb(
+            "t2",
+            "? person(Bet).\n# => FALSE\n:expect-pins 1\n",
+            &two,
+            false,
+        );
         assert_eq!(
             second.findings.len(),
             0,
@@ -1189,6 +1494,123 @@ mod tests {
         assert!(
             harness.iter().any(|h| h.contains("plain KB text")),
             "{harness:?}"
+        );
+    }
+
+    // ─── `:defect` — a pinned FLAW, not a pinned guarantee ───────────────────
+    //
+    // Both are `? q.` + `# => VERDICT`, so without a marker a flip reports identically
+    // while meaning opposite things: a guarantee flipping is a regression, a defect
+    // flipping is the artifact improving. Conflating them trains a reader to ignore
+    // the one message that means "go update the prose".
+
+    #[test]
+    fn a_defect_that_still_reproduces_is_counted_not_reported() {
+        let r = run("person(Adam).\n\
+                     :defect \"narrowing the contamination rule\"\n\
+                     ? rich(Adam).\n# => FALSE\n:expect-pins 1\n");
+        assert_eq!(r.defects, 1, "{r:?}");
+        assert_eq!(r.pins, 1, "a defect pin is still a pin: {r:?}");
+        assert!(r.findings.is_empty() && r.resolved.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn a_defect_that_stops_reproducing_is_resolved_not_a_finding() {
+        let r = run("person(Adam).\n\
+                     :defect \"narrowing the contamination rule\"\n\
+                     ? person(Adam).\n# => FALSE\n:expect-pins 1\n");
+        assert!(
+            r.findings.is_empty(),
+            "an improved artifact must NOT report as a regression: {r:?}"
+        );
+        assert_eq!(r.resolved.len(), 1, "{r:?}");
+        assert!(
+            r.resolved[0].contains("narrowing the contamination rule"),
+            "the reason must reach the reader — it is what tells them what to do: {r:?}"
+        );
+    }
+
+    #[test]
+    fn defect_marks_statement_pins_too() {
+        // `:defect` is orthogonal to `:accept`/`:refuse`, so it may precede one.
+        let r = run(
+            "person(Adam).\n:defect \"the closure landing\"\n:accept\nrich(Adam).\n:expect-pins 1\n",
+        );
+        assert_eq!(r.defects, 1, "{r:?}");
+        assert!(r.findings.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn a_dangling_defect_is_a_harness_error() {
+        // It marks no pin, so the file would under-report its own defect count.
+        let r = run("person(Adam).\n:defect \"dangling\"\n:expect-pins 0\n");
+        assert!(
+            r.harness.iter().any(|h| h.contains("unconsumed `:defect`")),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn defect_needs_a_reason() {
+        let r = run("person(Adam).\n:defect\n? person(Adam).\n# => TRUE\n:expect-pins 1\n");
+        assert!(
+            r.harness
+                .iter()
+                .any(|h| h.contains("non-empty quoted reason")),
+            "a bare marker cannot tell a reader what to do when it fires: {r:?}"
+        );
+    }
+
+    #[test]
+    fn defect_is_inert_when_unused() {
+        let r = run("person(Adam).\n? person(Adam).\n# => TRUE\n:expect-pins 1\n");
+        assert_eq!(r.defects, 0);
+        assert!(r.resolved.is_empty());
+    }
+
+    // ─── `:require` — a shell precondition, GATED ────────────────────────────
+
+    #[test]
+    fn require_is_refused_without_the_flag() {
+        // The pin language is closed on purpose: nothing under pins/ may execute shell
+        // during `just ci`. Refused LOUDLY rather than skipped — a silently ignored
+        // precondition is a check that can never fail.
+        let r = run_file_with_kb("t", ":require true\n:expect-pins 1\n", &[], false);
+        assert!(
+            r.harness.iter().any(|h| h.contains("--allow-shell")),
+            "{r:?}"
+        );
+        assert_eq!(r.pins, 0, "a refused precondition must not count as a pin");
+    }
+
+    #[test]
+    fn require_met_and_unmet() {
+        let met = run_file_with_kb("t", ":require true\n:expect-pins 1\n", &[], true);
+        assert!(met.findings.is_empty() && met.harness.is_empty(), "{met:?}");
+        assert_eq!(
+            met.pins, 1,
+            "a precondition is a checked claim, so it is a pin"
+        );
+
+        let unmet = run_file_with_kb("t", ":require false\n:expect-pins 1\n", &[], true);
+        assert_eq!(unmet.findings.len(), 1, "{unmet:?}");
+    }
+
+    #[test]
+    fn a_broken_require_is_a_harness_error_not_a_finding() {
+        // Exit 127 is the shell's "command not found": the CHECK is broken, so nothing
+        // was learned — blaming the artifact for a typo is exactly what exit 2 exists
+        // to prevent.
+        let r = run_file_with_kb(
+            "t",
+            ":require definitely_not_a_command_xyz\n:expect-pins 1\n",
+            &[],
+            true,
+        );
+        assert!(r.findings.is_empty(), "{r:?}");
+        assert!(
+            r.harness.iter().any(|h| h.contains("command not found")),
+            "{r:?}"
         );
     }
 }
