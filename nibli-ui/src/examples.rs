@@ -145,7 +145,7 @@ pub const EXAMPLES: &[Example] = &[
         queries: &[
             ExampleQuery {
                 label: "floor duty—Adam is owed food",
-                query: "obligated(Adam, event { eats() }).",
+                query: "obligated_by(Adam, event { eats() }).",
             },
             ExampleQuery {
                 label: "prisoner may express",

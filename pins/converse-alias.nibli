@@ -1,0 +1,62 @@
+# MECHANISM PIN — a converse alias must be spelled so the reader can see it is one.
+#
+# Fixture INLINE (mechanism pin): the subject is the ENGINE's corpus discipline, not any
+# particular knowledge base.
+#
+# THE TRAP THIS CLOSES. `bilga` had two spellings: `obliged(bound, duty)` and a converted
+# alias `obligated` whose arguments were EXCHANGED. In English "obligated" and "obliged"
+# are synonyms — same participle, same meaning — so nothing in the surface form told a
+# hand-writer that one inverted the other. A consuming constitution states
+# `obliged(Review, $x)`, "the review body owes a duty about this person"; written with the
+# other spelling it silently meant THE PERSON OWES THE DUTY TO THE REVIEW BODY — the exact
+# inversion of the guarantee the rule exists to make. The only thing between that and a
+# green suite was a hand-written two-pin discriminator.
+#
+# The alias is now `obligated_by`, following `metabolized_by` — the `_by` suffix is the
+# corpus's own marker that arguments run the other way. `obligated(...)` no longer
+# resolves, so the typo is a COMPILE ERROR rather than a wrong answer.
+#
+# Note the other three converse aliases were already self-marking: `owned`/`owns`,
+# `permitted`/`permits` and `metabolized_by`/`cuts` each differ morphologically between
+# passive and active. `obligated`/`obliged` was the only pair where both spellings read
+# active, which is why it alone was a trap.
+
+# ── THE CONVERSE STILL HOLDS ─────────────────────────────────────────────────
+obliged(Review, Ruk).
+
+? obliged(Review, Ruk).
+# => TRUE
+
+# The discriminator the consuming constitution relies on: direction is load-bearing.
+? obliged(Ruk, Review).
+# => FALSE
+
+# `obligated_by` is the SAME fact with the arguments exchanged — that is what a converse
+# alias means, and it must keep meaning it.
+? obligated_by(Ruk, Review).
+# => TRUE
+
+? obligated_by(Review, Ruk).
+# => FALSE
+
+# ── THE INVERTING SPELLING IS GONE ───────────────────────────────────────────
+# Not "discouraged", not "linted" — unresolvable. A KB that writes the old spelling fails
+# to compile instead of quietly asserting the opposite of what it says.
+:refuse syntax /unknown predicate "obligated"/
+obligated(Review, Ruk).
+
+# ── THE DEONTIC FORM ROUTES THE SAME WAY ─────────────────────────────────────
+# `obligated_by(every X, event { P() })` is the shape the GDPR corpus uses. The swap
+# applies here too — pinned because the deontic path is a different code path and could
+# regress independently of the plain relational one.
+person(Ruk).
+:accept
+obligated_by(every person, event { eats() }).
+
+? obligated_by(Ruk, event { eats() }).
+# => TRUE
+
+? obliged(Ruk, event { eats() }).
+# => FALSE
+
+:expect-pins 8

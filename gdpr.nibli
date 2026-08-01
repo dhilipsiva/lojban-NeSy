@@ -17,9 +17,9 @@
 # Chapter 19, "Honest Boundaries"):
 #   permitted                    -> "processing has a lawful basis" (Art 6)
 #   ~permitted                   -> "no lawful basis remains" => right to erasure (Art 17)
-#   obligated(..., event { X })  -> "is under a legal obligation that X"
+#   obligated_by(..., event { X })  -> "is under a legal obligation that X"
 #   permitted(..., event { X })  -> "has the right that X"
-#   obligated(..., event { removes() }) -> "is obligated to be erased" (Art 17 erasure)
+#   obligated_by(..., event { removes() }) -> "is obligated to be erased" (Art 17 erasure)
 
 # ─── Article 4 / 9: categories of personal data ───────────────────
 # Names and addresses are personal data.
@@ -32,16 +32,16 @@ data(every nation data).
 
 # ─── Article 5: principles relating to processing ─────────────────
 # Personal data must be accurate.
-obligated(every data, event { correct() }).
+obligated_by(every data, event { correct() }).
 # Personal data must be kept secure.
-obligated(every data, event { shelter() }).
+obligated_by(every data, event { shelter() }).
 # Data minimisation: processing must be limited to what is necessary.
-obligated(every data, event { necessary() }).
+obligated_by(every data, event { necessary() }).
 
 # ─── Article 9: special categories need a stricter, specific basis ─
-obligated(every healthy data, event { exact() }).
-obligated(every religion data, event { exact() }).
-obligated(every nation data, event { exact() }).
+obligated_by(every healthy data, event { exact() }).
+obligated_by(every religion data, event { exact() }).
+obligated_by(every nation data, event { exact() }).
 
 # ─── Article 6(1): lawful basis for processing ────────────────────
 # (a) A consenting data subject's processing has a lawful basis.
@@ -63,7 +63,7 @@ permitted(every person, event { data discovers() }).
 
 # ─── Article 17: right to erasure ─────────────────────────────────
 # A data subject who has NOT consented is obligated to have their data erased
-# (Art 17(1)(b)) — the natural negated-restrictor rule form `obligated(every
+# (Art 17(1)(b)) — the natural negated-restrictor rule form `obligated_by(every
 # person where ~approves, event { removes() })`. `where ~approves` compiles to a
 # negation-as-failure check over the consent event, so the obligation arises
 # exactly when no consent witness exists; the belief-revision demo in Chapter 19
@@ -79,7 +79,7 @@ permitted(every person, event { data discovers() }).
 
 # ─── Article 33: breach notification ──────────────────────────────
 # A controller that has suffered a breach is obliged to notify.
-obligated(every data governs where flaw, event { message() }).
+obligated_by(every data governs where flaw, event { message() }).
 
 # ─── Scenario ─────────────────────────────────────────────────────
 # Adam is a data subject.
@@ -98,4 +98,4 @@ flaw(Akmes).
 # ─── Article 17 rule (placed last; rationale in the Article 17 section above) ──
 # Defined after the scenario so that loading it leaves the scenario's fact ids
 # stable; a rule's position in the file does not affect reasoning.
-obligated(every person where ~approves, event { removes() }).
+obligated_by(every person where ~approves, event { removes() }).

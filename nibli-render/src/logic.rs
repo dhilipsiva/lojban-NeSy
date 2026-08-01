@@ -23,7 +23,7 @@ fn is_abstraction_scaffold(rel: &str) -> bool {
 
 /// Deontic head predicates whose x1 is the duty/content and x2 the obligated party.
 fn is_deontic_duty_rel(rel: &str) -> bool {
-    matches!(rel, "obligated" | "obliged")
+    matches!(rel, "obligated_by" | "obliged")
 }
 
 /// Render a compiled `LogicBuffer` as readable English.
@@ -343,7 +343,7 @@ fn build_frames(preds: &[(String, Vec<LogicalTerm>)], ctx: &mut Ctx) -> Vec<Stri
         .collect()
 }
 
-/// Collapse `obligated(person, event { P() })` packaging:
+/// Collapse `obligated_by(person, event { P() })` packaging:
 ///   event(Y) ∧ P(…) ∧ obliged(Y, X)  →  "X is obligated to be P"
 /// without the word-salad "Y is event and Y is obligated to X".
 fn collapse_deontic_event_duties(accs: Vec<FrameAcc>) -> Vec<FrameAcc> {
@@ -389,7 +389,7 @@ fn collapse_deontic_event_duties(accs: Vec<FrameAcc>) -> Vec<FrameAcc> {
             places.insert(2, w);
         }
         out.push(FrameAcc {
-            base: "obligated".into(),
+            base: "obligated_by".into(),
             places,
             flat_args: Vec::new(),
             has_roles: true,

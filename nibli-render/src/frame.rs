@@ -15,7 +15,7 @@ use crate::overlay;
 /// waiting on a full corpus prose pass.
 const TEMPLATE_OVERRIDES: &[(&str, &str)] = &[
     // bilga/curmi: IR x1 = duty/content, x2 = obligated party — not "duty is obligated to person".
-    ("obligated", "{x2} is obligated that {x1}"),
+    ("obligated_by", "{x2} is obligated that {x1}"),
     ("obliged", "{x2} is obligated that {x1}"),
     // cirko: x1 = loss, x2 = person who loses.
     ("lose", "{x2} loses {x1}"),
@@ -307,7 +307,10 @@ mod tests {
 
     #[test]
     fn overrides_beat_corpus_for_inverted_places() {
-        assert_eq!(frame_template("obligated"), "{x2} is obligated that {x1}");
+        assert_eq!(
+            frame_template("obligated_by"),
+            "{x2} is obligated that {x1}"
+        );
         assert_eq!(frame_template("lose"), "{x2} loses {x1}");
         assert_eq!(frame_template("building"), "{x2} is placed at {x1}");
         assert_eq!(frame_template("prisoner"), "{x1} is a prisoner");

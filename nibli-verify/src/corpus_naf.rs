@@ -137,20 +137,20 @@ pub const NAF_CASES: &[Case] = &[
     Case {
         name: "gdpr_erasure_no_consent",
         kb: &[
-            "obligated(every person where ~approves, event { removes() }).",
+            "obligated_by(every person where ~approves, event { removes() }).",
             "person(Adam).",
         ],
-        query: "obligated(Adam, event { removes() }).",
+        query: "obligated_by(Adam, event { removes() }).",
         expect: Expect::True,
     },
     Case {
         name: "gdpr_erasure_with_consent",
         kb: &[
-            "obligated(every person where ~approves, event { removes() }).",
+            "obligated_by(every person where ~approves, event { removes() }).",
             "person(Adam).",
             "approves(Adam).",
         ],
-        query: "obligated(Adam, event { removes() }).",
+        query: "obligated_by(Adam, event { removes() }).",
         expect: Expect::False,
     },
     // ── du identity × NAF: the equivalence index must be visible to the NAF check. ──

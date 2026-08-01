@@ -356,24 +356,24 @@ mod tests {
         // Quantifier swap (GDPR Art 33): `some` reads as a flat existential
         // assertion; `every` reads as a universal "For every X, if … then …" rule.
         assert_eq!(
-            super::back_translate_ir("obligated(some data governs, event { message() })."),
+            super::back_translate_ir("obligated_by(some data governs, event { message() })."),
             "X is obligated to govern, data, and notify."
         );
         assert_eq!(
-            super::back_translate_ir("obligated(every data governs, event { message() })."),
+            super::back_translate_ir("obligated_by(every data governs, event { message() })."),
             "For every X, if X governs and X is data, then X is obligated to notify."
         );
         // Missing negation (GDPR Art 17), single-condition restrictor so the
         // dropped `~` is isolated in the antecedent.
         assert_eq!(
             super::back_translate_ir(
-                "obligated(every permitted, event { removes(removed: some data) })."
+                "obligated_by(every permitted, event { removes(removed: some data) })."
             ),
             "For every X, if something permits X, then X is obligated to data and be erased."
         );
         assert_eq!(
             super::back_translate_ir(
-                "obligated(every ~permitted, event { removes(removed: some data) })."
+                "obligated_by(every ~permitted, event { removes(removed: some data) })."
             ),
             "For every X, if it is not the case that something permits X, then X is \
              obligated to data and be erased."
@@ -383,7 +383,9 @@ mod tests {
         let session = Session::new();
         assert!(
             session
-                .assert_text("obligated(every ~permitted, event { removes(removed: some data) }).")
+                .assert_text(
+                    "obligated_by(every ~permitted, event { removes(removed: some data) })."
+                )
                 .is_ok(),
             "negated-restrictor universal rule should assert, not be rejected"
         );

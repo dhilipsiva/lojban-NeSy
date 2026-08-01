@@ -91,10 +91,10 @@ mod tests {
 
     #[test]
     fn utopia_floor_obligation_is_not_event_word_salad() {
-        // obligated(every person, event { secure() }) must NOT read
+        // obligated_by(every person, event { secure() }) must NOT read
         // "Y is event and Y is obligated to X".
-        let ast =
-            nibli_kr::parse_checked("obligated(every person, event { secure() }).").expect("parse");
+        let ast = nibli_kr::parse_checked("obligated_by(every person, event { secure() }).")
+            .expect("parse");
         let buf = nibli_semantics::compile_from_ast(ast).expect("compile");
         let out = render_logic_buffer(&buf, Register::Spec);
         assert!(
@@ -148,7 +148,7 @@ mod tests {
         );
         // KNOWN LIMITATION (pre-existing, not specific to `entitled`): the
         // abstraction-scaffold collapse in logic.rs (`collapse_deontic_event_duties`
-        // / `is_deontic_duty_rel`) only covers "obligated"/"obliged", so every other
+        // / `is_deontic_duty_rel`) only covers "obligated_by"/"obliged", so every other
         // event-taking predicate still renders the "Y is an event and …" scaffold —
         // including the shipped GDPR Art 15 right `permitted(every person,
         // event { data discovers() })`. Generalizing that collapse to be

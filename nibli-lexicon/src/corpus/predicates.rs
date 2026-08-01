@@ -805,7 +805,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "english", source_gismu: "glico", swap: None, places: &["english", "aspect"], gloss: "English", template: None, tier: CorpusTier::GlossDerived },
     PredicateEntry { name: "entails", source_gismu: "nibli", swap: None, places: &["premise", "conclusion", "logic"], gloss: "necessitate", template: Some("{x1} logically entails {x2}"), tier: CorpusTier::Curated },
     // Hand-authored: the corpus had no claim-right predicate whose x1 is the
-    // ENTITLED party. `obliged`/`obligated` (bilga) put the duty-bearer in x1, so
+    // ENTITLED party. `obliged`/`obligated_by` (bilga) put the duty-bearer in x1, so
     // they spell "X has a duty to Y", not "X is owed Y"; `deserve` (jerna) is an
     // EARNING relation ("x1 earns wages x2 for work x3") and carries the
     // desert-through-effort reading a floor right must exclude; `owe` (dejni) puts
@@ -1471,7 +1471,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "mercury", source_gismu: "margu", swap: None, places: &["quantity"], gloss: "mercury", template: None, tier: CorpusTier::GlossDerived },
     PredicateEntry { name: "message", source_gismu: "notci", swap: None, places: &["note", "topic", "recipient", "sender"], gloss: "message", template: None, tier: CorpusTier::Lensisku },
     // TODO(corpus): guessed places [x1:generic, x2:generic, x3:prose] — lensisku: "$x_{1}$ (tool/blade/force) cuts [through]/splits/divides $x_{2}$ (object…"
-    PredicateEntry { name: "metabolized_by", source_gismu: "katna", swap: Some(Swap { with: 2, base: "cuts" }), places: &["subject", "object", "pieces"], gloss: "cut", template: Some("{x1} cuts {x2}"), tier: CorpusTier::Generic },
+    PredicateEntry { name: "metabolized_by", source_gismu: "katna", swap: Some(Swap { with: 2, base: "cuts" }), places: &["subject", "object", "pieces"], gloss: "cut", template: Some("{x2} cuts {x1}"), tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:prose] — lensisku: "$x_{1}$ is a quantity of/contains/is made of made of metal of compositio…"
     PredicateEntry { name: "metal", source_gismu: "jinme", swap: None, places: &["quantity", "including"], gloss: "metal", template: None, tier: CorpusTier::GlossDerived },
     // TODO(corpus): guessed places [x1:generic, x2:generic, x3:prose, x4:prose] — lensisku: "$x_{1}$ is $x_{2}$ meter(s) [metric unit] in length (default 1) measured…"
@@ -1621,7 +1621,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     // TODO(corpus): guessed places [x1:gloss] — lensisku: "$x_{1}$ is a material object enduring in space-time; $x_{1}$ is a thing."
     PredicateEntry { name: "object", source_gismu: "dacti", swap: None, places: &["material"], gloss: "object", template: None, tier: CorpusTier::GlossDerived },
     // TODO(corpus): guessed places [x2:prose, x3:prose] — lensisku: "$x_{1}$ is bound/obliged to/has the duty to do/be $x_{2}$ in/by standard…"
-    PredicateEntry { name: "obligated", source_gismu: "bilga", swap: Some(Swap { with: 2, base: "obliged" }), places: &["duty", "do", "standard"], gloss: "must", template: Some("{x1} is obligated to {x2}"), tier: CorpusTier::Prose },
+    PredicateEntry { name: "obligated_by", source_gismu: "bilga", swap: Some(Swap { with: 2, base: "obliged" }), places: &["duty", "do", "standard"], gloss: "must", template: Some("{x2} is obligated to {x1}"), tier: CorpusTier::Prose },
     // TODO(corpus): guessed places [x1:gloss] — lensisku: "$x_{1}$ is bound/obliged to/has the duty to do/be $x_{2}$ in/by standard…"
     PredicateEntry { name: "obliged", source_gismu: "bilga", swap: None, places: &["bound", "duty", "standard"], gloss: "must", template: Some("{x1} is obligated to {x2}"), tier: CorpusTier::GlossDerived },
     // TODO(corpus): guessed places [x1:generic, x2:generic, x3:prose, x4:prose] — lensisku: "$x_{1}$ observes/[notices]/watches/beholds $x_{2}$ using senses/means $x…"
@@ -1670,7 +1670,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:prose, x4:generic] — lensisku: "$x_{1}$ owes $x_{2}$ in debt/obligation to creditor $x_{3}$ in return fo…"
     PredicateEntry { name: "owe", source_gismu: "dejni", swap: None, places: &["subject", "owes", "creditor", "place4"], gloss: "owe", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:generic, x3:prose] — lensisku: "$x_{1}$ possesses/owns/has $x_{2}$ under law/custom $x_{3}$; $x_{1}$ is …"
-    PredicateEntry { name: "owned", source_gismu: "ponse", swap: Some(Swap { with: 2, base: "owns" }), places: &["subject", "ownership", "law"], gloss: "possess", template: Some("{x1} possesses {x2}"), tier: CorpusTier::Generic },
+    PredicateEntry { name: "owned", source_gismu: "ponse", swap: Some(Swap { with: 2, base: "owns" }), places: &["subject", "ownership", "law"], gloss: "possess", template: Some("{x2} possesses {x1}"), tier: CorpusTier::Generic },
     PredicateEntry { name: "owns", source_gismu: "ponse", swap: None, places: &["owner", "owned", "basis"], gloss: "possess", template: Some("{x1} possesses {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:gloss] — lensisku: "$x_{1}$ is a quantity of/contains/is made of oxygen (O); [metaphor: supp…"
     PredicateEntry { name: "oxygen", source_gismu: "kijno", swap: None, places: &["quantity"], gloss: "oxygen", template: None, tier: CorpusTier::GlossDerived },
@@ -1734,7 +1734,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "permanent", source_gismu: "vitno", swap: None, places: &["permanent", "object", "standard"], gloss: "permanent", template: None, tier: CorpusTier::Generic },
     PredicateEntry { name: "permits", source_gismu: "curmi", swap: None, places: &["permitter", "act", "conditions"], gloss: "permit", template: Some("{x1} permits {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:prose] — lensisku: "$x_{1}$ (agent) lets/permits/allows $x_{2}$ (event) under conditions $x_…"
-    PredicateEntry { name: "permitted", source_gismu: "curmi", swap: Some(Swap { with: 2, base: "permits" }), places: &["subject", "lets", "conditions"], gloss: "permit", template: Some("{x1} permits {x2}"), tier: CorpusTier::Generic },
+    PredicateEntry { name: "permitted", source_gismu: "curmi", swap: Some(Swap { with: 2, base: "permits" }), places: &["subject", "lets", "conditions"], gloss: "permit", template: Some("{x2} permits {x1}"), tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss] — lensisku: "$x_{1}$ is a person/people (noun) [not necessarily human]; $x_{1}$ displ…"
     PredicateEntry { name: "person", source_gismu: "prenu", swap: None, places: &["person"], gloss: "person", template: Some("{x1} is a person"), tier: CorpusTier::GlossDerived },
     // TODO(corpus): guessed places [x1:generic, x2:prose] — lensisku: "$x_{1}$ pertains to/is germane/relevant to/concerns/is related/associate…"

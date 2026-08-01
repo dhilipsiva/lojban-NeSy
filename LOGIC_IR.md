@@ -120,7 +120,7 @@ contract, not accident:
   above.
 - **Tense and deontics** wrap the whole predication: `PastNode`/`PresentNode`/`FutureNode` and
   `ObligatoryNode`/`PermittedNode` around the compiled form. (The converted aliases
-  `obligated`/`permitted` are plain predicates, not deontic nodes.)
+  `obligated_by`/`permitted` are plain predicates, not deontic nodes.)
 - **Abstractions are opaque.** `event { }`/`fact { }`/`property { }`/`amount { }`/
   `concept { }` bodies compile to
   `And(type_pred, And(__abs_<hash>(referent), body))` where `__abs_<hash>` is a content-hashed

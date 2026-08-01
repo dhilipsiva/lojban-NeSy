@@ -2852,7 +2852,7 @@ fn utopia_file_loads_and_pins() {
         ("prisoner(Nando).", true),
         ("building(LowSec, Nando).", true),
         ("dwell(Nando).", true),
-        ("obligated(Adam, event { eats() }).", true),
+        ("obligated_by(Adam, event { eats() }).", true),
     ];
     for (q, want_true) in pins {
         let r = engine
@@ -2994,19 +2994,19 @@ fn gdpr_lawful_basis_via_contract() {
 #[test]
 fn gdpr_special_category_requires_stricter_basis() {
     let engine = engine_with_facts(&[
-        "obligated(every healthy data, event { exact() }).",
+        "obligated_by(every healthy data, event { exact() }).",
         "healthy data(Kanrek).",
         "data(Ordrek).",
     ]);
     assert_true(
         &engine
-            .query_holds("obligated(Kanrek, event { exact() }).")
+            .query_holds("obligated_by(Kanrek, event { exact() }).")
             .unwrap(),
         "Health data requires a stricter basis (Art 9)",
     );
     assert_false(
         &engine
-            .query_holds("obligated(Ordrek, event { exact() }).")
+            .query_holds("obligated_by(Ordrek, event { exact() }).")
             .unwrap(),
         "Ordinary data does not require the special-category basis",
     );
@@ -3018,11 +3018,11 @@ fn gdpr_special_category_requires_stricter_basis() {
 fn gdpr_art5_accuracy_applies_to_health_data() {
     let engine = engine_with_facts(&[
         "data(every healthy data).",
-        "obligated(every data, event { correct() }).",
+        "obligated_by(every data, event { correct() }).",
         "healthy data(Kanrek).",
     ]);
     let (holds, trace, _json) = engine
-        .query_text_with_proof("obligated(Kanrek, event { correct() }).")
+        .query_text_with_proof("obligated_by(Kanrek, event { correct() }).")
         .unwrap();
     assert_true(
         &holds,
@@ -3062,20 +3062,20 @@ fn gdpr_right_of_access_dsar() {
 #[test]
 fn gdpr_breach_notification() {
     let engine = engine_with_facts(&[
-        "obligated(every data governs where flaw, event { message() }).",
+        "obligated_by(every data governs where flaw, event { message() }).",
         "data governs(Akmes).",
         "data governs(Gugli).",
         "flaw(Akmes).", // only AkmeCorp breached
     ]);
     assert_true(
         &engine
-            .query_holds("obligated(Akmes, event { message() }).")
+            .query_holds("obligated_by(Akmes, event { message() }).")
             .unwrap(),
         "A breached controller must notify (Art 33)",
     );
     assert_false(
         &engine
-            .query_holds("obligated(Gugli, event { message() }).")
+            .query_holds("obligated_by(Gugli, event { message() }).")
             .unwrap(),
         "A controller with no breach has no notification obligation",
     );
@@ -3093,13 +3093,13 @@ fn gdpr_erasure_rule_via_negated_consent_restrictor() {
     let engine = fresh_engine();
     engine.assert_text("person(Adam).").unwrap();
     engine
-        .assert_text("obligated(every person where ~approves, event { removes() }).")
+        .assert_text("obligated_by(every person where ~approves, event { removes() }).")
         .expect("the negated-restrictor erasure rule must now compile");
 
     // ── No consent → the erasure obligation arises (NAF: no consent witness). ──
     assert_true(
         &engine
-            .query_holds("obligated(Adam, event { removes() }).")
+            .query_holds("obligated_by(Adam, event { removes() }).")
             .unwrap(),
         "No consent → erasure obligation holds (Art 17 as a stored rule)",
     );
@@ -3108,7 +3108,7 @@ fn gdpr_erasure_rule_via_negated_consent_restrictor() {
     let consent_id = engine.assert_text("approves(Adam).").unwrap()[0];
     assert_false(
         &engine
-            .query_holds("obligated(Adam, event { removes() }).")
+            .query_holds("obligated_by(Adam, event { removes() }).")
             .unwrap(),
         "Consent present → no erasure obligation",
     );
@@ -3116,7 +3116,7 @@ fn gdpr_erasure_rule_via_negated_consent_restrictor() {
     // ── Withdraw consent → the obligation re-arises, flagged NAF-dependent. ──
     engine.retract_fact(consent_id).unwrap();
     let (holds, trace, json) = engine
-        .query_text_with_proof("obligated(Adam, event { removes() }).")
+        .query_text_with_proof("obligated_by(Adam, event { removes() }).")
         .unwrap();
     assert_true(&holds, "After withdrawal, the erasure obligation re-arises");
     assert!(!trace.is_empty(), "Erasure proof trace should be non-empty");
@@ -3138,19 +3138,19 @@ fn gdpr_erasure_rule_is_per_subject() {
     engine.assert_text("person(Adam).").unwrap();
     engine.assert_text("person(Bet).").unwrap();
     engine
-        .assert_text("obligated(every person where ~approves, event { removes() }).")
+        .assert_text("obligated_by(every person where ~approves, event { removes() }).")
         .unwrap();
     engine.assert_text("approves(Bet).").unwrap(); // bet consents; adam does not
 
     assert_true(
         &engine
-            .query_holds("obligated(Adam, event { removes() }).")
+            .query_holds("obligated_by(Adam, event { removes() }).")
             .unwrap(),
         "adam (no consent) is obligated to be erased",
     );
     assert_false(
         &engine
-            .query_holds("obligated(Bet, event { removes() }).")
+            .query_holds("obligated_by(Bet, event { removes() }).")
             .unwrap(),
         "bet (consented) is NOT obligated — the rule is per-subject, not global",
     );

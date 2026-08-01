@@ -297,7 +297,7 @@ Surfaced by the book's verified review passes; each hand-verified at filing time
   `obliged(every data governs, event { message() }).` back-translates as "For every
   X, if X governs and X is data, then **Y** is obligated to notify" — the
   post-`8286738` deontic collapse picks the event variable as the duty-holder for
-  the BASE spelling, while the converted `obligated` spelling correctly binds X.
+  the BASE spelling, while the converted `obligated_by` spelling correctly binds X.
   The who-selection appears keyed to the converted routing. Fix the base-spelling
   collapse; ripple: re-check nibli-wasm's `c18_draft_error_glosses_are_verbatim`
   pin and the book's Ch 18 alias note.

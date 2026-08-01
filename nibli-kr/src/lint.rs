@@ -48,7 +48,7 @@ pub struct Linter {
     /// determiner (in walk order, so `owns(some dog, the dog)` is quiet).
     introduced: BTreeSet<String>,
     /// L7 state: a `must`/`may` prefix has appeared / an
-    /// `obligated`/`permitted`-class predicate ([`DEONTIC_PREDICATES`]) has
+    /// `obligated_by`/`permitted`-class predicate ([`DEONTIC_PREDICATES`]) has
     /// appeared / the note already fired (once per session).
     deontic_prefix_seen: bool,
     norm_pred_seen: bool,
@@ -88,7 +88,7 @@ impl Linter {
                     input,
                     st.span.start,
                     "L7",
-                    "this KB mixes must/may prefixes with the obligated()/permitted() \
+                    "this KB mixes must/may prefixes with the obligated_by()/permitted() \
                      predicate idiom — both are engine-faithful, but they don't chain \
                      with each other"
                         .to_string(),
@@ -185,7 +185,7 @@ fn push(notes: &mut Vec<LintNote>, input: &str, at: usize, code: &'static str, m
 /// field is metadata, not a classifier); the
 /// `deontic_predicates_match_the_corpus_family` test keeps this set honest
 /// against the corpus.
-const DEONTIC_PREDICATES: &[&str] = &["obligated", "obliged", "permits", "permitted"];
+const DEONTIC_PREDICATES: &[&str] = &["obligated_by", "obliged", "permits", "permitted"];
 
 /// Is this determiner an introducing quantifier for L1 purposes?
 fn introduces(det: Det) -> bool {
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn l7_quiet_on_either_idiom_alone() {
         assert!(!codes("must eats(Adam).\nmay eats(Betis).").contains(&"L7"));
-        assert!(!codes("permitted(Adam).\nobligated(Adam).").contains(&"L7"));
+        assert!(!codes("permitted(Adam).\nobligated_by(Adam).").contains(&"L7"));
     }
 
     // ── L8 — O9 attachment echo ──

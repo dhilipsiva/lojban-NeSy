@@ -38,7 +38,7 @@ differential gates, and the Lean soundness proofs all apply as-is.
 goes(me, to: the market).
 
 # Lojban: ro lo prenu poi na zanru cu se bilga lo nu se vimcu   (GDPR erasure)
-obligated(every person where ~consents, duty: event { removed() }).
+obligated_by(every person where ~consents, duty: event { removed() }).
 
 # Lojban: ro da zo'u ganai ge da ckape gi la .adam. cu pilno da gi da kajde
 all $x: at_risk($x) & takes(Adam, $x) -> alert($x).
@@ -425,7 +425,7 @@ never invoke the linter.
   positive `past P` restrictor; differentially oracled by `verify-soundness`). Emit an
   informational NOTE of the reading. (`~past P` is rejected outright — §6.)
 - **L7 — norm-encoding style:** warn when a KB mixes `must`/`may` wrappers with the
-  `obligated()`/`permitted()` predicate idiom for what looks like the same norm — both
+  `obligated_by()`/`permitted()` predicate idiom for what looks like the same norm — both
   are engine-faithful, but they don't chain with each other.
 - **L8 — O9 attachment echo (2026-07-12 review):** when a clause-body-final equality's
   RHS term carries its own `where`/`also` clause, echo the resolved innermost-wins
@@ -448,7 +448,7 @@ the stores, rendering, and every soundness gate are untouched.
 - English names from the first lensisku gloss keyword (~98% clean; 5 collisions +
   ~25-word pin table, same mechanism as the existing `GISMU_GLOSS_OVERRIDES`).
 - **Reserved-word collisions must be resolved at generation time** — e.g. `bilga`'s
-  pinned gloss is `must`, which is a nibli KR keyword → alias `obligates`/`obligated`.
+  pinned gloss is `must`, which is a nibli KR keyword → alias `obligates`/`obligated_by`.
 - `place_labels` populated by a tiered chain: curated table for the ~80–200 core/corpus
   predicates (same scale as the existing `GISMU_PLACE_TEMPLATES`) → lensisku
   `place_keywords` where present (70/1,338 gismu; more for lujvo) → flagged prose
@@ -564,7 +564,7 @@ prelude) **declares its vocabulary**:
 ```nibli-kr
 pred goes(goer, destination, origin, route, means).
 pred inhibits(inhibitor, inhibited): "blocks the metabolism of".
-pred obligated(who, duty).
+pred obligated_by(who, duty).
 ```
 
 - The **declared name is the canonical predicate identity** — no gismu keying, no
@@ -671,10 +671,10 @@ Verification:
 ```nibli-kr
 pred person(who).
 pred consents(who).
-pred obligated(who, duty).
+pred obligated_by(who, duty).
 pred removed(what).
 
-obligated(every person where ~consents, duty: event { removed() }).
+obligated_by(every person where ~consents, duty: event { removed() }).
 ```
 
 Identical logic to the v0.1/Lojban form — but the argument order is the declared one
@@ -754,7 +754,7 @@ String      <- '"' ('\\' . / !'"' .)* '"'
 > earlier draft used domain overlays — `consents`/`inhibits`/`breached`/
 > `at_risk`/`rises`/`takes` — which never enter the core map) and to the
 > emitter's landed forms (converted aliases carry positional labels, so
-> `obligated`'s duty place is `x2:`). The NORMATIVE, executable form of this
+> `obligated_by`'s duty place is `x2:`). The NORMATIVE, executable form of this
 > corpus is **`nibli-kr/tests/acceptance.nibli`** (30 statements — this set plus
 > operator/selector/block/tag coverage), pinned by nibli-kr's render∘parse
 > fixpoint tests and reused as the fuzz seed.
@@ -766,11 +766,11 @@ metabolized_by(Varfarin, Siptucin).              # la .varfarin. cu se katna la 
                                                  #   (alias katna⟨x1↔x2⟩; = cuts(x2: Varfarin, x1: Siptucin))
 healthy data(Kanrek).                            # la .kanrek. cu kanro datni  (tanru, head = data)
 animal(every dog).                               # ro lo gerku cu danlu
-obligated(every data, x2: event { correct() }).  # ro lo datni cu se bilga lo nu drani
+obligated_by(every data, x2: event { correct() }).  # ro lo datni cu se bilga lo nu drani
 permitted(every person where approves).          # ro lo prenu poi zanru cu se curmi
-obligated(every data governs where flaw, x2: event { message() }).
+obligated_by(every data governs where flaw, x2: event { message() }).
                                                  # ro lo datni turni poi cfila cu se bilga lo nu notci
-obligated(every person where ~approves, x2: event { removes() }).
+obligated_by(every person where ~approves, x2: event { removes() }).
                                                  # ro lo prenu poi na zanru cu se bilga lo nu se vimcu  (GDPR erasure)
 permitted(every person, x2: event { data discovers() }).
                                                  # ro lo prenu cu se curmi lo nu datni facki

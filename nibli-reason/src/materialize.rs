@@ -319,7 +319,7 @@ fn project_atoms_inner(
 ) -> Result<(Vec<Atom>, Vec<StoredFact>, Vec<String>), ProjectErr> {
     // Every atom must be Bare: a Past/Obligatory template fires flavour-polymorphically
     // and v1 does not model that. (This is also what keeps the GDPR-style
-    // `obligated(every X, event { … })` / `permitted(…)` rules out — they compile to
+    // `obligated_by(every X, event { … })` / `permitted(…)` rules out — they compile to
     // Obligatory/Permitted stored facts, so only the plain `entitled` shape reaches the
     // abstraction handling below.)
     if atoms.iter().any(|a| !matches!(a, StoredFact::Bare(_))) {

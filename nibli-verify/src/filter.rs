@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn detects_negation_tokens() {
         assert!(source_has_negation(
-            "obligated(every person where ~approves, event { removes() })."
+            "obligated_by(every person where ~approves, event { removes() })."
         ));
         assert!(source_has_negation("~dog(Adam)."));
         assert!(!source_has_negation("animal(every dog)."));
