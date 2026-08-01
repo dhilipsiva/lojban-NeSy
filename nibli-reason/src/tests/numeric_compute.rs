@@ -622,6 +622,56 @@ fn compute_and_comparison_role_predicates_are_non_indexable() {
     }
 }
 
+/// `compile_surface` with `exponential` additionally REGISTERED as a compute
+/// predicate — what a session that wires the external backend does
+/// (nibli-host registers `exponential`/`logarithm`). The static
+/// `is_non_indexable_relation` classifier cannot know registered names; only
+/// the buffer-local `collect_compute_heads` sweep marks their role predicates.
+fn compile_surface_with_exponential(text: &str) -> LogicBuffer {
+    let ast = nibli_kr::parse_checked(text).unwrap_or_else(|e| panic!("parse '{text}': {e}"));
+    let mut buf =
+        nibli_semantics::compile_from_ast(ast).unwrap_or_else(|e| panic!("compile '{text}': {e}"));
+    let mut preds = default_compute_predicates();
+    preds.insert("exponential".to_string());
+    transform_compute_nodes(&mut buf, &preds);
+    buf
+}
+
+#[test]
+fn registered_compute_role_predicates_do_not_anchor_narrowing() {
+    // The distinguishing job of the ComputeNode-head sweep: `exponential` is
+    // not a builtin, so the static classifier passes `exponential_x1` — only
+    // the head's presence in this very body marks it query-time-evaluated.
+    // Without the filter the empty `exponential_x1` extension anchors the
+    // existential and the honest non-definitive verdict (no backend registered
+    // in native tests) collapses to a definitive wrong FALSE.
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("big(5)."));
+    let result = query_result(
+        &kb,
+        compile_surface_with_exponential("exponential(some big, 2, 3)."),
+    );
+    assert_eq!(
+        result,
+        QueryResult::Unknown(UnknownReason::BackendUnavailable),
+        "candidates must come from big_x1 ({{5}}); 5's dispatch surfaces \
+         backend-unavailable — never a definitive FALSE from an empty compute-role anchor"
+    );
+}
+
+#[test]
+fn stored_non_finite_witnesses_stay_reachable_through_the_index() {
+    // Non-finite numbers never join the DOMAIN (`note_number` skips them), but
+    // the fact store is bitwise, so a stored `big(NaN)` is still an entailment
+    // WITNESS: existential narrowing draws candidates from the stored-fact
+    // index, not the member list. (Also the mutation-kill for the
+    // `collect_entailment_candidates -> None` mutant — the full-domain
+    // fallback would lose exactly this witness.)
+    let kb = new_kb();
+    assert_buf(&kb, decomposed_big_fact(f64::NAN));
+    assert!(query(&kb, compile_surface("big(some big).")));
+}
+
 // ─── Numbers in the quantifier domain (GUARANTEES §Disclosed Sharp Edges) ─────
 //
 // Since the numbers-join-the-domain change, a FINITE number asserted into a
