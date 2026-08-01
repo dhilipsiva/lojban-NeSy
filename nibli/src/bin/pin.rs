@@ -73,6 +73,24 @@
 //! scope `derived_only`/`admits` — those are one-way by design and survive the
 //! rebuild replay — and says so rather than no-op'ing.
 //!
+//! **It is NOT a blanket replacement for `:accept`, and a wrong conversion is
+//! quiet.** An `:accept` is sometimes not a control at all but a PREMISE the file
+//! goes on to query — it writes a roster entry and then asks what that entry
+//! derived, or loads a rule and then asks what it marks. Scope one of those and
+//! the accept still passes (the statement loads fine); it is the QUERY BELOW that
+//! flips, so the run reports a FINDING at exit 1 and reads as a design regression
+//! in the artifact rather than as a mis-edited pin file. Measured downstream on
+//! two real chapter files: 2 findings in one, 1 in the other, exit 1 both times.
+//!
+//! The runner cannot tell the two apart — "did the author want this rule
+//! afterwards" is not a property of the statement — so the file has to say which
+//! it meant. Convert a control; leave a premise alone, and say so in a comment
+//! where the distinction is not obvious.
+//!
+//! Note also that scoping the controls is not the same as a file not widening its
+//! own base: ordinary ground facts written above a query are still resident, and
+//! ordering still matters for those.
+//!
 //! `:refuse <class> /<regex>/` and `:accept` are DUALS and are scoped to the
 //! NEXT statement only — never sticky. `<class>` is the `NibliError` variant
 //! (`syntax` | `semantic` | `reasoning` | `backend`), matched on the TYPE, not on
