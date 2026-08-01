@@ -1,0 +1,140 @@
+# MECHANISM PIN — order and duration WITHOUT numerals.
+#
+# The fixture is INLINE by design (see nibli-pin's module docs): the subject is the
+# ENGINE's ability to reason about order, not any particular knowledge base.
+#
+# Why this file exists. A consuming project asked for "a primitive that expresses ORDER
+# and DURATION without numerals", believing none existed — its artifact was printing an
+# admission to readers that the design "never says when". No new primitive was needed:
+# the committed corpus already carries `earlier`/`later` (a binary time-sequence
+# ordering), `continue`/`cease` (an interval running or stopped) and `time` (a duration
+# named as the interval between two events), none of which has a numeric place. What was
+# missing was that this is GUARANTEED rather than incidental. These pins are that
+# guarantee: they fail loudly if a refactor, a corpus regeneration, or a change to rule
+# firing takes any of it away.
+#
+# The honest boundary is pinned too, at the bottom: an ABSOLUTE magnitude still needs a
+# numeral. Ordering is qualitative; "five years" is not.
+
+# ── ORDER ────────────────────────────────────────────────────────────────────
+# `earlier(x1, x2)` is "x1 is earlier than x2 in time sequence" (gismu purci).
+# Transitivity is NOT built in — the engine is a logic engine and the KB states its
+# axioms. This is the rule a KB writes, and it must keep compiling and firing.
+:accept
+all $a, $b, $c: earlier($a,$b) & earlier($b,$c) -> earlier($a,$c).
+
+earlier(Arrest, Trial).
+earlier(Trial, Release).
+
+? earlier(Arrest, Release).
+# => TRUE
+
+# Order is DIRECTIONAL: the closure must not make the relation symmetric.
+? earlier(Release, Arrest).
+# => FALSE
+
+# The chain must survive more links than the default chain depth, because the rule
+# bisects (a -> c via any midpoint) rather than walking one step at a time.
+earlier(Release, Review).
+earlier(Review, Expunge).
+? earlier(Arrest, Expunge).
+# => TRUE
+
+# `later` is the converse spelling, and is INDEPENDENT: asserting one does not derive
+# the other. A KB that wants both directions links them with its own rule.
+? later(Release, Arrest).
+# => FALSE
+
+# ── STILL RUNNING vs ENDED ───────────────────────────────────────────────────
+# `continue(x1, x2)` — x1 (event/state) continues over interval x2 (gismu ranji).
+# `cease(x1, x2)`   — x1 ceases activity/process/state x2 (gismu sisti).
+continue(Term, Custody).
+cease(Parole, Custody).
+
+? continue(Term, Custody).
+# => TRUE
+
+# "NOT YET" — the thing the ask believed was inexpressible because `~past P` is refused.
+# Negation-as-failure over an ordinary relation says it directly, no tense involved.
+? ~cease(Term, Custody).
+# => TRUE
+
+? ~cease(Parole, Custody).
+# => FALSE
+
+# And a rule may READ that, which is the part that makes it usable in a constitution.
+:accept
+all $e: continue($e, Custody) & ~cease($e, Custody) -> occurrence($e).
+
+? occurrence(Term).
+# => TRUE
+
+? occurrence(Parole).
+# => FALSE
+
+# ── DURATION AS A NAMED INTERVAL ─────────────────────────────────────────────
+# `time(x1, x2, x3)` — x1 is the interval FROM x2 TO x3 (gismu temci). Arity 3, no
+# numeric place: a duration is named by its endpoints, never measured.
+:accept
+time(Sentence, Trial, Release).
+
+? time(Sentence, Trial, Release).
+# => TRUE
+
+# The endpoints are ordered, so a duration inherits the ordering of what bounds it.
+? earlier(Trial, Release).
+# => TRUE
+
+# ── A CONTRADICTORY ORDER IS DETECTABLE ──────────────────────────────────────
+# Nothing in the engine enforces asymmetry — `earlier` is an ordinary relation. A KB
+# that needs the guarantee derives it, the same way `utopia.nibli` derives `false`.
+:accept
+all $a, $b: earlier($a,$b) & earlier($b,$a) -> broken($a).
+
+earlier(Muddle, Tangle).
+earlier(Tangle, Muddle).
+
+? broken(Muddle).
+# => TRUE
+
+# The consistent chain above must NOT be flagged by that same rule.
+? broken(Arrest).
+# => FALSE
+
+# ── BEGINNING, DURING, AND AN EXPLICIT END ───────────────────────────────────
+# `happen(x1)` is "x1 commences/initiates/starts/begins to occur" (gismu cfari) — the
+# BEGIN relation. `concurrent(x1, x2)` is "x1 is current at/during/simultaneous with x2"
+# (gismu cabna). `end(x1, x2)` is "x1 is an end/termination of process x2" (gismu fanmo).
+# All arity 1-2, none numeric.
+happen(Hearing).
+concurrent(Custody, Appeal).
+end(Release, Custody).
+
+? happen(Hearing).
+# => TRUE
+
+? concurrent(Custody, Appeal).
+# => TRUE
+
+? end(Release, Custody).
+# => TRUE
+
+# Begun-and-not-ended is the second spelling of "still running", and a rule reads it.
+:accept
+all $e: happen($e) & ~end(Release, $e) -> occurrence($e).
+
+? occurrence(Hearing).
+# => TRUE
+
+# ── A MAGNITUDE MAY BE SYMBOLIC ──────────────────────────────────────────────
+# The calendar units (`year`, `month`, `week`, `full_day`, `hour`, `minute`, `second`)
+# take their magnitude in an ORDINARY x2 place labelled `object` — the engine does not
+# require a numeral there, so a Name constant states a term without a digit. What this
+# buys is a term that can be COMPARED only by rules the KB writes; no arithmetic follows
+# from it, and `Two` here is opaque. Pinned so a digit-banning KB knows the door exists.
+year(Term, Two).
+
+? year(Term, Two).
+# => TRUE
+
+:expect-pins 23

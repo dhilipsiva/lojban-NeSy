@@ -11,7 +11,7 @@ use super::{CorpusTier, PredicateEntry, Swap};
 
 /// The `TODO(corpus)` marker count — the label-quality ratchet.
 #[allow(dead_code)] // consumed by the ratchet test only
-pub(crate) const TODO_BASELINE: usize = 1278;
+pub(crate) const TODO_BASELINE: usize = 1273;
 
 pub(crate) static PREDICATES: &[PredicateEntry] = &[
     // TODO(corpus): guessed places [x1:gloss, x2:generic] — lensisku: "$x_{1}$ is a/the abdomen/belly/lower trunk [body-part] of $x_{2}$; [meta…"
@@ -402,8 +402,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "cause", source_gismu: "rinka", swap: None, places: &["subject", "effect", "conditions"], gloss: "cause", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:prose] — lensisku: "$x_{1}$ is a cavity/hole/hollow/cavern in $x_{2}$; $x_{1}$ is concave wi…"
     PredicateEntry { name: "cavity", source_gismu: "kevna", swap: None, places: &["cavity", "within"], gloss: "cavity", template: None, tier: CorpusTier::GlossDerived },
-    // TODO(corpus): guessed places [x1:generic, x2:prose] — lensisku: "$x_{1}$ [agent] ceases/stops/halts/ends activity/process/state $x_{2}$ […"
-    PredicateEntry { name: "cease", source_gismu: "sisti", swap: None, places: &["subject", "activity"], gloss: "cease", template: None, tier: CorpusTier::Generic },
+    PredicateEntry { name: "cease", source_gismu: "sisti", swap: None, places: &["agent", "activity"], gloss: "ceases", template: Some("{x1} ceases {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:generic] — lensisku: "$x_{1}$ celebrates/recognizes/honors $x_{2}$ (event/abstract) with activ…"
     PredicateEntry { name: "celebrate", source_gismu: "salci", swap: None, places: &["subject", "celebrates", "place3"], gloss: "celebrate", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:generic] — lensisku: "$x_{1}$ is a cell/atom/unit/molecule of $x_{2}$; $x_{1}$ is an indivisib…"
@@ -552,8 +551,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     // TODO(corpus): guessed places [x1:gloss, x2:generic, x3:prose] — lensisku: "$x_{1}$ is constant/invariant/unchanging in property $x_{2}$ (ka) in res…"
     PredicateEntry { name: "constant", source_gismu: "stodi", swap: None, places: &["constant", "object", "stimulus"], gloss: "constant", template: None, tier: CorpusTier::Generic },
     PredicateEntry { name: "contain", source_gismu: "vasru", swap: None, places: &["container", "content"], gloss: "contain", template: None, tier: CorpusTier::Lensisku },
-    // TODO(corpus): guessed places [x1:generic, x2:prose] — lensisku: "$x_{1}$ (event/state) continues/persists over interval $x_{2}$; $x_{1}$ …"
-    PredicateEntry { name: "continue", source_gismu: "ranji", swap: None, places: &["subject", "interval"], gloss: "continue", template: None, tier: CorpusTier::Generic },
+    PredicateEntry { name: "continue", source_gismu: "ranji", swap: None, places: &["ongoing", "interval"], gloss: "continues over", template: Some("{x1} continues over {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:prose] — lensisku: "$x_{1}$ (du'u) contradicts/denies/refutes/negates $x_{2}$ (du'u) under r…"
     PredicateEntry { name: "contradict", source_gismu: "natfe", swap: None, places: &["subject", "contradicts", "rules"], gloss: "contradict", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x2:generic, x3:generic] — lensisku: "$x_{1}$ has control over/harnesses/manages/directs/conducts $x_{2}$ in $…"
@@ -761,8 +759,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "dwell", source_gismu: "xabju", swap: None, places: &["subject", "location"], gloss: "dwell", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:generic] — lensisku: "$x_{1}$ is a/the ear [body-part] of $x_{2}$; [metaphor: sensory apparatu…"
     PredicateEntry { name: "ear", source_gismu: "kerlo", swap: None, places: &["ear", "object"], gloss: "ear", template: None, tier: CorpusTier::Generic },
-    // TODO(corpus): guessed places [x1:generic, x2:generic] — lensisku: "$x_{1}$ is in the past of/earlier than/before $x_{2}$ in time sequence; …"
-    PredicateEntry { name: "earlier", source_gismu: "purci", swap: None, places: &["subject", "object"], gloss: "past", template: None, tier: CorpusTier::Generic },
+    PredicateEntry { name: "earlier", source_gismu: "purci", swap: None, places: &["earlier", "later"], gloss: "earlier than", template: Some("{x1} is earlier than {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:prose] — lensisku: "$x_{1}$ (event) is early by standard $x_{2}$."
     PredicateEntry { name: "early", source_gismu: "clira", swap: None, places: &["subject", "standard"], gloss: "early", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x2:prose] — lensisku: "$x_{1}$ is the Earth/the home planet of race $x_{2}$; (adjective:) $x_{1…"
@@ -1306,8 +1303,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "language", source_gismu: "bangu", swap: None, places: &["language", "object", "express"], gloss: "language", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:generic, x2:prose] — lensisku: "$x_{1}$ (event) is late by standard $x_{2}$."
     PredicateEntry { name: "late", source_gismu: "lerci", swap: None, places: &["subject", "standard"], gloss: "late", template: None, tier: CorpusTier::Generic },
-    // TODO(corpus): guessed places [x1:generic, x2:generic] — lensisku: "$x_{1}$ is in the future of/later than/after $x_{2}$ in time sequence; $…"
-    PredicateEntry { name: "later", source_gismu: "balvi", swap: None, places: &["subject", "object"], gloss: "future", template: None, tier: CorpusTier::Generic },
+    PredicateEntry { name: "later", source_gismu: "balvi", swap: None, places: &["later", "earlier"], gloss: "later than", template: Some("{x1} is later than {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:prose] — lensisku: "$x_{1}$ reflects Latin/Roman/Romance culture/empire/language in aspect $…"
     PredicateEntry { name: "latin", source_gismu: "latmo", swap: None, places: &["subject", "aspect"], gloss: "Latin", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:generic] — lensisku: "$x_{1}$ laughs (emotional expression)."
@@ -2450,8 +2446,7 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "tiger", source_gismu: "tirxu", swap: None, places: &["tiger", "species", "markings"], gloss: "tirxu", template: None, tier: CorpusTier::GlossDerived },
     // TODO(corpus): guessed places [x1:gloss, x2:prose, x3:prose, x4:prose] — lensisku: "$x_{1}$ is a tile/cake [shape/form] of material $x_{2}$, shape $x_{3}$, …"
     PredicateEntry { name: "tile", source_gismu: "tapla", swap: None, places: &["tile", "material", "shape", "thickness"], gloss: "tile", template: None, tier: CorpusTier::GlossDerived },
-    // TODO(corpus): guessed places [x1:generic, x2:prose, x3:generic] — lensisku: "$x_{1}$ is the time-duration/interval/period/[elapsed time] from time/ev…"
-    PredicateEntry { name: "time", source_gismu: "temci", swap: None, places: &["subject", "time", "place3"], gloss: "time", template: None, tier: CorpusTier::Generic },
+    PredicateEntry { name: "time", source_gismu: "temci", swap: None, places: &["interval", "from", "to"], gloss: "interval", template: Some("{x1} is the interval from {x2} to {x3}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:prose, x4:prose] — lensisku: "$x_{1}$ [hours, minutes, seconds] is the time/hour of state/event $x_{2}…"
     PredicateEntry { name: "time_of_day", source_gismu: "tcika", swap: None, places: &["subject", "state", "day", "location"], gloss: "time of day", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss] — lensisku: "$x_{1}$ is a quantity of/contains/is made of tin (Sn); [metaphor: cheap …"
