@@ -1,5 +1,48 @@
 use super::*;
 
+#[test]
+fn retracting_a_flat_number_fact_removes_it_from_the_domain() {
+    // Adversarial-review finding (2026-08-01, numbers-join-the-domain): the
+    // then-extant "incremental O(1)" retraction branch (flat, skolem-free
+    // buffers — the raw-FOL / import / WIT surfaces; KR facts always decompose)
+    // removed the FACT but left 5 in `known_numbers`, and a lingering number —
+    // unlike a lingering constant — satisfies arithmetic bodies with no store
+    // backing at all, so `retract ≡ never-asserted` broke with a wrong
+    // definitive verdict. The branch is retired: retraction always rebuilds.
+    let kb = new_kb();
+    let mut nodes = Vec::new();
+    let root = pred(&mut nodes, "big", vec![LogicalTerm::Number(5.0)]);
+    let id = assert_id(
+        &kb,
+        LogicBuffer {
+            nodes,
+            roots: vec![root],
+        },
+        "big-5",
+    );
+    kb.retract_fact(id).unwrap();
+    // Never-asserted twin: no members → vacuous TRUE. A lingering 5 would be
+    // a counterexample (5 ≠ 2 + 2) — a wrong FALSE.
+    assert!(query(&kb, compile_surface("all $x: sum($x, 2, 2).")));
+}
+
+#[test]
+fn rebuild_path_retraction_does_not_serve_stale_domain_members() {
+    // Sibling finding: `rebuild_inner` cleared the `known_*` sets but neither
+    // cleared the member CACHES nor set `domain_members_dirty` — replay
+    // re-noting covers it whenever at least one fact survives, but a replay of
+    // ZERO records notes nothing, so a warmed cache kept serving the
+    // pre-retraction members ("erase everything, then verify" is exactly this
+    // state). The retraction differential could not see it: its battery is
+    // ground queries, and only quantified queries read the member caches.
+    let kb = new_kb();
+    let id = assert_id(&kb, compile_surface("big(5)."), "big-5");
+    // Warm the member caches (a query clears domain_members_dirty).
+    assert!(query(&kb, compile_surface("big(some big).")));
+    kb.retract_fact(id).unwrap();
+    assert!(query(&kb, compile_surface("all $x: sum($x, 2, 2).")));
+}
+
 // ─── Fact Registry / Retraction Tests ────────────────────────────
 
 #[test]

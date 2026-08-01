@@ -1,9 +1,10 @@
 //! Retraction metamorphic differential: **retract ≡ never-asserted**.
 //!
-//! `GUARANTEES.md §Retraction Model` promises two paths — O(1) removal for simple
-//! ground facts, and a full KB rebuild from surviving base facts for complex
-//! assertions (∀-rules, existentials/Skolems, `du` links) — with the rebuild
-//! "guaranteed correct". The engine's own suites exercise single retractions; this
+//! `GUARANTEES.md §Retraction Model` promises retract ≡ never-asserted via a
+//! single rebuild path (the former "incremental O(1)" branch was retired
+//! 2026-08-01 after this harness's quantified battery rows caught it leaving
+//! retracted members in the quantifier domain — 22/200 sequences diverged on
+//! bare universals). The engine's own suites exercise single retractions; this
 //! harness checks the guarantee METAMORPHICALLY at scale: after every retraction in
 //! a seeded random op sequence, the incremental engine's verdicts over a fixed
 //! entity×predicate battery must be byte-identical to a FRESH engine that asserted
@@ -11,9 +12,15 @@
 //! left residue (stale derived state, index entries, equivalence classes) or
 //! removed too much.
 //!
-//! Op mix per sequence (8–16 ops): ground facts, ∃-skolemizing `lo …` facts,
+//! Op mix per sequence (8–16 ops): ground facts (entity AND numeric — numbers are
+//! quantifier-domain members since 2026-08-01), ∃-skolemizing `lo …` facts,
 //! DAG-oriented ∀-rules, `du` identity links, stratified `poi na` NAF rules, and
-//! retractions of random still-alive earlier asserts. Two cost/cleanliness bounds
+//! retractions of random still-alive earlier asserts. The battery carries both
+//! GROUND rows and QUANTIFIED rows (bare universals, an exact count, and an
+//! arithmetic universal satisfiable by numbers only): only quantified queries read
+//! the domain-member caches, so retraction residue in `known_*` or the cached
+//! member lists is invisible to ground rows — the class behind the 2026-08-01
+//! lingering-number and stale-cache findings. Two cost/cleanliness bounds
 //! carried over from `strat_diff`: positive rule edges descend a fixed predicate
 //! order (accepted sets stay acyclic-positive, so battery queries are milliseconds
 //! even in debug), and NAF restrictors come from base predicates that are never
@@ -53,9 +60,15 @@ pub fn random_retract_case(seed: u64) -> RetractCase {
     let n_ops = 8 + rng.below(9);
     for _ in 0..n_ops {
         let roll = rng.below(100);
-        let op = if roll < 35 {
+        let op = if roll < 27 {
             // Ground fact.
             Op::Assert(format!("{}({}).", rng.pick(PREDS), rng.pick(ENTS)))
+        } else if roll < 35 {
+            // NUMERIC ground fact: numbers are quantifier-domain members
+            // (2026-08-01), and a lingering number satisfies arithmetic bodies
+            // with no store backing — the retraction residue class the
+            // entity-only mix could never surface.
+            Op::Assert(format!("{}({}).", rng.pick(PREDS), rng.pick(&["3", "7"])))
         } else if roll < 45 {
             // ∃-skolemizing fact: `DERIVED(some BASE).` (a witness dog that is an animal).
             let b = PREDS[rng.below(N_BASE)];
@@ -152,10 +165,15 @@ impl RetractOutcome {
     }
 }
 
-/// A complex assertion (rule / existential / `du`) whose retraction takes the
-/// full-rebuild path rather than the O(1) ground removal.
+/// A structurally complex line (rule / existential / `du` / number-bearing) —
+/// a summary STAT only, since the incremental-retraction branch was retired
+/// (2026-08-01: it left retracted members in the quantifier domain) and every
+/// retraction now takes the one rebuild path.
 fn is_complex(line: &str) -> bool {
-    line.contains("(every ") || line.contains("(some ") || line.contains(" = ")
+    line.contains("(every ")
+        || line.contains("(some ")
+        || line.contains(" = ")
+        || line.chars().any(|c| c.is_ascii_digit())
 }
 
 /// Run one sequence: apply ops in order on the incremental engine; after every
@@ -225,6 +243,18 @@ pub fn run_retract_case(case: &RetractCase) -> RetractOutcome {
                     }
                 }
                 battery.push("Adam = Bel.".to_string());
+                // QUANTIFIED battery: ground queries never read the domain
+                // member caches, so retraction residue in `known_*`/the cached
+                // member lists (a lingering member serving as a counterexample
+                // or count subject) was invisible to the ground rows above.
+                // Bare universals read the non-event cache directly; counts
+                // read the full cache; the arithmetic universal is satisfiable
+                // by NUMBERS only, so it pins the lingering-number class.
+                for p in PREDS {
+                    battery.push(format!("all $x: {p}($x)."));
+                }
+                battery.push("animal(exactly 1 dog).".to_string());
+                battery.push("all $x: sum($x, 2, 2).".to_string());
                 for q in &battery {
                     let a = engine
                         .query_text_raw_proof(q)

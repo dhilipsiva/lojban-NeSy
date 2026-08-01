@@ -197,142 +197,36 @@ impl KnowledgeBase {
         Ok(())
     }
 
-    /// Retract a previously asserted fact by its ID.
-    /// Uses incremental removal: removes the fact from indexes directly
-    /// instead of rebuilding the entire KB.
+    /// Retract a previously asserted fact by its ID: mark the registry record
+    /// retracted, then rebuild from the surviving records.
+    ///
+    /// There USED to be an "incremental O(1)" branch here for flat skolem-free
+    /// ground facts. It was retired (2026-08-01, the numbers-join-the-domain
+    /// adversarial review): it was never O(1) — preserving fact multiplicity
+    /// already walked every surviving record — and it could not maintain
+    /// `retract ≡ never-asserted` for the QUANTIFIER DOMAIN. The noted sets
+    /// (`known_entities`/`known_descriptions`/`known_numbers`) are insert-only;
+    /// precise un-noting needs cross-record reference counting PLUS the witness
+    /// entities minted outside record buffers (existential-import
+    /// presuppositions, count extra witnesses), so a retracted flat
+    /// `Adam = Bel.` left both names as quantifier-domain members and a bare
+    /// `all $x: p($x).` reported a counterexample the store no longer contained
+    /// (22/200 sequences diverged the moment the retraction differential gained
+    /// quantified battery rows) — and a lingering NUMBER is worse, satisfying
+    /// arithmetic/comparison bodies with no store backing at all. Replay
+    /// re-derives every noted set exactly; `retract_diff.rs` pins the
+    /// equivalence, and the rebuild is the same primitive `:accept-scoped`
+    /// already trusts.
     fn retract_fact_inner(&self, id: u64) -> Result<(), String> {
         let mut inner = self.inner.borrow_mut();
-        let record = match inner.fact_registry.get_mut(&id) {
+        match inner.fact_registry.get_mut(&id) {
             None => return Err(format!("Fact #{} not found", id)),
             Some(r) if r.retracted => return Ok(()), // idempotent
-            Some(r) => {
-                r.retracted = true;
-                r.clone()
-            }
-        };
-
-        // Check if any forward-chaining rules are active. If so, forward-derived
-        // facts may depend on the retracted fact — fall back to full rebuild.
-        let has_forward_rules = inner
-            .universal_rules
-            .values()
-            .flat_map(|v| v.iter())
-            .any(|r| r.forward);
-
-        if has_forward_rules {
-            let result = Self::rebuild_inner(&mut inner);
-            invalidate_pred_cache(&inner);
-            return result;
+            Some(r) => r.retracted = true,
         }
-
-        // Check if this assertion involved Skolemization (existential variables,
-        // ForAll, or a numeric Count quantifier). If so, fall back to full rebuild
-        // — re-deriving Skolem subs with a temporary counter won't match the
-        // originals. A CountNode additionally generates `count-1` extra Skolem
-        // witnesses (`generate_count_extra_witnesses`: fresh_skolem + note_entity,
-        // plus an asserted witness fact for a flat body) that the incremental path
-        // never removes; rebuilding from the surviving records (the retracted
-        // count assertion excluded) drops them. Negation-bearing buffers also take
-        // the rebuild path: a negated ground root is recorded in the negative-fact
-        // registry (see `record_negative_ground_fact`), and replaying the surviving
-        // records repopulates that registry exactly.
-        let has_skolems = record.buffer.nodes.iter().any(|n| {
-            matches!(
-                n,
-                LogicNode::ExistsNode(_) | LogicNode::ForAllNode(_) | LogicNode::CountNode(_)
-            )
-        });
-        let has_negation = record
-            .buffer
-            .nodes
-            .iter()
-            .any(|n| matches!(n, LogicNode::NotNode(_)));
-
-        if has_skolems || has_negation || inner.rule_source_map.contains_key(&id) {
-            // Complex assertion (rules, Skolems, or negations) — full rebuild.
-            let result = Self::rebuild_inner(&mut inner);
-            invalidate_pred_cache(&inner);
-            return result;
-        }
-
-        // Simple ground fact — remove incrementally from all indexes.
-        // Walk ALL roots: assertion processes every root, so retraction must too
-        // (processing only the first root left later roots' facts orphaned).
-        let skolem_subs = HashMap::new();
-        let mut typed_leaves = Vec::new();
-        for &root_id in &record.buffer.roots {
-            collect_ground_facts(
-                &record.buffer,
-                root_id,
-                &skolem_subs,
-                None,
-                &mut typed_leaves,
-            );
-        }
-
-        // The HashSet fact store tracks no multiplicity: if another LIVE record
-        // still asserts the same ground fact, removing it here would conflate the
-        // two records (queries flip to False while list_facts shows an active
-        // record asserting the fact, and a later rebuild resurrects it). Recompute
-        // each surviving record's ground leaves and keep any fact that is still
-        // asserted elsewhere. This is exact for the buffers this path handles
-        // (skolem-free): a skolem-bearing survivor's Exists-wrapped leaves carry
-        // assertion-unique Skolem constants and cannot collide with a skolem-free
-        // leaf, while its non-quantified leaves ARE recovered by the same
-        // empty-substitution walk used here.
-        let mut still_asserted: HashSet<StoredFact> = HashSet::new();
-        for other in inner.fact_registry.values() {
-            if other.retracted {
-                continue;
-            }
-            for &root_id in &other.buffer.roots {
-                let mut leaves = Vec::new();
-                collect_ground_facts(&other.buffer, root_id, &skolem_subs, None, &mut leaves);
-                still_asserted.extend(leaves);
-            }
-        }
-
-        let mut had_equals = false;
-        for fact in &typed_leaves {
-            if still_asserted.contains(fact) {
-                continue; // Another live record still asserts this fact — keep it.
-            }
-            inner.fact_store.remove(fact);
-            let gf = fact.inner();
-            for (pos, arg) in gf.args.iter().enumerate() {
-                if let Some(val_map) = inner
-                    .arg_position_index
-                    .get_mut(&(gf.relation.clone(), pos))
-                {
-                    if let Some(entries) = val_map.get_mut(arg) {
-                        entries.retain(|f| f != fact);
-                    }
-                }
-            }
-            if let StoredFact::Bare(gf) = fact {
-                if gf.relation == "equals" {
-                    had_equals = true;
-                }
-            }
-        }
-
-        // If du facts were removed, rebuild equivalence from remaining du facts.
-        if had_equals {
-            inner.equivalence_parent.clear();
-            inner.equivalence_classes.clear();
-            let all_facts: Vec<StoredFact> = inner.fact_store.all_facts().cloned().collect();
-            for fact in &all_facts {
-                if let StoredFact::Bare(gf) = fact {
-                    if gf.relation == "equals" && gf.args.len() == 2 {
-                        union_terms(&mut inner, &gf.args[0], &gf.args[1]);
-                    }
-                }
-            }
-        }
-
-        inner.domain_members_dirty = true;
-        invalidate_pred_cache(&inner); // Tabling: KB mutated.
-        Ok(())
+        let result = Self::rebuild_inner(&mut inner);
+        invalidate_pred_cache(&inner);
+        result
     }
 
     /// Full rebuild from non-retracted facts. Kept as fallback / consistency check.
@@ -360,6 +254,16 @@ impl KnowledgeBase {
         inner.known_event_entities.clear();
         inner.known_descriptions.clear();
         inner.known_numbers.clear();
+        // The member CACHES must go with the sets they were built from, and the
+        // dirty flag must be raised HERE rather than left to replay re-noting:
+        // `note_entity`/`note_number` set it only on fresh insertion, so a
+        // replay of ZERO surviving records (retract the last fact, then query)
+        // notes nothing and a warmed cache would keep serving the
+        // pre-retraction members — a quantified query then reports a
+        // counterexample the store no longer contains.
+        inner.typed_domain_members_cache.clear();
+        inner.typed_non_event_members_cache.clear();
+        inner.domain_members_dirty = true;
         inner.known_rules.clear();
         inner.skolem_fn_registry.clear();
         inner.fact_store.clear();

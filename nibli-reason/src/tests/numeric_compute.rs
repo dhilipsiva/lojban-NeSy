@@ -730,6 +730,19 @@ fn an_arithmetically_false_body_finds_the_numeric_counterexample() {
 }
 
 #[test]
+fn rule_operand_numbers_join_the_domain_like_constants() {
+    // Noting mirrors constants exactly: `collect_and_note_constants` walks the
+    // WHOLE asserted buffer, rules included, so an asserted rule's numeric
+    // operands are domain members even with no predicate fact asserting them —
+    // just as a rule mentioning Adam has always noted Adam.
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("sum(every big, 2, 3)."));
+    // 2 and 3 are members and 2 ≠ 2 + 2: the bare universal finds a
+    // counterexample where an empty domain would be vacuously TRUE.
+    assert!(query_false(&kb, compile_surface("all $x: sum($x, 2, 2).")));
+}
+
+#[test]
 fn a_past_only_number_is_a_member_but_fails_a_present_restrictor() {
     // Domain membership is atemporal, same as constants (`past dog(Rex).` notes
     // Rex) — but the RESTRICTOR is evaluated under the query's own tense, so a
