@@ -745,6 +745,16 @@ pub(super) struct KnowledgeBaseInner {
     /// cannot reach — turning a TRUE into `ResourceExceeded(Depth)`. Both phases must
     /// agree on which evaluator they are using.
     pub(super) positive_lookup: Cell<bool>,
+    /// Per-QUERY latch for the numeric-quantifier-domain `[Domain]` echo: messages already
+    /// announced during this query. Reset by `clear_and_enable_pred_cache`, the one
+    /// per-query entry point both the traced and untraced paths call.
+    ///
+    /// Needed because a universal is re-evaluated more than once per query — the
+    /// deepening loop revisits it per depth, and a traced query runs the whole thing
+    /// twice (untraced probe, then one recording build). Without the latch a single
+    /// `?` would print the same diagnostic up to `max_chain_depth` times. Keyed on the
+    /// message so two DIFFERENT number-bearing universals in one query each announce.
+    pub(super) announced_gaps: RefCell<HashSet<String>>,
     /// Transient (per `query_find`): set when witness enumeration drops a candidate
     /// because its leaf check hit the depth/cycle horizon (`ResourceExceeded` /
     /// `Unknown(CycleCut)` / …) rather than a genuine False. `query_find_inner`
@@ -803,6 +813,7 @@ impl Clone for KnowledgeBaseInner {
             materialized: RefCell::new(None),
             materialization: self.materialization,
             positive_lookup: Cell::new(true),
+            announced_gaps: RefCell::new(HashSet::new()),
             find_horizon_hit: false,
         }
     }
@@ -862,6 +873,7 @@ impl KnowledgeBaseInner {
             // differential in `nibli-verify` expressible.
             materialization: true,
             positive_lookup: Cell::new(true),
+            announced_gaps: RefCell::new(HashSet::new()),
             find_horizon_hit: false,
         }
     }
@@ -1206,6 +1218,9 @@ impl<'a> Iterator for GroundTermCartesianProduct<'a> {
 pub(super) fn clear_and_enable_pred_cache(inner: &KnowledgeBaseInner) {
     clear_typed_pred_cache(inner);
     inner.pred_cache_enabled.set(true);
+    // Per-QUERY, so it resets HERE and not in `clear_typed_pred_cache` (which also runs
+    // on every mutation): the latch scopes one query's diagnostics, not one KB epoch's.
+    inner.announced_gaps.borrow_mut().clear();
 }
 
 /// Enable the predicate cache without clearing. Used within iterative

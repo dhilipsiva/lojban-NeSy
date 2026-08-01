@@ -889,11 +889,15 @@ fn check_formula_holds_core<S: TraceSink>(
             // vacuously satisfy it) and keeps them out of the ForallVerified list.
             let members: Vec<GroundTerm> = inner.all_non_event_domain_members().to_vec();
             if members.is_empty() {
+                // Loud about the numeric domain gap even here: `big(5).` alone leaves the
+                // domain EMPTY (5 is not an entity), so the reported "vacuously true"
+                // case and the number-bearing case coincide on a numbers-only KB.
+                let gap = note_numeric_domain_gap::<S>(buffer, *body, v, subs, inner, tense, sink);
                 let idx = if S::RECORDING {
                     sink.push(ProofStep {
                         rule: ProofRule::ForallVacuous,
                         holds: true,
-                        children: vec![],
+                        children: gap,
                     })
                 } else {
                     0
@@ -1026,11 +1030,17 @@ fn check_formula_holds_core<S: TraceSink>(
                 };
                 return Ok((verdict, idx));
             }
-            // All members hold.
+            // All members hold. This is the case the reported defect actually lands in on
+            // a realistic KB: other entities keep the domain non-empty, every member
+            // vacuously satisfies the guarded `Or(Not(P), Q)`, and the step below reads as
+            // a POSITIVELY VERIFIED universal — while a number-valued binding of the
+            // restrictor was never enumerated at all.
+            let gap = note_numeric_domain_gap::<S>(buffer, *body, v, subs, inner, tense, sink);
             let idx = if S::RECORDING {
-                let (child_indices, entity_terms) = forall_record_all_members::<S>(
+                let (mut child_indices, entity_terms) = forall_record_all_members::<S>(
                     buffer, *body, v, &members, subs, inner, tense, sink,
                 )?;
+                child_indices.extend(gap);
                 sink.push(ProofStep {
                     rule: ProofRule::ForallVerified {
                         entities: entity_terms,
@@ -1387,6 +1397,327 @@ fn check_formula_holds_core<S: TraceSink>(
             };
             Ok((verdict, idx))
         }
+    }
+}
+
+/// Walk a restrictor subtree collecting every `(relation, position)` role slot that
+/// carries the quantified variable `v`.
+///
+/// Descends ONLY the shapes nibli-semantics's event decomposition produces for a
+/// restrictor — `∃ev. rel(ev) ∧ rel_x1(ev, v) ∧ …` — i.e. `ExistsNode`, `AndNode` and
+/// `Predicate`. Every other node (a nested `NotNode`, `OrNode`, a tense/deontic wrapper,
+/// a `ComputeNode`) STOPS the walk rather than being descended: under a negation or a
+/// disjunction "the restrictor holds of this value" no longer follows from the slot, and
+/// a wrong slot would produce a spurious note. Fail closed, per
+/// `try_evaluate_numeric_group`'s refusing-loop discipline.
+fn collect_restrictor_slots(
+    buffer: &LogicBuffer,
+    node: u32,
+    v: &str,
+    depth: usize,
+    out: &mut Vec<(String, usize)>,
+) {
+    // The buffer is built bottom-up so child indices always point strictly downward and
+    // cannot cycle; the cap is belt-and-braces against a hand-built or corrupt buffer.
+    if depth > 64 {
+        return;
+    }
+    match get_node(buffer, node) {
+        Ok(LogicNode::AndNode((l, r))) => {
+            collect_restrictor_slots(buffer, *l, v, depth + 1, out);
+            collect_restrictor_slots(buffer, *r, v, depth + 1, out);
+        }
+        Ok(LogicNode::ExistsNode((_, b))) => {
+            collect_restrictor_slots(buffer, *b, v, depth + 1, out)
+        }
+        Ok(LogicNode::Predicate((rel, args))) => {
+            for (pos, arg) in args.iter().enumerate() {
+                if matches!(arg, LogicalTerm::Variable(name) if name == v) {
+                    out.push((rel.clone(), pos));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Peel the right-nested guard chain a restricted universal compiles to.
+///
+/// nibli-semantics has no `ImpliesNode`; `close_quantifier`
+/// (nibli-semantics/src/semantic/helpers.rs) lowers `every <noun>` to
+/// `∀v. ¬noun(v) ∨ matrix` and nests each further restriction OUTSIDE the previous one, so
+/// `every dog where big(it)` becomes `Or(Not(clause), Or(Not(desc), matrix))`. Unwrapping a
+/// SINGLE layer therefore sees only the rel-clause and misses the head noun entirely — the
+/// bug this function exists to prevent. Returns every guard; the restrictor is their
+/// CONJUNCTION, so a value is in it only if all of them hold.
+///
+/// **Why over-peeling is safe.** The right spine cannot distinguish a genuine guard from a
+/// MATRIX that happens to be a disjunction — `every dog: ~big(it) | happy(it).` peels as
+/// `[dog, big]` though the real restrictor is `dog` alone. That is the fail-closed
+/// direction and the reason this walk needs no shape oracle: the peeled set is always a
+/// SUPERSET of the true guards, and the caller requires ALL of them to hold, so
+/// "confirmed by the detector" implies "in the true restrictor". Over-peeling can only
+/// suppress a note, never fabricate one.
+fn peel_restrictor_guards(buffer: &LogicBuffer, body: u32, out: &mut Vec<u32>) {
+    let mut cur = body;
+    for _ in 0..64 {
+        let Ok(LogicNode::OrNode((l, r))) = get_node(buffer, cur) else {
+            return;
+        };
+        let Ok(LogicNode::NotNode(g)) = get_node(buffer, *l) else {
+            return;
+        };
+        out.push(*g);
+        cur = *r;
+    }
+}
+
+/// Does this subtree contain a `ComputeNode`?
+///
+/// Load-bearing: evaluating a `ComputeNode` AUTO-ASSERTS its result as a ground fact
+/// (`assert_typed_fact`, the trusted-oracle path). Since the gap detector decides by
+/// EVALUATING the restrictor, a compute-bearing restrictor must be refused outright — a
+/// diagnostic that mutates the knowledge base is not a diagnostic. Fails closed: an
+/// unrecognised or over-deep node counts as "contains compute" and suppresses the note.
+fn subtree_has_compute(buffer: &LogicBuffer, node: u32, depth: usize) -> bool {
+    if depth > 64 {
+        return true;
+    }
+    match get_node(buffer, node) {
+        Ok(LogicNode::ComputeNode(_)) => true,
+        Ok(LogicNode::Predicate(_)) => false,
+        Ok(LogicNode::AndNode((l, r))) | Ok(LogicNode::OrNode((l, r))) => {
+            subtree_has_compute(buffer, *l, depth + 1) || subtree_has_compute(buffer, *r, depth + 1)
+        }
+        Ok(LogicNode::NotNode(b))
+        | Ok(LogicNode::PastNode(b))
+        | Ok(LogicNode::PresentNode(b))
+        | Ok(LogicNode::FutureNode(b))
+        | Ok(LogicNode::ObligatoryNode(b))
+        | Ok(LogicNode::PermittedNode(b)) => subtree_has_compute(buffer, *b, depth + 1),
+        Ok(LogicNode::ExistsNode((_, b))) | Ok(LogicNode::ForAllNode((_, b))) => {
+            subtree_has_compute(buffer, *b, depth + 1)
+        }
+        Ok(LogicNode::CountNode((_, _, b))) => subtree_has_compute(buffer, *b, depth + 1),
+        Err(_) => true,
+    }
+}
+
+/// Detect a universal whose RESTRICTOR genuinely holds of numbers the quantifier can never
+/// reach.
+///
+/// `LogicalTerm::Number` is dropped by `collect_and_note_constants` (rules.rs), so a
+/// number never enters `known_entities` and never appears in
+/// `all_non_event_domain_members` — the list the `ForAllNode` arm enumerates. A universal
+/// restricted to a number-bearing predicate is therefore TRUE *without ever testing those
+/// values*, however false its body is of them. That is a disclosed contract (GUARANTEES
+/// §Disclosed Sharp Edges, pinned by `numeric_terms_are_not_universal_domain_members`) —
+/// but it used to be entirely SILENT, which is what this makes loud.
+///
+/// **The index is a CANDIDATE SOURCE, never the decision.** The first cut of this detector
+/// concluded "the restrictor holds of this number" from a `Number` key at one
+/// `(relation, position)` entry of `arg_position_index`. That is NECESSARY but not
+/// SUFFICIENT — the index is per-slot, tense/deontic-blind (`assert_typed_fact` keys on
+/// `fact.inner().relation`, so `Past(big_x1(…))` lands under the bare `big_x1`) and
+/// whole-KB, so it fired on numbers the restrictor is FALSE of: a linked argument the
+/// number does not satisfy, a `past`-only fact under a present-tense universal, or a
+/// conjunct of a `where` restrictor when the number fails the other conjunct. Every one was
+/// a fabricated caveat, the single failure mode this diagnostic must not have.
+///
+/// So: the index supplies candidates (cheap, and only when a slot holds numbers at all),
+/// and each candidate is DECIDED by evaluating the restrictor at it, under the query's own
+/// tense — the same call the arm's slow path makes for ordinary members. Verdict-inert:
+/// this runs after the universal has already resolved.
+///
+/// FAIL CLOSED throughout: a body that is not the guard-chain shape, a compute-bearing
+/// restrictor, no numeric candidates, or none that survive evaluation all yield `None`.
+/// A missed note is acceptable; a spurious one is not.
+fn numeric_domain_gap(
+    buffer: &LogicBuffer,
+    body: u32,
+    v: &str,
+    subs: &mut HashMap<String, GroundTerm>,
+    inner: &mut KnowledgeBaseInner,
+    tense: Option<&str>,
+) -> Option<(Vec<String>, Vec<f64>, bool)> {
+    /// Bound on how many distinct numbers are evaluated, so a numeric-heavy KB cannot turn
+    /// a diagnostic into a scan. Each candidate costs a full restrictor evaluation, and the
+    /// message only ever lists three, so this is deliberately small: at 64 the detector
+    /// measured ~30x the cost of the query it annotates on a 400-fact numeric KB. When the
+    /// cap bites, the message says "at least N" rather than claiming an exact count.
+    const CANDIDATE_CAP: usize = 8;
+
+    let mut guards = Vec::new();
+    peel_restrictor_guards(buffer, body, &mut guards);
+    if guards.is_empty() {
+        return None;
+    }
+    if guards.iter().any(|g| subtree_has_compute(buffer, *g, 0)) {
+        return None;
+    }
+
+    // Candidates: the union of Number keys over EVERY role slot of EVERY guard. Union, not
+    // first-hit — first-hit reported the union of the conjuncts' extensions where the sound
+    // condition is their intersection, which the evaluation below now enforces exactly.
+    let mut slots = Vec::new();
+    for g in &guards {
+        collect_restrictor_slots(buffer, *g, v, 0, &mut slots);
+    }
+    let mut relations: Vec<String> = Vec::new();
+    let mut candidates: Vec<u64> = Vec::new();
+    for (rel, pos) in &slots {
+        relations.push(crate::materialize::surface_relation(rel).to_string());
+        if let Some(values) = inner.arg_position_index.get(&(rel.clone(), *pos)) {
+            candidates.extend(values.keys().filter_map(|t| match t {
+                GroundTerm::Number(b) => Some(*b),
+                _ => None,
+            }));
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    // Sort before dedup/truncation so the candidate SET is deterministic: `keys()` order is
+    // unspecified and this string reaches user output on three surfaces. Order by VALUE
+    // (`total_cmp`), not by bit pattern — the cap truncates here, and a bit-pattern sort
+    // puts every negative last, so the cap would discard exactly the out-of-range values
+    // the diagnostic exists to surface.
+    candidates.sort_unstable_by(|a, b| f64::from_bits(*a).total_cmp(&f64::from_bits(*b)));
+    candidates.dedup();
+    let capped = candidates.len() > CANDIDATE_CAP;
+    candidates.truncate(CANDIDATE_CAP);
+    relations.sort();
+    relations.dedup();
+
+    let mut confirmed: Vec<f64> = Vec::new();
+    for bits in candidates {
+        let holds = with_sub(subs, v, GroundTerm::Number(bits), |s| {
+            guards.iter().all(|g| {
+                check_formula_holds_core::<NoOpSink>(buffer, *g, s, inner, tense, &mut NoOpSink)
+                    .map(|(r, _)| r.is_true())
+                    .unwrap_or(false)
+            })
+        });
+        if holds {
+            confirmed.push(f64::from_bits(bits));
+        }
+    }
+    if confirmed.is_empty() {
+        return None;
+    }
+    // `total_cmp`, not the bit pattern: IEEE-754 sets the sign bit on negatives, so a bit
+    // sort puts every negative AFTER every non-negative and orders them descending — and
+    // the display cap would then hide exactly the out-of-range values a reader is looking
+    // for. `total_cmp` is equally total and deterministic, and numerically ascending.
+    confirmed.sort_by(f64::total_cmp);
+    Some((relations, confirmed, capped))
+}
+
+/// Render the numeric-domain-gap diagnostic. Single-sourced so the stdout echo and the
+/// proof step cannot drift. Caps the value list so a restrictor holding thousands of
+/// numbers does not dump them all into a verdict.
+///
+/// Deliberately does NOT spell the universal as ``every <relation>``. The relations here
+/// are the SURFACE names of the role slots the quantified variable occupies, and
+/// `surface_relation` strips the `_xN` place index — so `every teaches.student` would read
+/// back as ``every teaches`` (a place-inverted claim) and a converted alias `owned` as
+/// ``owns``, both universals the user never wrote. The message states what was actually
+/// established — the restrictor holds of these numbers — and offers the relation names
+/// only as a labelled hint.
+fn numeric_domain_gap_message(relations: &[String], values: &[f64], capped: bool) -> String {
+    const SHOWN: usize = 3;
+    let mut listed: Vec<String> = values
+        .iter()
+        .take(SHOWN)
+        .map(|n| LogicalTerm::Number(*n).trace_display())
+        .collect();
+    if values.len() > SHOWN {
+        listed.push(format!("… {} more", values.len() - SHOWN));
+    }
+    // `capped` is load-bearing HONESTY, not a nicety: the confirm loop stops at
+    // CANDIDATE_CAP, so `values.len()` is the detector's own search bound, not the size of
+    // the skipped set. Printing it bare made a KB with 400 skipped numbers render
+    // byte-identically to one with exactly 64 — an under-report in the one output whose
+    // entire purpose is honesty about what the engine did not check.
+    let subject = match (values.len(), capped) {
+        (1, false) => format!("the number {}", listed.join(", ")),
+        (1, true) => format!("at least 1 number ({})", listed.join(", ")),
+        (n, capped) => format!(
+            "{}{n} numbers ({})",
+            if capped { "at least " } else { "" },
+            listed.join(", ")
+        ),
+    };
+    let plural = values.len() != 1;
+    format!(
+        "this universal's restrictor (over {}) holds of {subject}, which {} — so the \
+         universal is TRUE without ever checking {} (GUARANTEES §Disclosed Sharp Edges)",
+        relations.join(", "),
+        if plural {
+            "are not quantifier-domain members"
+        } else {
+            "is not a quantifier-domain member"
+        },
+        if plural { "them" } else { "it" },
+    )
+}
+
+/// Emit the numeric-domain-gap diagnostic for a universal that resolved TRUE, on both
+/// channels: the `inner.verbose` echo — on STDERR, matching the two diagnostics closest in
+/// kind, `[Constraint]` (rules.rs) and `[Forward]` (rules.rs), rather than the `[Rule]` /
+/// `[Skolem]` bookkeeping echoes which use stdout; `NIBLI_QUIET=1` suppresses all of them
+/// alike, and `nibli-host` inherits both streams (`main.rs`, `.inherit_stdout()
+/// .inherit_stderr()`), so the REPL shows it either way — and, on the recording path, a proof
+/// step, so `--explain` and the browser Transparency Triad show it too.
+///
+/// The tag is `[Domain]`, deliberately NOT `[Note: …]`: that prefix belongs to the §12
+/// lint catalog, which nibli-pipeline emits and which `NIBLI_QUIET` does NOT suppress.
+/// Two near-identical prefixes with opposite suppression semantics is exactly the kind of
+/// trap this diagnostic exists to remove.
+///
+/// The step is `PredicateCheck { method: "numeric_domain_gap", .. }` rather than a new
+/// `ProofRule` variant deliberately: `method` is already free-form (`"arithmetic"`,
+/// `"backend"`, `"indeterminate"`) and BOTH renderers already handle `PredicateCheck`, so
+/// this needs no WIT change and no renderer churn. `holds` must be `true` because
+/// `validate_cert` requires `all_hold` beneath a `holds: true` parent — the caveat is
+/// carried by `method`/`detail`, not by `holds`.
+fn note_numeric_domain_gap<S: TraceSink>(
+    buffer: &LogicBuffer,
+    body: u32,
+    v: &str,
+    subs: &mut HashMap<String, GroundTerm>,
+    inner: &mut KnowledgeBaseInner,
+    tense: Option<&str>,
+    sink: &mut S,
+) -> Vec<u32> {
+    // EARLY-OUT before any work. Detection costs up to CANDIDATE_CAP restrictor
+    // evaluations, and with verbose off and no recording sink there is nowhere for the
+    // result to go — `query_holds` / `query_find` / `count_witnesses` / `aggregate` would
+    // otherwise compute the whole thing and drop it.
+    if !inner.verbose && !S::RECORDING {
+        return Vec::new();
+    }
+    let Some((relations, values, capped)) = numeric_domain_gap(buffer, body, v, subs, inner, tense)
+    else {
+        return Vec::new();
+    };
+    let message = numeric_domain_gap_message(&relations, &values, capped);
+    // Latch the ECHO only. The proof step is per-trace and must be recorded whenever the
+    // recording phase reaches this universal, or the trace would silently lose the caveat.
+    if inner.verbose && inner.announced_gaps.borrow_mut().insert(message.clone()) {
+        eprintln!("[Domain] {message}");
+    }
+    if S::RECORDING {
+        vec![sink.push(ProofStep {
+            rule: ProofRule::PredicateCheck {
+                method: "numeric_domain_gap".to_string(),
+                detail: message,
+            },
+            holds: true,
+            children: vec![],
+        })]
+    } else {
+        Vec::new()
     }
 }
 

@@ -217,6 +217,53 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Reasoning / evaluation
 
+- **The numeric quantifier-domain exclusion is WIDER than the universal, and two of
+  its faces are WRONG VERDICTS, not just silent ones.** Surfaced by the adversarial
+  review of the `[Domain]` diagnostic (2026-08-01), which covers only `ForAllNode`.
+  Numbers never enter `known_entities` (`collect_and_note_constants`, rules.rs), and
+  every other consumer of the domain inherits that. Ranked by severity:
+  - **`CountNode` (`exactly N` / `no`) counts over the same number-free domain.** With
+    `big(5). dog(5). dog(Rex).` the engine entails `big(5).` and `dog(5).` yet answers
+    `dog(no big).` = TRUE and `dog(exactly 0 big).` = TRUE, with nothing on any channel.
+    Whether that is a *wrong* verdict or merely a surprising one depends on whether
+    `exactly N` is read as counting the quantifier domain (in which case it is correct and
+    merely undisclosed) or as counting satisfying values (in which case it is wrong) — an
+    adversarial check disputed the "wrong verdict" reading on exactly that ground. Either
+    way the count semantics need stating, and this is the same domain decision as the rest
+    of this entry.
+  - **`some X` answers a definitive FALSE when the matrix is arithmetic/comparison.**
+    `big(5).` + `sum(some big, 2, 3).` = FALSE though `big(5)` and `sum(5,2,3)` are both
+    TRUE. Entity control (`dog(some big)`) is TRUE, so it fires exactly on
+    number-bearing quantification.
+  - **`query_find` / `count_witnesses` / `aggregate` report a truncated enumeration as
+    DEFINITIVE.** `extract_rule_candidates_for_entailment` instantiates from
+    `all_typed_domain_members()`, and `find_horizon_hit` is not set on that path, so the
+    `INCOMPLETE_MSG` refusal never fires. This is the one place the gap escapes as a
+    NUMBER a user pastes into a report rather than as a TRUE/FALSE.
+  - **A universal has a different domain as an ASSERTION than as a QUERY.** Asserted, it
+    becomes a `UniversalRuleRecord` and rule firing unifies a `PatternVar` with a
+    `GroundTerm::Number` — so it DOES reach numbers; queried, the `ForAllNode` arm
+    enumerates `all_non_event_domain_members()` and does not. Same sentence, two domains,
+    and only the query side is disclosed.
+  Fixing these properly means deciding whether numbers belong in the quantifier domain at
+  all — which would move the pinned verdicts at `numeric_terms_are_not_universal_domain_members`
+  and is a semantics decision, not a diagnostics one. Until then the disclosure at
+  GUARANTEES §Disclosed Sharp Edges understates the blast radius: it describes the
+  vacuous universal and not the wrong `no`/`some` verdicts.
+
+- **The `[Domain]` diagnostic only sees ASSERTED extensions.** Its candidate source is
+  `arg_position_index`, which holds stored facts, so a RULE-DERIVED (IDB) restrictor stays
+  silent: `dog(5). animal(every dog).` + `sum(every animal, 2, 2).` gets no note although 5
+  is in `animal`'s extension, while the one-hop twin `sum(every dog, 2, 2).` does. That is
+  the fail-closed direction (a missed note, never a fabricated one) and is disclosed, but
+  it means the caveat appears or vanishes purely on whether a rule sits in between — the
+  shipped Syllogism shape. Candidates could instead come from the materialised extension
+  when the relation is complete (`Materialized::is_complete_for`).
+
+- **`smoke-host-quiet` does not cover `[Domain]`.** Every other engine echo has a
+  ci-wasm smoke pinning both directions of `NIBLI_QUIET`; this one rides the same
+  `inner.verbose` gate but is unpinned at the component boundary.
+
 - **Materialisation: the trace story (C2).** Proof-traced queries keep the
   backward-chaining path (`positive_lookup` lowered for their duration) because a
   materialised verdict has no derivation to record. To let them use the fast path,
