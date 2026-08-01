@@ -177,6 +177,7 @@ fn main() -> ExitCode {
     let mut kb_paths: Vec<String> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
     let mut argv_error: Option<String> = None;
+    let mut strata_only = false;
 
     let mut it = argv.iter();
     while let Some(a) = it.next() {
@@ -185,6 +186,7 @@ fn main() -> ExitCode {
                 Some(p) => kb_paths.push(p.clone()),
                 None => argv_error = Some("--kb needs a path".to_string()),
             },
+            "--strata" => strata_only = true,
             other if other.starts_with("--") => {
                 argv_error = Some(format!("unknown flag {other:?}"));
             }
@@ -192,15 +194,27 @@ fn main() -> ExitCode {
         }
     }
 
-    if paths.is_empty() || argv_error.is_some() {
+    // `--strata` DUMPS a KB rather than checking pins, so it needs `--kb` and takes no pin
+    // file. Everything else still requires one.
+    let missing_input = if strata_only {
+        kb_paths.is_empty()
+    } else {
+        paths.is_empty()
+    };
+    if missing_input || argv_error.is_some() {
         if let Some(e) = argv_error {
             eprintln!("nibli-pin: {e}");
+        } else if strata_only {
+            eprintln!("nibli-pin: --strata needs at least one --kb <file.nibli>");
         }
         eprintln!("usage: nibli-pin [--kb <fixture.nibli>]... <pins.nibli> [more.nibli ...]");
-        eprintln!("  --kb  load a fixture KB into a fresh engine before EACH pin file runs.");
-        eprintln!("        Repeatable; loaded in the order given. Use it for CONTENT pins,");
-        eprintln!("        which test a specific artifact and must read the live artifact");
-        eprintln!("        rather than an inlined copy that can drift.");
+        eprintln!("       nibli-pin --strata --kb <file.nibli>...");
+        eprintln!("  --kb      load a fixture KB into a fresh engine before EACH pin file runs.");
+        eprintln!("            Repeatable; loaded in the order given. Use it for CONTENT pins,");
+        eprintln!("            which test a specific artifact and must read the live artifact");
+        eprintln!("            rather than an inlined copy that can drift.");
+        eprintln!("  --strata  load the --kb files and print the engine's STRATIFICATION to");
+        eprintln!("            stdout as stable, sorted, diffable TSV, then exit. Runs no pins.");
         eprintln!("  exit 0 = pins pass, 1 = a pin regressed, 2 = harness/script error");
         return ExitCode::from(EXIT_HARNESS);
     }
@@ -229,6 +243,20 @@ fn main() -> ExitCode {
         }
         eprintln!("\nnibli-pin: HARNESS ERROR (exit {EXIT_HARNESS}) — pins not trustworthy");
         return ExitCode::from(EXIT_HARNESS);
+    }
+
+    if strata_only {
+        let (out, harness) = strata_dump(&kbs);
+        if !harness.is_empty() {
+            eprintln!("\nHARNESS/SCRIPT ERRORS ({}):", harness.len());
+            for h in &harness {
+                eprintln!("  ! {h}");
+            }
+            eprintln!("\nnibli-pin: HARNESS ERROR (exit {EXIT_HARNESS}) — dump not trustworthy");
+            return ExitCode::from(EXIT_HARNESS);
+        }
+        print!("{out}");
+        return ExitCode::from(EXIT_OK);
     }
 
     for path in &paths {
@@ -324,6 +352,92 @@ fn run_file(name: &str, src: &str) -> Report {
 /// regressed — reporting a finding would claim knowledge the run does not have.
 /// "I could not run the test" and "the test failed" are different in kind, and
 /// the exit taxonomy exists to keep them apart.
+/// Load the `--kb` fixtures into a fresh engine and render the engine's stratification.
+///
+/// Returns `(stdout_text, harness_errors)`. A fixture that fails to load yields harness
+/// errors and NO dump: numbers computed over a partly-loaded KB would be worse than no
+/// numbers at all, because they look like numbers.
+///
+/// Format is TSV so it diffs line-by-line and parses with `split('\t')`; the header is
+/// comment lines so a consumer can `startswith('#')`-skip it. Every ordering is fixed by
+/// [`nibli_reason::KnowledgeBase::stratification_report`], so two runs over the same
+/// input are byte-identical.
+fn strata_dump(kbs: &[KbFile]) -> (String, Vec<String>) {
+    use std::fmt::Write as _;
+
+    let mut harness: Vec<String> = Vec::new();
+    let engine = NibliEngine::new();
+    for (kb_name, kb_src) in kbs {
+        for (n, raw) in kb_src.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with(':') || line.starts_with('?') {
+                harness.push(format!(
+                    "{kb_name}:{}: a --kb fixture is plain KB text — directives and `?` \
+                     queries belong in the pin file, not the artifact under test",
+                    n + 1
+                ));
+                continue;
+            }
+            if let Err(e) = engine.assert_text(line) {
+                harness.push(format!(
+                    "{kb_name}:{}: fixture line failed to load — [{}] {e}",
+                    n + 1,
+                    Class::of(&e).name()
+                ));
+            }
+        }
+    }
+    if !harness.is_empty() {
+        return (String::new(), harness);
+    }
+
+    let rows = engine.kb().stratification_report();
+    let max_stratum = rows.iter().map(|r| r.stratum).max().unwrap_or(0);
+    let base = rows.iter().filter(|r| r.base).count();
+
+    let mut out = String::new();
+    out.push_str("# nibli-strata v1\n");
+    out.push_str("# Produced by `nibli-pin --strata` from the engine's own dependency graph\n");
+    out.push_str("# (`pred_dep_graph`), the same one `check_stratification` gates rules on.\n");
+    out.push_str("# columns: predicate <TAB> stratum <TAB> base|derived <TAB> edges\n");
+    out.push_str("# edges:   comma-separated, `+name` positive, `-name` negative (NAF);\n");
+    out.push_str("#          empty field = no outgoing edges. An edge means \"reads\".\n");
+    out.push_str("# names:   SURFACE relations — event-decomposed role predicates (`p_x1`)\n");
+    out.push_str("#          are collapsed onto their anchor (`p`). `event` and `__abs_<hash>`\n");
+    out.push_str("#          are compiler artifacts of `event { }` abstractions, and `equals`\n");
+    out.push_str("#          is the `=` identity builtin — a disequality guard `~($a = $b)`\n");
+    out.push_str("#          is a NEGATIVE edge to it and does raise the reader's stratum.\n");
+    out.push_str("#          None of them are authored predicates; all are listed, not hidden,\n");
+    out.push_str("#          because a dump that silently drops nodes is how re-derivations\n");
+    out.push_str("#          come to disagree with the engine in the first place.\n");
+    out.push_str("# order:   rows by predicate, edges by target — stable across runs.\n");
+    let _ = writeln!(
+        out,
+        "# totals:  {} predicates, strata 0..{max_stratum}, {base} base, {} derived",
+        rows.len(),
+        rows.len() - base
+    );
+    for r in &rows {
+        let edges: Vec<String> = r
+            .edges
+            .iter()
+            .map(|e| format!("{}{}", if e.negative { '-' } else { '+' }, e.to))
+            .collect();
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}\t{}",
+            r.predicate,
+            r.stratum,
+            if r.base { "base" } else { "derived" },
+            edges.join(",")
+        );
+    }
+    (out, harness)
+}
+
 fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile]) -> Report {
     let mut rep = Report {
         pins: 0,
@@ -960,5 +1074,121 @@ mod tests {
         assert_eq!(r.findings.len(), 0, "{:?}", r.findings);
         assert_eq!(r.harness.len(), 0, "{:?}", r.harness);
         assert!(r.pins >= 12, "pin coverage collapsed: {} pins", r.pins);
+    }
+
+    // ─── --strata: the machine-readable stratification dump ──────────────────
+    //
+    // Exists so a consuming project reads the engine's OWN stratification instead of
+    // re-deriving it from `.nibli` text with regexes. A second implementation drifts,
+    // and numbers presented as "the engine computed this order" have to be the
+    // engine's. These pin the properties such a consumer depends on.
+
+    const STRATA_KB: &str = "person(Adam).\n\
+                             all $x: person($x) & ~home($x) -> prisoner($x).\n\
+                             all $x: prisoner($x) -> reward($x).\n";
+
+    fn strata_of(src: &str) -> String {
+        let (out, harness) = strata_dump(&[("k.nibli".to_string(), src.to_string())]);
+        assert!(harness.is_empty(), "unexpected harness errors: {harness:?}");
+        out
+    }
+
+    /// Parse the dump back into (predicate, stratum, kind, edges) rows.
+    fn strata_rows(out: &str) -> Vec<(String, usize, String, String)> {
+        out.lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                assert_eq!(f.len(), 4, "every row is 4 tab-separated fields: {l:?}");
+                (
+                    f[0].to_string(),
+                    f[1].parse().expect("stratum is an integer"),
+                    f[2].to_string(),
+                    f[3].to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn strata_dump_is_byte_identical_across_runs() {
+        // The consumer diffs this across runs; `pred_dep_graph` is a HashMap, so stable
+        // ordering is a property that has to be pinned, not assumed.
+        let a = strata_of(STRATA_KB);
+        let b = strata_of(STRATA_KB);
+        assert_eq!(a, b);
+        let rows = strata_rows(&a);
+        let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "rows must be sorted by predicate");
+    }
+
+    #[test]
+    fn strata_dump_marks_polarity_base_and_level() {
+        let out = strata_of(STRATA_KB);
+        let rows = strata_rows(&out);
+        let get = |p: &str| {
+            rows.iter()
+                .find(|r| r.0 == p)
+                .unwrap_or_else(|| panic!("missing row for {p}: {out}"))
+                .clone()
+        };
+
+        let (_, home_lvl, home_kind, _) = get("home");
+        let (_, pris_lvl, pris_kind, pris_edges) = get("prisoner");
+        let (_, watch_lvl, _, watch_edges) = get("reward");
+
+        assert_eq!(home_kind, "base", "nothing concludes `home`");
+        assert_eq!(pris_kind, "derived", "a rule concludes `prisoner`");
+        assert!(
+            pris_lvl > home_lvl,
+            "a NAF read must raise the reader's stratum ({pris_lvl} vs {home_lvl})"
+        );
+        assert_eq!(watch_lvl, pris_lvl, "a positive edge must not raise it");
+        assert!(
+            pris_edges.split(',').any(|e| e == "-home"),
+            "the NAF edge must be marked negative: {pris_edges}"
+        );
+        assert!(
+            watch_edges.split(',').any(|e| e == "+prisoner"),
+            "the positive edge must be marked positive: {watch_edges}"
+        );
+    }
+
+    #[test]
+    fn strata_dump_has_a_parseable_comment_header_and_totals() {
+        let out = strata_of(STRATA_KB);
+        assert!(
+            out.starts_with("# nibli-strata v1\n"),
+            "versioned header: {out}"
+        );
+        let n = strata_rows(&out).len();
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("# totals:") && l.contains(&format!("{n} predicates"))),
+            "the totals line must agree with the row count: {out}"
+        );
+    }
+
+    #[test]
+    fn strata_dump_reports_no_rows_when_a_fixture_fails_to_load() {
+        // Numbers computed over a partly-loaded KB are worse than no numbers, because
+        // they still look like numbers. A bad fixture must yield harness errors and an
+        // EMPTY dump, never a plausible-looking partial one.
+        let (out, harness) =
+            strata_dump(&[("bad.nibli".to_string(), "notaword(((.\n".to_string())]);
+        assert!(out.is_empty(), "a failed load must produce no dump: {out}");
+        assert!(!harness.is_empty(), "a failed load must be a harness error");
+    }
+
+    #[test]
+    fn strata_dump_rejects_directives_in_a_fixture() {
+        // Same rule as the pin path: a `--kb` fixture is plain KB text.
+        let (_, harness) = strata_dump(&[("k.nibli".to_string(), ":strict on\n".to_string())]);
+        assert!(
+            harness.iter().any(|h| h.contains("plain KB text")),
+            "{harness:?}"
+        );
     }
 }

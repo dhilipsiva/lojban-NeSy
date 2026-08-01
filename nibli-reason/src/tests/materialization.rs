@@ -591,3 +591,175 @@ fn a_materialised_relation_flips_across_an_assertion() {
         "and it must be re-saturated, not silently demoted to fallback: {after:?}"
     );
 }
+
+// ─── Stratification report (the machine-readable dump) ───────────────────────
+
+/// Load a shipped corpus into a fresh KB, skipping lines that are not plain KB text.
+fn kb_from_corpus(src: &str) -> KnowledgeBase {
+    let kb = new_kb();
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with(':')
+            || line.starts_with('?')
+        {
+            continue;
+        }
+        if let Ok(ast) = nibli_kr::parse_checked(line)
+            && let Ok(mut buf) = nibli_semantics::compile_from_ast(ast)
+        {
+            transform_compute_nodes(&mut buf, &default_compute_predicates());
+            let _ = kb.assert_fact(buf, line.to_string());
+        }
+    }
+    kb
+}
+
+#[test]
+fn strata_surface_projection_is_lossless() {
+    // `stratification_report` collapses event-decomposed role predicates (`p_x1`) onto
+    // their anchor (`p`). That is only honest if every member of a decomposed atom lands
+    // in the SAME stratum — which it must, since the roles and the anchor are conditions
+    // and conclusions of exactly the same rules and therefore carry identical dependency
+    // sets. This pins it on the shipped corpora rather than trusting the argument: if it
+    // ever fails, the report is silently picking a stratum and the collapse must go.
+    for (name, src) in [
+        ("utopia", include_str!("../../../utopia.nibli")),
+        ("gdpr", include_str!("../../../gdpr.nibli")),
+        (
+            "drug-interactions",
+            include_str!("../../../drug-interactions.nibli"),
+        ),
+        (
+            "determinism",
+            include_str!("../../../determinism-corpus.nibli"),
+        ),
+    ] {
+        let kb = kb_from_corpus(src);
+        let inner = kb.inner.borrow();
+        let strata = crate::materialize::compute_strata(&inner.pred_dep_graph);
+        let mut by_surface: std::collections::BTreeMap<&str, std::collections::BTreeSet<usize>> =
+            std::collections::BTreeMap::new();
+        for (raw, lvl) in &strata {
+            by_surface
+                .entry(crate::materialize::surface_relation(raw))
+                .or_default()
+                .insert(*lvl);
+        }
+        for (surface, levels) in &by_surface {
+            assert_eq!(
+                levels.len(),
+                1,
+                "{name}: `{surface}` spans strata {levels:?} — the anchor and its role \
+                 predicates disagree, so collapsing them loses information"
+            );
+        }
+    }
+}
+
+#[test]
+fn stratification_report_is_stable_and_well_formed() {
+    let kb = kb_from_corpus(include_str!("../../../utopia.nibli"));
+    let rows = kb.stratification_report();
+    assert!(!rows.is_empty(), "utopia must produce a non-empty report");
+
+    // Deterministic: same KB, same bytes. `pred_dep_graph` is a HashMap, so this is the
+    // property a consumer diffing across runs actually depends on.
+    let again = kb.stratification_report();
+    assert_eq!(rows, again, "two reports off one KB must be identical");
+
+    // Sorted by predicate, edges sorted and deduplicated.
+    let names: Vec<&str> = rows.iter().map(|r| r.predicate.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted, "rows must be sorted by predicate");
+    for r in &rows {
+        let mut e = r.edges.clone();
+        e.sort();
+        e.dedup();
+        assert_eq!(
+            e, r.edges,
+            "{}: edges must be sorted and deduplicated",
+            r.predicate
+        );
+        // No role predicate survives the surface projection.
+        assert_eq!(
+            crate::materialize::surface_relation(&r.predicate),
+            r.predicate,
+            "a role predicate leaked into the report"
+        );
+    }
+
+    // base/derived agrees with "a rule concludes it", the definition the dump documents.
+    let inner = kb.inner.borrow();
+    let derived: std::collections::BTreeSet<&str> = inner
+        .universal_rules
+        .keys()
+        .map(|k| crate::materialize::surface_relation(k))
+        .collect();
+    for r in &rows {
+        assert_eq!(
+            r.base,
+            !derived.contains(r.predicate.as_str()),
+            "{}: base/derived disagrees with the rule-head set",
+            r.predicate
+        );
+    }
+
+    // utopia reads `false` under negation, so a negative edge must be present somewhere —
+    // otherwise the polarity column is uniformly `+` and pins nothing.
+    assert!(
+        rows.iter().any(|r| r.edges.iter().any(|e| e.negative)),
+        "utopia has NAF rules; the report must mark at least one negative edge"
+    );
+}
+
+#[test]
+fn a_negative_edge_raises_the_stratum_it_reads_from() {
+    // The property the whole dump exists to communicate: a predicate read under `~` must
+    // sit STRICTLY below the predicate reading it, and a positive edge must not raise it.
+    let kb = new_kb();
+    for line in [
+        "person(Adam).",
+        "all $x: person($x) & ~home($x) -> prisoner($x).",
+        "all $x: prisoner($x) -> reward($x).",
+    ] {
+        assert_buf(&kb, compile_surface(line));
+    }
+    let rows = kb.stratification_report();
+    let get = |p: &str| {
+        rows.iter()
+            .find(|r| r.predicate == p)
+            .unwrap_or_else(|| panic!("{p}"))
+    };
+
+    let home = get("home");
+    let prisoner = get("prisoner");
+    let watched = get("reward");
+    assert!(
+        prisoner.stratum > home.stratum,
+        "a NAF read must raise the reader's stratum: prisoner={} home={}",
+        prisoner.stratum,
+        home.stratum
+    );
+    assert_eq!(
+        watched.stratum, prisoner.stratum,
+        "a POSITIVE edge must not raise the stratum"
+    );
+    assert!(home.base, "`home` is concluded by no rule");
+    assert!(!prisoner.base, "`prisoner` is concluded by a rule");
+    assert!(
+        prisoner.edges.iter().any(|e| e.to == "home" && e.negative),
+        "the prisoner -> home edge must be marked negative: {:?}",
+        prisoner.edges
+    );
+    assert!(
+        watched
+            .edges
+            .iter()
+            .any(|e| e.to == "prisoner" && !e.negative),
+        "the watched -> prisoner edge must be marked positive: {:?}",
+        watched.edges
+    );
+}

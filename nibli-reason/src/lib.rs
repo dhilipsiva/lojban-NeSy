@@ -80,6 +80,34 @@ pub mod kb;
 pub use kb::KnowledgeBase;
 pub(crate) use kb::*;
 
+/// One predicate's row in [`KnowledgeBase::stratification_report`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StratumRow {
+    /// Surface relation name — role predicates (`p_x1`) collapsed onto their anchor (`p`).
+    pub predicate: String,
+    /// Stratum level. 0 means nothing negative sits beneath it; each negative edge
+    /// crossed raises the level by one, so a rule may only read `~q` from a STRICTLY
+    /// lower stratum. This is the assignment `proofs/Stratification.lean` proves exists
+    /// whenever `check_stratification` accepted the KB.
+    pub stratum: usize,
+    /// `true` when NO rule concludes this predicate: base / extensional (EDB).
+    /// `false` when at least one rule does: derived / intensional (IDB).
+    pub base: bool,
+    /// Outgoing dependency edges — "this predicate READS that one" — sorted and
+    /// deduplicated.
+    pub edges: Vec<StratumEdge>,
+}
+
+/// One outgoing dependency edge in a [`StratumRow`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StratumEdge {
+    /// The predicate depended upon (surface name).
+    pub to: String,
+    /// `true` when read under negation-as-failure — the edge that forces a stratum
+    /// boundary. `false` for an ordinary positive dependency.
+    pub negative: bool,
+}
+
 /// Internal methods that return `Result<_, String>` for use by both the WIT boundary and tests.
 impl KnowledgeBase {
     fn combine_root_results(left: QueryResult, right: QueryResult) -> QueryResult {
@@ -948,6 +976,90 @@ impl KnowledgeBase {
             .collect();
         refused.sort();
         (complete, refused)
+    }
+
+    /// The KB's STRATIFICATION as machine-readable data: every predicate with its
+    /// stratum, whether it is base (EDB) or derived (IDB), and its outgoing dependency
+    /// edges marked positive or negative.
+    ///
+    /// Exists so a consuming project does not have to re-implement the stratifier to
+    /// read it. A second implementation — a regex over `.nibli` text, say — is a second
+    /// thing to keep in sync with this one, and it will drift; anything presented as
+    /// *"this order was derived by the engine"* has to come from the engine that
+    /// enforces it. Read-only and verdict-inert: it reports `pred_dep_graph`, which
+    /// `register_rule` already maintains and `check_stratification` already gates.
+    ///
+    /// **Surface projection.** The graph the engine stratifies is keyed on
+    /// event-decomposed relation names — the anchor `false` alongside its role
+    /// predicates `false_x1`, `false_x2`. Those are one atom, so they always carry
+    /// identical dependency sets and therefore always land in the same stratum
+    /// (pinned by `strata_surface_projection_is_lossless`). The report collapses each
+    /// role onto its anchor, because that is the name a KB author wrote and the only
+    /// name a reader can check. A self-edge that survives the collapse is GENUINE
+    /// recursion, not a decomposition artifact: a rule never reads the roles of its own
+    /// conclusion, so `p -> p_x1` edges do not exist to begin with.
+    ///
+    /// Deterministic by construction: rows sorted by predicate, edges sorted, duplicates
+    /// (four raw edges collapsing onto one surface edge) removed — safe to diff across
+    /// runs.
+    pub fn stratification_report(&self) -> Vec<StratumRow> {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let inner = self.inner.borrow();
+        let strata = materialize::compute_strata(&inner.pred_dep_graph);
+
+        // Anything a rule concludes is DERIVED, whatever else is true of it. Keyed on the
+        // raw conclusion relation, so project it the same way as the nodes.
+        let derived: BTreeSet<&str> = inner
+            .universal_rules
+            .keys()
+            .map(|k| materialize::surface_relation(k))
+            .collect();
+
+        let mut level: BTreeMap<&str, usize> = BTreeMap::new();
+        for (raw, lvl) in &strata {
+            let surface = materialize::surface_relation(raw);
+            // `max` is defensive only — see the lossless-projection pin above.
+            let slot = level.entry(surface).or_insert(*lvl);
+            *slot = (*slot).max(*lvl);
+        }
+        // `pred_dep_graph`'s keys are a STRICT SUBSET of the rule heads: a conditionless
+        // rule pushes no edges, so its head never becomes a node. Such a head is still a
+        // derived predicate and must appear, at stratum 0 — it depends on nothing, so
+        // nothing can raise it. Omitting it would drop a whole predicate from a dump whose
+        // purpose is to be complete.
+        for head in derived.iter() {
+            level.entry(head).or_insert(0);
+        }
+
+        let mut edges: BTreeMap<&str, BTreeSet<(&str, bool)>> = BTreeMap::new();
+        for (head, deps) in &inner.pred_dep_graph {
+            let h = materialize::surface_relation(head);
+            let bucket = edges.entry(h).or_default();
+            for (dep, is_neg) in deps {
+                bucket.insert((materialize::surface_relation(dep), *is_neg));
+            }
+        }
+
+        level
+            .into_iter()
+            .map(|(predicate, stratum)| StratumRow {
+                stratum,
+                base: !derived.contains(predicate),
+                edges: edges
+                    .get(predicate)
+                    .map(|s| {
+                        s.iter()
+                            .map(|(to, negative)| StratumEdge {
+                                to: (*to).to_string(),
+                                negative: *negative,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                predicate: predicate.to_string(),
+            })
+            .collect()
     }
 
     /// Declare `relation` DERIVED-ONLY (intensional / IDB): thereafter it may be
