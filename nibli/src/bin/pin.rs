@@ -61,6 +61,18 @@
 //! :expect-pins 4                      # anti-hollowing floor (exact count)
 //! ```
 //!
+//! `:accept-scoped` is `:accept` that puts the KB back. A CONTROL — "this rule
+//! must still load" — wants the load checked and the rule gone; plain `:accept`
+//! left it, so every query below ran against a widened base. Four complement
+//! controls each concluding `prisoner` made a query below them pass with the rule
+//! that should derive it deleted, and a `~false` control made a person with no
+//! conviction answer TRUE. `:refuse` never had the problem (a refused statement
+//! never enters the store) and that asymmetry was the bug; ordering the file so
+//! controls came last was the only workaround. Retraction is the primitive, so it
+//! inherits `retract_diff.rs`'s pinned "retract == never-asserted". It cannot
+//! scope `derived_only`/`admits` — those are one-way by design and survive the
+//! rebuild replay — and says so rather than no-op'ing.
+//!
 //! `:refuse <class> /<regex>/` and `:accept` are DUALS and are scoped to the
 //! NEXT statement only — never sticky. `<class>` is the `NibliError` variant
 //! (`syntax` | `semantic` | `reasoning` | `backend`), matched on the TYPE, not on
@@ -151,6 +163,18 @@ enum Expect {
     Default,
     /// `:accept` — must succeed, and COUNTS as a pin.
     Accept,
+    /// `:accept-scoped` — must succeed, COUNTS as a pin, and is then DISCARDED so
+    /// the knowledge base is exactly as it was before.
+    ///
+    /// A content pin file uses `:accept` as a CONTROL ("this rule must still load")
+    /// and never wants the rule afterwards — but it stayed, so every query below ran
+    /// against a widened base. Four complement controls each concluding `prisoner`
+    /// made `? prisoner(Adam).` pass even with the rule that should derive it deleted,
+    /// and a `~false` control made a person with no conviction answer TRUE. `:refuse`
+    /// has this property for free (a refused statement never enters the store); the
+    /// asymmetry between the two was the bug, and ordering the file around it was the
+    /// only workaround.
+    AcceptScoped,
     /// `:refuse <class> /<regex>/` — must fail with this error class, and the
     /// Display message must contain the (literal, un-anchored) needle.
     Refuse { class: Class, needle: String },
@@ -274,6 +298,19 @@ fn run_precondition(cmd: &str) -> PreconditionOutcome {
             })
         }
     }
+}
+
+/// The one-way meta-declarations. Both `derived_only` and `admits` are deliberately
+/// absent from `rebuild_inner`'s clear list, so they survive the replay a retraction
+/// performs — which means `:accept-scoped` cannot undo them.
+fn one_way_declaration(line: &str) -> Option<&'static str> {
+    let t = line.trim_start();
+    for d in ["derived_only", "admits"] {
+        if t.starts_with(d) && t[d.len()..].trim_start().starts_with('(') {
+            return Some(d);
+        }
+    }
+    None
 }
 
 fn base_name(path: &str) -> String {
@@ -679,6 +716,15 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile], allow_shell: bool) ->
             }
             continue;
         }
+        if line == ":accept-scoped" {
+            if !matches!(expect, Expect::Default) {
+                rep.harness.push(format!(
+                    "{name}:{i}: directive follows an unconsumed directive — each applies to the NEXT statement only"
+                ));
+            }
+            expect = Expect::AcceptScoped;
+            continue;
+        }
         if line == ":accept" {
             if !matches!(expect, Expect::Default) {
                 rep.harness.push(format!(
@@ -874,6 +920,45 @@ fn run_file_with_kb(name: &str, src: &str, kbs: &[KbFile], allow_shell: bool) ->
                 );
             }
             (Expect::Accept, Ok(_)) => rep.pins += 1,
+            // Load it, count the load as the pin, then put the KB back. Retraction is
+            // the right primitive rather than a bespoke undo: `retract_diff.rs` already
+            // pins "retract == never-asserted" on both the O(1) and rebuild paths, so
+            // this inherits that guarantee instead of inventing a second one.
+            (Expect::AcceptScoped, Ok(ids)) => {
+                rep.pins += 1;
+                // `derived_only`/`admits` are ONE-WAY by construction: both survive the
+                // rebuild replay retraction goes through, so scoping them would look
+                // like it worked and silently leave the declaration standing. Refuse
+                // rather than pretend.
+                if let Some(decl) = one_way_declaration(line) {
+                    rep.harness.push(format!(
+                        "{name}:{i}: `:accept-scoped` cannot scope a `{decl}` declaration — it is \
+                         one-way by design and survives the retraction, so the scope would be a \
+                         silent no-op. Use plain `:accept` and put it where its effect belongs."
+                    ));
+                }
+                for id in ids {
+                    if let Err(e) = engine.retract_fact(id) {
+                        // The KB is now polluted and every pin below is untrustworthy —
+                        // exactly the exit-2 case.
+                        rep.harness.push(format!(
+                            "{name}:{i}: `:accept-scoped` could not discard {line:?} (fact #{id}): \
+                             {e} — the knowledge base is no longer clean, so pins below it \
+                             cannot be trusted"
+                        ));
+                    }
+                }
+            }
+            (Expect::AcceptScoped, Err(e)) => {
+                rep.pins += 1;
+                fail(
+                    &mut rep,
+                    format!(
+                        "{name}:{i}: :accept-scoped but {line:?} was REFUSED — [{}] {e}",
+                        Class::of(&e).name()
+                    ),
+                );
+            }
             (Expect::Accept, Err(e)) => {
                 rep.pins += 1;
                 fail(
@@ -1612,5 +1697,90 @@ mod tests {
             r.harness.iter().any(|h| h.contains("command not found")),
             "{r:?}"
         );
+    }
+
+    // ─── `:accept-scoped` — a control that does not pollute ──────────────────
+    //
+    // A content pin file uses `:accept` as a CONTROL ("this rule must still load")
+    // and never wants the rule afterwards. It stayed, so every query below ran
+    // against a widened base: four complement controls each concluding `prisoner`
+    // made `? prisoner(Adam).` pass with the rule that should derive it deleted, and
+    // a `~false` control made a person with no conviction answer TRUE. `:refuse` had
+    // this property for free — a refused statement never enters the store — and the
+    // asymmetry between the two was the bug.
+
+    #[test]
+    fn accept_scoped_discards_the_rule_it_verified() {
+        let r = run("person(Adam).\n\
+                     :accept-scoped\n\
+                     all $x: person($x) -> prisoner($x).\n\
+                     ? prisoner(Adam).\n# => FALSE\n\
+                     :expect-pins 2\n");
+        assert!(r.findings.is_empty() && r.harness.is_empty(), "{r:?}");
+        assert_eq!(r.pins, 2, "the load itself is still a pin: {r:?}");
+    }
+
+    #[test]
+    fn plain_accept_still_leaves_the_rule() {
+        // The contrast that makes the scoped form worth having — and the behaviour
+        // existing files depend on, so it must not change.
+        let r = run("person(Adam).\n\
+                     :accept\n\
+                     all $x: person($x) -> prisoner($x).\n\
+                     ? prisoner(Adam).\n# => TRUE\n\
+                     :expect-pins 2\n");
+        assert!(r.findings.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn accept_scoped_preserves_what_was_already_there() {
+        // Discarding the control must not take the KB with it.
+        let r = run("person(Adam).\n\
+                     :accept-scoped\n\
+                     all $x: person($x) -> prisoner($x).\n\
+                     ? person(Adam).\n# => TRUE\n\
+                     :expect-pins 2\n");
+        assert!(r.findings.is_empty() && r.harness.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn accept_scoped_reports_a_statement_that_will_not_load() {
+        // Loadability IS the pin — a control that stops compiling is a finding.
+        let r = run("person(Adam).\n\
+                     :accept-scoped\n\
+                     all $x: person($x) & ~prisoner($x) -> prisoner($x).\n\
+                     :expect-pins 1\n");
+        assert_eq!(r.findings.len(), 1, "{r:?}");
+        assert!(r.findings[0].contains(":accept-scoped"), "{r:?}");
+    }
+
+    #[test]
+    fn accept_scoped_refuses_a_one_way_declaration() {
+        // `derived_only`/`admits` survive the rebuild replay retraction goes through,
+        // so scoping one would look like it worked and leave the declaration standing.
+        // Each declaration gets a fixture it can legitimately reach: `admits` must
+        // precede every ordinary assertion, so it cannot follow one.
+        for (prelude, decl) in [
+            ("person(Adam).\n", "derived_only(\"prisoner\")."),
+            ("", "admits(\"person\")."),
+        ] {
+            let src = format!("{prelude}:accept-scoped\n{decl}\n:expect-pins 1\n");
+            let r = run(&src);
+            assert!(
+                r.harness.iter().any(|h| h.contains("one-way by design")),
+                "{decl} -> {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_scoped_composes_with_defect() {
+        let r = run("person(Adam).\n\
+                     :defect \"the control still loading\"\n\
+                     :accept-scoped\n\
+                     all $x: person($x) -> prisoner($x).\n\
+                     :expect-pins 1\n");
+        assert_eq!(r.defects, 1, "{r:?}");
+        assert!(r.findings.is_empty(), "{r:?}");
     }
 }

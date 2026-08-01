@@ -1,0 +1,50 @@
+# MECHANISM PIN — a control that verifies loadability without polluting the KB.
+#
+# Fixture INLINE (mechanism pin): the subject is the ENGINE's pin runner, not any KB.
+#
+# THE BUG THIS CLOSES. A content pin file uses `:accept` as a CONTROL — "this rule must
+# still load" — and never wants the rule afterwards. But `:accept` left it in the store,
+# so every query below ran against a WIDENED base. In a real constitution suite four
+# complement controls each concluded `prisoner`, and a query below them passed even
+# though the rule that should derive it could have been deleted outright; a `~false`
+# control made a person with no conviction at all answer TRUE for `prisoner`.
+#
+# `:refuse` never had this problem — a refused statement never enters the store — and
+# that asymmetry between the two directives WAS the bug. The only workaround was
+# ordering the file so controls came last, which is a constraint the file has to
+# document and a reader has to keep honouring.
+#
+# `:accept-scoped` compiles and stratifies the statement, reports loadability as the
+# pin verdict, then DISCARDS it. Retraction is the primitive rather than a bespoke
+# undo, so this inherits `retract_diff.rs`'s pinned "retract == never-asserted".
+
+person(Adam).
+
+# ── THE CONTROL LOADS, AND IS THEN GONE ──────────────────────────────────────
+:accept-scoped
+all $x: person($x) -> prisoner($x).
+
+# If the scope works nothing derives `prisoner` any more. This is the whole pin: under
+# plain `:accept` the same query answers TRUE.
+? prisoner(Adam).
+# => FALSE
+
+# ── AND IT TAKES NOTHING ELSE WITH IT ────────────────────────────────────────
+# Discarding the control must restore the KB, not empty it.
+? person(Adam).
+# => TRUE
+
+# ── PLAIN `:accept` STILL RETAINS, WHICH EXISTING FILES DEPEND ON ────────────
+:accept
+all $x: person($x) -> prisoner($x).
+
+? prisoner(Adam).
+# => TRUE
+
+# ── LOADABILITY IS THE PIN ───────────────────────────────────────────────────
+# A control that stops COMPILING is a finding, not a silent pass — that is the whole
+# reason a control exists. (Unstratifiable: `prisoner` reads its own negation.)
+:refuse reasoning /Unstratifiable negation/
+all $x: person($x) & ~prisoner($x) -> prisoner($x).
+
+:expect-pins 6
