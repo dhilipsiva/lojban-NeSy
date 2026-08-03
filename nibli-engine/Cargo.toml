@@ -4,6 +4,7 @@ description = "Native engine wrapper library (in-process embedding of the nibli 
 version.workspace = true
 edition = "2024"
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 homepage.workspace = true
 

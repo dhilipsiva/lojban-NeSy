@@ -4,6 +4,7 @@ description = "The shared session core: the ONE compile/assert/query chain every
 version.workspace = true
 edition = "2024"
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 homepage.workspace = true
 

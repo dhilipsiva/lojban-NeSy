@@ -13,19 +13,43 @@ here first.
 
 ## [Unreleased]
 
-No release has been tagged yet — this section accumulates everything that will
-ship in the first tagged release (see DOCS_TODO's release track: R0 packaging
-landed; R1 first GitHub Release and R2 first crates.io publish are open).
+Nothing yet.
+
+## [0.1.0] - 2026-08-03
+
+The first tagged release: the engine as it has shipped on `main` — a
+deterministic theorem prover compiled to WebAssembly (WASI P2), with the
+**nibli KR** predicate-call language as its sole front-end. **0.x caveat:**
+minor versions may break APIs; the embed surface (`nibli-engine`) is not yet
+declared stable.
 
 ### Added
 
-- Workspace release packaging (R0): lockstep `[workspace.package]` version
-  `0.1.0` with shared license/repository/homepage inherited by every member,
-  `[workspace.dependencies]` (path + version) for the internal crates
-  (internal *dev*-dependencies stay path-only on purpose — they are stripped
-  at publish and must not constrain the publish order), `publish = false` on
-  the non-publishable tier, per-crate descriptions, this CHANGELOG, and the
-  `just release-check` consistency gate. No public release and no crates.io
-  publish happened in R0.
+- **The pipeline**: nibli KR (`nibli-kr`, pest-grammar front-end) →
+  First-Order Logic IR (`nibli-semantics`, spec in `LOGIC_IR.md`) →
+  demand-driven backward chaining over an indexed fact store
+  (`nibli-reason`), shared by every runtime surface through
+  `nibli-session::CoreSession`.
+- **Runtime surfaces**: the `nibli-pipeline` WASM component
+  (`nibli:engine@0.7.0` WIT) under the `nibli-host` Wasmtime REPL; the native
+  `nibli-engine` embedding; the browser `nibli-wasm` / `nibli-ui` bundles;
+  dev tooling in `nibli` (REPL, validate, import CLI, `nibli-pin`, benches).
+- **Guarantees and gates** (`GUARANTEES.md`): differential soundness against
+  Vampire and clingo, six mechanized Lean 4 proofs with Rust conformance
+  bridges, the KR seam gate, corpus/dictionary differentials, KB-level
+  behavioural pins, fuzzing, and a mutation-testing baseline.
+- **The committed English corpus** (`nibli-lexicon`): the dictionary as
+  validated Rust source — one build mode, no network at build time.
+- Persistent store (`nibli-store`, redb schema v3), English rendering
+  (`nibli-render`), proof-trace wire format (`nibli-protocol`), RDF/OWL
+  import (`nibli-import`), the agentic formalizer (`nibli-formalize`), and
+  built-in authorization (`nibli-auth`, unpublished).
+- Workspace release packaging (R0): lockstep `[workspace.package]` `0.1.0`
+  inherited by every member, `[workspace.dependencies]` (path + version) for
+  the internal crates (internal *dev*-dependencies stay path-only on purpose
+  — they are stripped at publish and must not constrain the publish order),
+  `publish = false` on the non-publishable tier, per-crate descriptions and
+  READMEs, this CHANGELOG, and the `just release-check` consistency gate.
 
-[Unreleased]: https://github.com/dhilipsiva/nibli/commits/main
+[Unreleased]: https://github.com/dhilipsiva/nibli/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/dhilipsiva/nibli/releases/tag/v0.1.0

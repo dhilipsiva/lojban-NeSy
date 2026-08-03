@@ -4,6 +4,7 @@ description = "Reasoning engine — backward-chaining inference over typed fact 
 version.workspace = true
 edition = "2024"
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 homepage.workspace = true
 

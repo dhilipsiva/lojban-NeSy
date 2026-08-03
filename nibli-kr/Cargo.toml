@@ -4,6 +4,7 @@ description = "The nibli KR surface-syntax front-end — pest grammar, validatin
 version.workspace = true
 edition = "2024"
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 homepage.workspace = true
 

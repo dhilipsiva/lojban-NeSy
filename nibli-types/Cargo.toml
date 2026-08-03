@@ -4,6 +4,7 @@ description = "Canonical type definitions shared across the pipeline"
 version.workspace = true
 edition = "2024"
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 homepage.workspace = true
 

@@ -1,5 +1,9 @@
 # Nibli
 
+[![Release](https://img.shields.io/github/v/release/dhilipsiva/nibli)](https://github.com/dhilipsiva/nibli/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/nibli-engine)](https://crates.io/crates/nibli-engine)
+[![Docs](https://img.shields.io/badge/docs-dhilipsiva.github.io%2Fnibli-blue)](https://dhilipsiva.github.io/nibli/)
+
 **A zero-hallucination symbolic reasoning engine.**
 
 Nibli is a deterministic theorem prover compiled to WebAssembly (WASI P2). It compiles **nibli KR** — a human-readable predicate-call knowledge-representation language (`dog(Adam).`, `animal(every dog).`) — into First-Order Logic and performs inference via demand-driven backward chaining over an indexed fact store. Every conclusion is a formal derivation — never a guess, never a generated step. (Lojban, nibli's original surface syntax, retired at THE DROP — the last dual-front-end engine is tagged `v0.1-lojban-final`, and the Lojban tooling was donated to a separate repo.)

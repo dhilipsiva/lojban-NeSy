@@ -4,6 +4,7 @@ description = "Native debug REPL and validation tooling"
 version.workspace = true
 edition = "2024"
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
@@ -14,6 +15,16 @@ nibli-import = { workspace = true }
 nibli-render = { workspace = true }
 reedline = "0.45.0"
 nu-ansi-term = "0.50"
+
+[features]
+# REPO-ONLY: the bench bins `include_str!` the shipped corpora from the repo
+# root (../../../utopia.nibli, gdpr.nibli), which cannot exist inside a
+# published package tarball — `cargo package` verification failed on exactly
+# that. Off by default so packaging/publishing skips the bins entirely
+# (`required-features` below); the Justfile bench recipes enable it. Enabling
+# this feature on the crates.io tarball will NOT build — run the benches from
+# a repo checkout.
+bench-bins = []
 
 # (No per-target `description` keys: cargo has no such field and warned
 # `unused manifest key` on every invocation while they were here.)
@@ -43,8 +54,10 @@ path = "src/bin/pin.rs"
 [[bin]]
 name = "nibli-bench-book"
 path = "src/bin/bench_book.rs"
+required-features = ["bench-bins"]
 
 # nibli-bench-naf: release-profile timing for negation-as-failure evaluation
 [[bin]]
 name = "nibli-bench-naf"
 path = "src/bin/bench_naf.rs"
+required-features = ["bench-bins"]

@@ -36,6 +36,9 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dhilipsiva/nibli"
 homepage = "https://dhilipsiva.github.io/nibli/"
+# Packaged into each publishing crate so crates.io pages carry the product
+# README (members opt in with `readme.workspace = true`).
+readme = "README.md"
 
 # Internal crates carry BOTH path (local builds) and version (crates.io
 # publish resolves the version once the dep is published). Only crates that
