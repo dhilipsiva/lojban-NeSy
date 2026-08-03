@@ -30,9 +30,24 @@ The UI may show a decorative `?` next to the query box — it is **not** part of
 
 **Formalize** (not “compile”) is a bring-your-own-key LLM step from the Source tab. The key stays in tab memory only; the request goes from your browser to the provider you choose. Drafts are checked by the real nibli-kr + nibli-semantics + render round-trip gates before they land in the KR pane. Formalize sits **outside** the deterministic reasoning core — always review the KR and back-translation.
 
-## Example knowledge bases
+## Example knowledge bases (preset hooks)
 
-The header dropdown loads preloaded KBs used in regression tests and demos (e.g. Syllogism, GDPR compliance, Drug interactions). Treat them as **example corpora**, not as chapters of any third-party book. In example mode the KR is read-only and Formalize is disabled; the query control becomes a preset list.
+The header dropdown loads preloaded KBs used in regression tests and demos. Treat them as **example corpora**, not as chapters of any third-party book. In example mode the KR is read-only and Formalize is disabled; the query control becomes a preset list that auto-runs.
+
+The dropdown names and preset labels below are **byte-stable hooks** — they are defined in `nibli-ui/src/examples.rs`, pinned by the `shipped_examples_compile` guard (`just test-ui`), and safe to reference from docs and links:
+
+| Dropdown name | Corpus | Preset queries |
+|---------------|--------|----------------|
+| **Syllogism (Ch 18)** | inline 3-line KB | *does Adam eat?—a 2-hop proof* · *is Adam an animal?—1 hop* · *is Adam a bird?—a real FALSE* |
+| **GDPR compliance (Ch 19)** | [`gdpr.nibli`](https://github.com/dhilipsiva/nibli/blob/main/gdpr.nibli) — see the [GDPR walkthrough](gdpr-walkthrough.md) | *lawful basis? (Art 6)* · *right to erasure? (Art 17)* · *a controller is not a consenting person—exhaustive FALSE* · *health record → personal data (Art 4/9, derived)* |
+| **Constitutional core (utopia)** | [`utopia.nibli`](https://github.com/dhilipsiva/nibli/blob/main/utopia.nibli) — extra playground corpus, not a book chapter | 14 presets over the constitutional scenario (floor duties, voiding multi-sig, imprisonment routing, whistleblower shield) |
+| **Drug interactions (Ch 20)** | [`drug-interactions.nibli`](https://github.com/dhilipsiva/nibli/blob/main/drug-interactions.nibli) — see the [drug-interactions walkthrough](ddi-walkthrough.md) | *concentration rising?* · *toxicity risk?* · *safety alert?—a 3-hop proof* · *negative control—no alert* |
+
+The GDPR, utopia, and drug KBs are `include_str!`-ed from the same repo-root `.nibli` files the engine's regression tests pin, so the playground cannot drift from the tested corpora.
+
+## Belief revision: edit and re-query
+
+Each query rebuilds a fresh engine from the KR pane, so revising the KB is just editing it: delete or `#`-comment a fact line and re-run the claim. Presets are read-only — to revise one, paste its corpus into **Custom** mode first. Worked demos: [Belief revision](belief-revision.md).
 
 ## Built-in vs external compute
 

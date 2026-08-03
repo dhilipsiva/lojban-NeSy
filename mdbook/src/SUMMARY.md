@@ -9,6 +9,9 @@
 - [Quickstart](user/quickstart.md)
 - [nibli KR cookbook](user/kr-cookbook.md)
 - [Playground](user/playground.md)
+- [GDPR walkthrough](user/gdpr-walkthrough.md)
+- [Drug-interactions walkthrough](user/ddi-walkthrough.md)
+- [Belief revision](user/belief-revision.md)
 - [Authorization](user/authorization.md)
 
 # Developer guide

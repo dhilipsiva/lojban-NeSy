@@ -47,6 +47,8 @@ tag vX.Y.Z ──▶ GitHub Release (+ optional .wasm / host bins)
 |------|--------|
 | **Docs Phase 0** | `mdbook/` scaffold; `mdbook` in flake; `just docs` / `docs-serve`; CI job `docs`; gitignore `mdbook/book/` |
 | **Docs Phase 1** | User MVP: guarantees, quickstart, KR cookbook, playground CTA; dual `site-url` (`just docs [/nibli/]`); **Pages live** at github.io/nibli; DEPLOY §2 primary recipe for site repo |
+| **Docs Phase 2** | Corpora + playground depth: `user/gdpr-walkthrough.md` + `user/ddi-walkthrough.md` (shipped `.nibli` + verdicts pinned by `gdpr_*`/`ddi_*` tests, re-verified via `nibli-pin --kb` scratch pins), `user/belief-revision.md` (`:retract` / retract ≡ never-asserted / playground edit-and-re-query), playground preset-hooks table (byte-stable `examples.rs` names — the UI has no URL deep-linking, so hooks are the documented handle) |
+| **Docs Phase 2b** | Authorization guide: `mdbook/src/user/authorization.md` (ontology, policy, Rust/Python/WIT, efficiency, Extism non-goal, examples); CI job `auth` runs `just test-auth` + `check-auth-axum` |
 | **Release policy** | This file’s decisions table + Tier A/Z + R0–R3 track (not yet implemented) |
 
 ---
@@ -56,16 +58,6 @@ tag vX.Y.Z ──▶ GitHub Release (+ optional .wasm / host bins)
 ### Site primary (blocks “canonical” URL)
 
 - Wire **`dhilipsiva.dev/docs/nibli/`** in `dhilipsiva/dhilipsiva.dev` on `nibli-updated`: checkout nibli → `just docs` → copy `mdbook/book/` → `public/docs/nibli/` (DEPLOY §2b). Do not claim primary live until HTTP 200.
-
-### Phase 2 — Corpora + playground depth
-
-- GDPR / drug-interactions walkthroughs from shipped `.nibli` + engine-checked queries (example KBs, not book chapters).
-- Belief revision / `:retract` (host) and playground edit-and-re-query.
-- Deep-link or preset hooks for Syllogism / GDPR / Drug UI labels (byte-stable names).
-
-### Phase 2b — Authorization guide
-
-**Landed:** `mdbook/src/user/authorization.md` (ontology, policy, Rust/Python/WIT, efficiency, Extism non-goal, examples). CI job `auth` runs `just test-auth` + `check-auth-axum`.
 
 ### Phase 3 — Developer guide
 

@@ -40,7 +40,7 @@ animal(Adam).
 
 Expect **TRUE** with a proof when the rule and fact support the claim. See [What Nibli guarantees](guarantees.md) for how to read **FALSE** vs **UNKNOWN**.
 
-A larger starter table lives in the [nibli KR cookbook](kr-cookbook.md). The repo root also ships example files such as `readme.nibli`, `gdpr.nibli`, and `drug-interactions.nibli` (`:load path` in the host REPL).
+A larger starter table lives in the [nibli KR cookbook](kr-cookbook.md). The repo root also ships example files such as `readme.nibli`, `gdpr.nibli`, and `drug-interactions.nibli` (`:load path` in the host REPL) — worked tours in the [GDPR walkthrough](gdpr-walkthrough.md) and the [drug-interactions walkthrough](ddi-walkthrough.md).
 
 ## Dictionary note
 
