@@ -607,19 +607,20 @@ verify-dict:
 verify-grammar-parity:
     cargo test -p nibli-verify --test grammar_parity {{cargo_profile_flag}} -- --nocapture
 
-# mdBook doc-fence gate: every statement inside a ```nibli-kr fence under
-# mdbook/src/**.md must compile through the shipped front-end (the same
-# NibliEngine::assert_text path as the REPL's `:load` and nibli-validate), one
-# statement per line, checked as a per-fence knowledge base.
+# Doc-fence gate: every statement inside a ```nibli-kr fence must compile through
+# the shipped front-end (the same NibliEngine::assert_text path as the REPL's
+# `:load` and nibli-validate), one statement per line, checked as a per-fence
+# knowledge base.
 #
 # Deliberately NOT in the `docs` CI job: that job is Nix + `mdbook build` with no
 # Rust toolchain (~2 min), and DOCS_TODO's deferral protects that lightness.
 # `ci` already compiles the workspace, so this rides here for free.
 #
-# SCOPE: mdbook/src only. The root specs are OUT by design — NIBLI_KR.md's
-# ```nibli-kr fences carry metasyntax (`pred(term, term, …)`), `pred`
-# declarations that are not statements, and historical Lojban glosses. It is a
-# SPEC, not a tutorial; linting it would be red on purpose.
+# SCOPE: mdbook/src (recursively) AND the repo-root *.md specs (flat — descending
+# would reach the private book/ manuscript). The boundary is COMPILABLE EXAMPLE
+# vs. METASYNTAX, carried by the info string, not tutorial vs. spec: notation
+# (`pred(term, term, …)`) and NIBLI_KR §14's v2-only `pred` declarations live in
+# ```text fences, because tagging either ```nibli-kr claims it compiles today.
 verify-doc-fences:
     cargo test -p nibli-verify --test doc_fences {{cargo_profile_flag}} -- --nocapture
 

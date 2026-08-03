@@ -4,16 +4,18 @@
 //!     construction),
 //!   - a distilled §4/§6/§7 semantics block (determiners, operators/prefixes,
 //!     relative clauses — the parts the grammar can't convey),
-//!   - the FULL shipped alias map (`nibli_lexicon::ALIASES`) as `alias(places…) —
-//!     predicate` lines, so the model uses valid predicate names, and
+//!   - the FULL committed corpus (`nibli_lexicon::corpus::corpus_entries()`,
+//!     plus `corpus_compounds()`) as `name(places…) — gloss` lines, so the model
+//!     uses valid predicate names, and
 //!   - the proven few-shot examples + the iterative-correction clause the
 //!     validate→feedback loop relies on.
 //!
-//! Because the alias map is a compile-time input, the whole prompt is
+//! Because the corpus is a compile-time input, the whole prompt is
 //! source-independent: it is assembled ONCE via `LazyLock` and reused across every
 //! self-correction turn, so `system_prompt()` keeps its `&'static str` signature.
-//! Dual-mode automatically: the full ~1,341-alias map in a local build, the
-//! curated core (~116) in the CI fallback build (whatever `ALIASES` holds).
+//! ONE build mode since the committed-corpus milestone — local, CI and deployed
+//! builds all embed the identical table, with no network and no FULL/FALLBACK
+//! split.
 //! (KR-only since THE DROP; the legacy Lojban prompt retired with the front end.)
 
 use std::sync::LazyLock;
@@ -36,7 +38,8 @@ Determiners build a term from a predicate word and are NOT interchangeable:
 - \"every dog\" — universal; \"animal(every dog).\" is the rule \"every dog is an animal\".
 - \"exactly 2 dog\" — entity counting; \"no dog\" means \"exactly 0 dog\".
 When the body is compound or a variable must be shared across conjuncts, use a binder block:
-  every dog $d: animal($d) & barks($d).      some dog $d: big($d) & goes($d).
+  every dog $d: animal($d) & runs($d).
+  some dog $d: big($d) & goes($d).
 A restrictor may add a modifier (last word is the head: \"every data controller\"), a linked argument (\"every carer(of: some data)\"), or a relative clause (below).
 
 Operators, precedence tightest-first: \"~\" (not) · the \"past\"/\"now\"/\"future\" and \"must\"/\"may\" prefixes · \"&\" (and) · \"|\" (or) · \"^\" (xor) · \"<->\" (iff) · \"->\" (if-then, right-associative). Parentheses group. \"A -> B\" is a rule.
@@ -59,8 +62,9 @@ Relative clauses restrict or annotate the bound entity:
 
 const ITERATIVE: &str = "This is an iterative process. You may receive a follow-up message reporting a grammar or semantic error from the nibli KR compiler about your previous output. When you do, correct that output and reply with ONLY the corrected nibli KR — no explanation, no apology. Prefer the simplest wording the strict compiler accepts.";
 
-/// The few-shot examples. Kept in curated-core vocabulary so the gate-validity
-/// guard below holds in the CI fallback dictionary build too.
+/// The few-shot examples. Kept in plain, high-frequency corpus vocabulary — the
+/// gate-validity guard below compiles every one of them, so an exotic entry
+/// would put the prompt at the mercy of a corpus refinement.
 const EXAMPLES: &str = "Examples:
 - \"The dog goes to the market\" → \"goes(some dog, destination: some market).\"
 - \"I love you\" → \"loves(me, you).\"
@@ -75,8 +79,8 @@ const EXAMPLES: &str = "Examples:
 /// One line per corpus predicate, sorted: `- name(place1, place2, …) — gloss`.
 /// Every place is NAMED (the committed corpus has zero positional places), so
 /// the model sees the arity and the named-argument vocabulary. Generated from
-/// the shipped `nibli_lexicon` corpus (the committed ~1,342-entry table — one
-/// build mode, always the full map), so it can never drift from what the
+/// the shipped `nibli_lexicon` corpus (the committed four-figure table — one
+/// build mode, always the whole of it), so it can never drift from what the
 /// resolver actually accepts. The source gismu is deliberately ABSENT: gismu
 /// spellings no longer resolve, and showing them would invite the model to
 /// emit words that fail closed. Compounds get their own short section.
@@ -128,8 +132,10 @@ mod tests {
     /// Every few-shot example shipped in the prompt must pass our own gates —
     /// otherwise the prompt would be teaching the model KB text that our own
     /// firewall rejects. `validate()` runs the render round-trip gate too, so every
-    /// shipped example is additionally pinned canonical-compatible. Curated-core
-    /// vocabulary only, so it holds in the CI fallback dictionary build.
+    /// shipped example is additionally pinned canonical-compatible.
+    ///
+    /// This covers `EXAMPLES` only; `prose_kr_statements_are_gate_valid` below
+    /// covers the KR written into the instruction prose.
     #[test]
     fn shipped_nibli_kr_examples_are_gate_valid() {
         let mut checked = 0;
@@ -154,9 +160,59 @@ mod tests {
         );
     }
 
+    /// The few-shot guard above covered `EXAMPLES` and nothing else, so the KR
+    /// written into the INSTRUCTION PROSE was ungated — which is how
+    /// `every dog $d: animal($d) & barks($d).` shipped in `SEMANTICS` with
+    /// `barks` not a corpus name at all, in a prompt whose own text warns that
+    /// the compiler fails closed on unknown words. Every complete statement
+    /// anywhere in the prompt must compile.
+    ///
+    /// Two shapes carry a complete statement, and both END IN `).` — that
+    /// terminator is the whole discriminator, which is why the clause fragment
+    /// `"every dog where owns(it, some home)"` and the notation `"~(A & B)"`
+    /// are correctly skipped rather than reported as failures:
+    ///   1. inside double quotes (`"animal(every dog)."`), and
+    ///   2. alone on an indented line (the binder-block demo).
+    /// A prose sentence that merely ends in `).` — "…or a relative clause
+    /// (below)." — carries quotes elsewhere on the line, so rule 1 applies to
+    /// it and only its QUOTED spans are considered; none of those terminate.
+    #[test]
+    fn prose_kr_statements_are_gate_valid() {
+        let mut checked = 0;
+        for block in [super::RULES, super::SEMANTICS] {
+            for line in block.lines() {
+                let quoted: Vec<&str> = line.split('"').collect();
+                let candidates: Vec<&str> = if quoted.len() > 1 {
+                    // Odd indices are the spans inside quotes.
+                    quoted.iter().skip(1).step_by(2).copied().collect()
+                } else {
+                    vec![line.trim()]
+                };
+                for cand in candidates {
+                    let text = cand.trim();
+                    if !text.ends_with(").") || !text.contains('(') {
+                        continue;
+                    }
+                    assert!(
+                        crate::gates::validate(text).is_ok(),
+                        "the shipped prompt teaches KR that our own gates reject: \
+                         {text:?} — {:?}",
+                        crate::gates::validate(text).err()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked >= 6,
+            "prose KR extraction found only {checked} statement(s) — the shapes \
+             moved and this guard is checking (almost) nothing"
+        );
+    }
+
     /// The grounding actually shipped: the assembled prompt embeds the exact pest
     /// grammar and a dictionary block generated from the committed corpus (one
-    /// build mode — always the full ~1,342-entry table).
+    /// build mode — always the whole four-figure table).
     #[test]
     fn assembled_prompt_is_grounded() {
         let prompt = system_prompt();
@@ -181,7 +237,7 @@ mod tests {
         let entry_lines = prompt.lines().filter(|l| l.contains(") — ")).count();
         assert!(
             entry_lines >= 1300,
-            "dictionary block too small: {entry_lines} entry lines (the committed corpus is ~1,342)"
+            "dictionary block too small: {entry_lines} entry lines (the committed corpus is four-figure)"
         );
     }
 }

@@ -155,7 +155,7 @@ Determiner phrases appear **in argument position** (`animal(every dog).`) or as 
 **binder block** when the matrix is compound or the variable must be named:
 
 ```nibli-kr
-every dog $d: animal($d) & barks($d).      # ro lo gerku cu … (one rule, shared binder)
+every dog $d: animal($d) & runs($d).       # ro lo gerku cu … (one rule, shared binder)
 some dog $d: big($d) & goes($d).           # shared existential witness across conjuncts
 exactly 2 dog $d: big($d) & goes($d).      # one Count over the shared binder
 every the dog $d: goes($d).                # rule over the opaque definite domain
@@ -195,9 +195,14 @@ a place selector, and relative clauses:
 
 ## 5. Predications
 
-```nibli-kr
+Shape (`pred` here is a METAVARIABLE — notation, not a keyword):
+
+```text
 pred(term, term, …)                    # positional: fills x1..xN in order
 pred(label: term, …)                   # named: label from the place_labels map, or raw x1..x5
+```
+
+```nibli-kr
 goes(me, destination: some market).    # mixed: positionals first, then named
 rain().                                # observative — all places Unspecified
 ```
@@ -562,7 +567,7 @@ camxes gate when the shared fragment stopped being useful — both retired at TH
 In v2, predicate identity no longer routes through gismu at all. A KB (or an imported
 prelude) **declares its vocabulary**:
 
-```nibli-kr
+```text
 pred goes(goer, destination, origin, route, means).
 pred inhibits(inhibitor, inhibited): "blocks the metabolism of".
 pred obligated_by(who, duty).
@@ -669,7 +674,7 @@ Verification:
 
 ### 14.6 The GDPR erasure rule, clean-core
 
-```nibli-kr
+```text
 pred person(who).
 pred consents(who).
 pred obligated_by(who, duty).
