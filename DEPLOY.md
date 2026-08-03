@@ -10,9 +10,9 @@ There are two distinct deployables (don't conflate them):
 |-----|-------|-----------|
 | `dhilipsiva.dev/nibli-playground` | `nibli-ui` (Dioxus app) | The Transparency Triad playground (nibli KR-first), incl. the **Formalize** feature (`nibli-formalize`) |
 | `dhilipsiva.dev/nibli` | `nibli-wasm` (wasm-bindgen lib) | The live demo embedded on the site (KR-only since THE DROP — its Lojban-era JS/KB breaks until the site-repo migration lands; `set_language` remains a no-op shim) |
-| `dhilipsiva.dev/docs/nibli/` | mdBook (`mdbook/` in this repo) | Code-derived human docs (default `just docs`, `site-url=/docs/nibli/`). **Site-repo must copy the build** — see §4. Not the Orange AVA book. |
+| `dhilipsiva.dev/docs/nibli/` | mdBook (`mdbook/` in this repo) | Code-derived human docs (default `just docs`, `site-url=/docs/nibli/`). **Site-repo must copy the build** — see §2b. Not the Orange AVA book. |
 | (component ABI) | `nibli-pipeline` WIT | Package **`nibli:engine@0.7.0`** exports `engine` + **`authorizer`** (builtin auth; native twin is `nibli-auth`) |
-| `dhilipsiva.github.io/nibli/` | same mdBook | **Live mirror** via [`.github/workflows/docs-pages.yml`](.github/workflows/docs-pages.yml) (`just docs site_url=/nibli/`) |
+| `dhilipsiva.github.io/nibli/` | same mdBook | **Live mirror** via [`.github/workflows/docs-pages.yml`](.github/workflows/docs-pages.yml) (`just docs /nibli/`) |
 
 ## 1. Ship the frontend (the playground + Formalize)
 
@@ -31,7 +31,7 @@ Formalize feature needs is baked into the `nibli-ui` bundle at build time:
 - **No dictionary fetch is needed** (since the committed-corpus milestone,
   2026-07-17): the full vocabulary is COMMITTED Rust source
   (`nibli-lexicon/src/corpus/`), so every build — local, CI, site — carries the
-  identical ~1,342-entry corpus with zero network. The site repo's
+  identical committed corpus (1,300+ entries) with zero network. The site repo's
   `scripts/build_nibli.sh` still carries a now-OBSOLETE `dictionary-en.json`
   fetch step from the dual-mode era; it is harmless (nothing reads the file at
   build time) but should be removed on the next site-repo touch.

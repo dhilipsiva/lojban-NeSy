@@ -1,6 +1,15 @@
 # Introduction
 
+[![Release](https://img.shields.io/github/v/release/dhilipsiva/nibli)](https://github.com/dhilipsiva/nibli/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/nibli-engine)](https://crates.io/crates/nibli-engine)
+[![Docs](https://img.shields.io/badge/docs-dhilipsiva.github.io%2Fnibli-blue)](https://dhilipsiva.github.io/nibli/)
+
 This site is the **code-derived** documentation for [Nibli](https://github.com/dhilipsiva/nibli): a zero-hallucination symbolic reasoning engine with a human-readable knowledge-representation surface (**nibli KR**).
+
+> **These pages track `main`**, not a released tag — they are rebuilt on every
+> push that touches `mdbook/`. The badges above show the latest release and the
+> current published crate version; where the two could differ, the repository is
+> authoritative. Released API docs are versioned on [docs.rs](https://docs.rs/nibli-engine).
 
 It is **not** the Orange AVA book manuscript. Book rights are reserved by the publisher. Nothing here is copied from that manuscript. Claims should re-derive from the repository: source code, tests, `just` recipes, shipped corpora (`.nibli` files), and the root engine specifications.
 
@@ -10,9 +19,9 @@ It is **not** the Orange AVA book manuscript. Book rights are reserved by the pu
 |---------|----------------|
 | **Interactive playground** | [dhilipsiva.dev/nibli-playground](https://dhilipsiva.dev/nibli-playground/) |
 | **Docs (GitHub Pages mirror)** | [dhilipsiva.github.io/nibli](https://dhilipsiva.github.io/nibli/) |
-| **Docs (primary, when site ships)** | [dhilipsiva.dev/docs/nibli/](https://dhilipsiva.dev/docs/nibli/) |
+| **Docs (site integration, planned)** | `dhilipsiva.dev/docs/nibli/` — pending the site-repo copy ([`DEPLOY.md`](https://github.com/dhilipsiva/nibli/blob/main/DEPLOY.md) §2b) |
 | **Local build** | `just docs` / `just docs-serve` (inside `nix develop`) |
-| **Rust API** | `cargo doc -p <crate> --open` (docs.rs when crates are published) |
+| **Rust API** | [docs.rs/nibli-engine](https://docs.rs/nibli-engine) — every published crate is indexed in the [API index](api-index.md); locally `cargo doc -p <crate> --open` |
 
 Primary host path is `/docs/nibli/`; the GitHub Pages project site uses base path `/nibli/`. CI builds the mirror with `site-url=/nibli/`. Prefer relative links inside chapters so both bases work.
 

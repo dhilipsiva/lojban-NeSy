@@ -14,11 +14,11 @@ Normative and operational specs live at the **repository root** (and in-tree sou
 | Docs roadmap | [`DOCS_TODO.md`](https://github.com/dhilipsiva/nibli/blob/main/DOCS_TODO.md) | This site’s build-out tracker |
 | Lexicon | `nibli-lexicon/src/corpus/` | Committed English predicate corpus |
 | Authorization | [`nibli-auth`](https://github.com/dhilipsiva/nibli/tree/main/nibli-auth), policy `auth-0.1.0.nibli` | Builtin auth; guide: [Authorization](user/authorization.md) |
-| WIT package | `nibli:engine@0.6.0` | Exports `engine` + `authorizer` (`object` = resource id) |
+| WIT package | `nibli:engine@0.7.0` | Exports `engine` + `authorizer` (`object` = resource id) |
 
 ## API documentation
 
-Rust crate APIs: `cargo doc -p <crate> --open` (for example `nibli-types`, `nibli-kr`, `nibli-reason`). **docs.rs** will host the same rustdoc when crates are published to crates.io — that is separate from this mdBook site.
+Rust crate APIs are on **docs.rs** — every published crate is listed with its versioned link in the [API index](api-index.md), starting from [docs.rs/nibli-engine](https://docs.rs/nibli-engine). From a checkout, `cargo doc -p <crate> --open` builds the same rustdoc locally. That is separate from this mdBook site, which carries the conceptual docs only.
 
 ## Hosting note
 

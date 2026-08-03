@@ -113,8 +113,9 @@ does **not** link `nibli-pipeline` as a crate — it loads the built
 Roles are taken from each crate's own top-of-file doc comment. **Tier** is the
 crates.io publishing decision of record
 ([DOCS_TODO.md](https://github.com/dhilipsiva/nibli/blob/main/DOCS_TODO.md)):
-Tier A publishes in dependency order; Tier Z ships via GitHub Release / site /
-repo only.
+Tier A is published to crates.io, in dependency order — see the
+[API index](../api-index.md) for the live docs.rs links; Tier Z ships via
+GitHub Release / site / repo only.
 
 | Crate | Kind | Role | Tier |
 |-------|------|------|------|

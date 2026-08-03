@@ -448,7 +448,7 @@ test-all: test test-engine test-store test-backend
 
 # CI gate for the hardened runtime surface (fast; native only — no WASM build).
 # For the WASM behavioral smokes too, run `just ci-all`.
-ci: fmt-check release-check clippy-runtime test test-engine test-host test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-book-vocab
+ci: fmt-check release-check clippy-runtime test test-engine test-host test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-grammar-parity verify-doc-fences verify-book-vocab
 
 # WASM behavioral gate (pre-push, NOT part of `ci` — needs the WASM build, like
 # verify-book-capture). Bundles the gasnu smokes; each depends on
@@ -561,7 +561,7 @@ verify-soundness:
 # for EVERY shipped alias: a plain alias must compile canonically EQUAL to itself
 # under explicit xN labels (named = positional routing); a converted alias must
 # equal its CANONICAL BASE alias under the permuted labels. ONE mode since the
-# committed-corpus milestone: every build checks the full ~1,342-entry committed
+# committed-corpus milestone: every build checks the full committed
 # corpus (the shipped-artifact re-assertion of the const-eval validation).
 verify-alias-map:
     cargo test -p nibli-verify --test alias_differential {{cargo_profile_flag}} -- --nocapture --test-threads=1
@@ -596,6 +596,32 @@ verify-nibli-kr-seam:
 # words) through the provenance bridge; lujvo lemmas are structurally unmapped.
 verify-dict:
     cargo test -p nibli-verify --test predilex_differential {{cargo_profile_flag}} -- --nocapture --test-threads=1
+
+# Shipped-artifact parity: grammars/nibli.tmLanguage.json's keyword alternation
+# must equal nibli_lexicon::RESERVED_WORDS. grammars/README.md has always said so
+# in prose; nothing enforced it — no recipe, no CI job, no test referenced
+# grammars/ at all. The pest twin is already pinned inside nibli-kr; this closes
+# the third mirror. Also asserts the \b anchors survive (unanchored, an editor
+# paints the `we` inside `wealth`) and that the order matches, so the two files
+# diff side by side.
+verify-grammar-parity:
+    cargo test -p nibli-verify --test grammar_parity {{cargo_profile_flag}} -- --nocapture
+
+# mdBook doc-fence gate: every statement inside a ```nibli-kr fence under
+# mdbook/src/**.md must compile through the shipped front-end (the same
+# NibliEngine::assert_text path as the REPL's `:load` and nibli-validate), one
+# statement per line, checked as a per-fence knowledge base.
+#
+# Deliberately NOT in the `docs` CI job: that job is Nix + `mdbook build` with no
+# Rust toolchain (~2 min), and DOCS_TODO's deferral protects that lightness.
+# `ci` already compiles the workspace, so this rides here for free.
+#
+# SCOPE: mdbook/src only. The root specs are OUT by design — NIBLI_KR.md's
+# ```nibli-kr fences carry metasyntax (`pred(term, term, …)`), `pred`
+# declarations that are not statements, and historical Lojban glosses. It is a
+# SPEC, not a tutorial; linting it would be red on purpose.
+verify-doc-fences:
+    cargo test -p nibli-verify --test doc_fences {{cargo_profile_flag}} -- --nocapture
 
 # Mechanized-proof gate (Track B): check the Lean 4 soundness proofs in `proofs/`. The Nix
 # dev shell provides `lean`; `lean` exits non-zero on any unproved/false theorem. Skips

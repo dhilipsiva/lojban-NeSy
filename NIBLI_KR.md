@@ -30,18 +30,18 @@ checking.
 
 nibli KR is a one-page predicate-call language: every claim is `pred(args)`, every KB is a
 list of period-terminated claims. It compiles to the **same AstBuffer** the Lojban parser
-produces and reuses nibli-semantics/logji unchanged, so verdicts, proofs, the Vampire/clingo
+produces and reuses nibli-semantics/nibli-reason unchanged, so verdicts, proofs, the Vampire/clingo
 differential gates, and the Lean soundness proofs all apply as-is.
 
 ```nibli-kr
 # Lojban: mi klama le zarci
-goes(me, to: the market).
+goes(me, destination: the market).
 
 # Lojban: ro lo prenu poi na zanru cu se bilga lo nu se vimcu   (GDPR erasure)
-obligated_by(every person where ~consents, duty: event { removed() }).
+obligated_by(every person where ~approves, event { removes() }).
 
 # Lojban: ro da zo'u ganai ge da ckape gi la .adam. cu pilno da gi da kajde
-all $x: at_risk($x) & takes(Adam, $x) -> alert($x).
+all $x: dangerous($x) & uses(Adam, $x) -> warns($x).
 ```
 
 ---
@@ -55,8 +55,9 @@ all $x: at_risk($x) & takes(Adam, $x) -> alert($x).
 > v0.1 program — no hard freeze: the two §14 items that touch nibli-reason (the
 > existential-import presupposition-witness flag and the compute-set rename) remain
 > live v2 options; `every` mints existential-import witnesses identically to Lojban's
-> xorlo rule (disclosed in §4). LLM-generability is a tracked side goal, measured via the fanva
-> retarget's silent-mistranslation metric.
+> xorlo rule (disclosed in §4). LLM-generability is a tracked side goal; the silent-mistranslation
+> metric it was to be measured by has no harness in this repo (the fanva tooling was
+> donated out at THE DROP).
 
 1. **Total coverage.** Every construct in the implemented Lojban fragment has a surface
    form or an explicit out-of-scope entry (§10). Nothing is silently dropped.
@@ -72,7 +73,7 @@ all $x: at_risk($x) & takes(Adam, $x) -> alert($x).
 4. **Fail closed, preferably at the grammar.** Wherever Lojban's compiler rejects
    something semantically, nibli KR tries to make it *unwritable* instead (n-ary `=`,
    connected sumti inside linked args, ambiguous `ke'a`). Unknown predicate names are a
-   compile error (stricter than gerna's arity-2 default — a deliberate tightening).
+   compile error (stricter than the retired Lojban parser's arity-2 default — a deliberate tightening).
 5. **One operator set.** Lojban's four connective levels (selbri `je`, sumti `.e`,
    bridi-tail `gi'e`, sentence `.ije`/`ganai gi`) all compile to the same And/Or/Not
    shapes, so nibli KR has exactly one claim-level operator set and you write the expansion.
@@ -120,7 +121,7 @@ The token-level behavior (however implemented) is:
 | `"any text"` | `zo` / `zoi` quotes | `Constant(exact string)` |
 | `it` | `ke'a` | the relativized entity — **only** inside `where`/`also` bodies (§7) |
 | `slot` | `ce'u` | the open place — **only** inside `property { }` (fail-closed elsewhere: "`slot` outside a `property { }` abstraction has no binder") |
-| `the market` | `le zarci` | `Description("zarci")` — **opaque rigid designator, NO quantifier** |
+| `the market` | `le zarci` | `Description("market")` — **opaque rigid designator, NO quantifier** |
 | determiner phrases | `lo` / `ro lo` / … | §4 |
 | `event { … }` etc. | `lo nu …` | §5 |
 
@@ -136,7 +137,7 @@ their spellings are deliberately non-interchangeable:**
 | nibli KR | Lojban | Compiled shape |
 |---|---|---|
 | `some dog` | `lo gerku` (= `su'o lo`) | `Exists(v, And(restrictor, matrix))` — veridical ∃, existential-import witness handling applies |
-| `the dog` | `le gerku` | `Description("gerku")` — a *constant-like term*, no quantifier. **Trap for English speakers** — see lint L1, §12 |
+| `the dog` | `le gerku` | `Description("dog")` — a *constant-like term*, no quantifier. **Trap for English speakers** — see lint L1, §12 |
 | `every dog` | `ro lo gerku` | `ForAll(v, Or(Not(restrictor), matrix))` — **the rule shape** (becomes a `UniversalRuleRecord` at assert) |
 | `every the dog` | `ro le gerku` | ∀ over the opaque `the_domain_dog` restrictor |
 | `exactly 2 dog` | `re lo gerku` | `Count{v, 2, And(restrictor, matrix)}` — entity-level counting (du-classes collapsed, existential-import witnesses excluded) |
@@ -266,7 +267,7 @@ Precedence, tightest first: `~` · deontic/tense prefixes · `&` · `|` · `^` �
 `past` / `now` / `future` (`pu/ca/ba` wrappers) and `must` / `may`
 (`.ei`→Obligatory / `.e'e`→Permitted — the v0.1 surface's mapping, preserved as
 history; in standard Lojban permission is `.e'a` and `.e'e` is competence, per
-CLL ch. 13 — the deviation belongs to that front end, not to Lojban). Nesting is pinned to smuni's verified emission
+CLL ch. 13 — the deviation belongs to that front end, not to Lojban). Nesting is pinned to nibli-semantics's verified emission
 order (`nibli-semantics/src/semantic/compile.rs:358-383`): deontic outermost, then tense, then
 negation innermost — `must past ~P` compiles to `Obligatory(Past(Not(P)))`. This
 resolves former open issue O3; the §15 `Modified <- Deontic? Tense? Atom` order stands.
@@ -274,7 +275,7 @@ Consequences the grammar enforces fail-closed (2026-07-12 design-review errata):
 
 - `past ~P` is legal (`Past(Not(P))`); **`~past P` is rejected** — `Not(Past(P))` has
   no encoding in the compat profile (the flat AST's only negation carriers are
-  bridi-level flags, and smuni's wrapper order is fixed). No fused negated forms
+  bridi-level flags, and nibli-semantics's wrapper order is fixed). No fused negated forms
   (`punai` etc. stay nonexistent).
 - Prefixes attach to Predication/Equality atoms only — `past (A & B)` is rejected
   (`Sentence::Connected` carries no tense/deontic fields).
@@ -296,10 +297,10 @@ all $x: dog($x) -> animal($x).        # ro da zo'u ganai da gerku gi da danlu
 `all $x, $y: …` nests ForAlls. Prenex is universal-only, like `ro da zo'u` (there is no
 existential prenex — a bare `$x` in a body *is* the existential form). Unbound `$x` is
 existentially closed at its **first surface position** (leftmost binder outermost); all
-occurrences of one `$name` in a statement co-refer. Lowering note: smuni currently
+occurrences of one `$name` in a statement co-refer. Lowering note: nibli-semantics currently
 offers three bare variables per scope (`da/de/di`); the compiler maps the first three
 distinct names onto them and **rejects a fourth with a clear error** (never silently
-merges) until the smuni cap is lifted.
+merges) until the nibli-semantics cap is lifted.
 
 **Integrity constraints** need no keyword, matching the engine: a disjunctive universal
 conclusion registers the constraint —
@@ -438,9 +439,9 @@ never invoke the linter.
 ## 13. Implementation notes
 
 **Pipeline:** nibli KR text → lexer → recursive-descent/PEG parser → **synthesize
-`nibli_types::ast::AstBuffer`** → `nibli_semantics::compile_from_gerna_ast` → logji. smuni's
+`nibli_types::ast::AstBuffer`** → `nibli_semantics::compile_from_ast` → nibli-reason. nibli-semantics's
 `validate_ast_buffer` already treats hand-built buffers as a designed-for path
-(fail-closed structural validation). gerna is simply not in this pipeline; smuni, logji,
+(fail-closed structural validation). the retired Lojban parser is simply not in this pipeline; nibli-semantics, nibli-reason,
 the stores, rendering, and every soundness gate are untouched.
 
 **The alias map** (new, generated at build time alongside `nibli-lexicon`):
@@ -455,7 +456,7 @@ the stores, rendering, and every soundness gate are untouched.
   heuristic → positional `x1..x5` fallback.
 - Gismu do NOT resolve (since the committed-corpus milestone): the English corpus
   name is the only spelling; the source gismu is provenance metadata.
-- **Unknown names are a compile error** (no arity-2 default) — stricter than gerna, and
+- **Unknown names are a compile error** (no arity-2 default) — stricter than the retired Lojban parser, and
   the right polarity for a zero-hallucination system.
 
 **Verification obligations** (the new-front-end analogs of the existing gates — ALL
@@ -466,14 +467,14 @@ BUILT and gated in `ci` as of 2026-07-12):
    var-rename). **Built: `just verify-nibli-kr-seam`** (the CONSTRUCT_INVENTORY sweep,
    `nibli-verify/src/nibli_kr_battery.rs` + `tests/nibli_kr_seam_gate.rs`).
 2. An **alias-map differential gate** (verify-dict style): alias → gismu →
-   place-permutation round-trips checked against the smuni dictionary; the alias map is
+   place-permutation round-trips checked against the nibli-lexicon corpus; the alias map is
    new trusted base and L4's echo does not replace a CI gate. **Built:
-   `just verify-nibli-kr-dict`** (`tests/alias_differential.rs` — arity equality,
+   `just verify-alias-map`** (`tests/alias_differential.rs` — arity equality,
    round-trips, swap/label integrity, plus a per-alias behavioral compile-equality
    battery).
 3. A **nibli KR↔Lojban translation battery**: mechanically translate the shipped corpora
    and seeded random sentences both ways; compiled `LogicBuffer`s must be equal (up to
-   variable renaming). This is *stronger* than the camxes parse-differential (which
+   variable renaming). This was *stronger* than the retired camxes parse-differential (which
    checks acceptance only) and replaces it for this front-end. **Built: the render
    battery inside `just verify-nibli-kr-seam`** plus the corpus determinism leg
    (`tests/nibli_kr_seam_gate.rs` — per-line canonicalized-buffer equality + the
@@ -494,10 +495,10 @@ hyphen-vs-`->` lexing wrinkle.
 
 **Open issues:**
 - **O1**: 3-variable lowering cap (§6) — surface promises more than the seam delivers;
-  lifting it is a smuni change (widen the bare-variable set), not a syntax change.
-- **O2**: whole-rule tense (`past animal(every dog)`) parses and fails at logji assert,
+  lifting it is a nibli-semantics change (widen the bare-variable set), not a syntax change.
+- **O2**: whole-rule tense (`past animal(every dog)`) parses and fails at nibli-reason assert,
   same as Lojban; static rejection would duplicate an engine check.
-- **O3 (RESOLVED 2026-07-12)**: smuni's wrapper emission is
+- **O3 (RESOLVED 2026-07-12)**: nibli-semantics's wrapper emission is
   `Attitudinal(Tense(Not(matrix)))` (`nibli-semantics/src/semantic/compile.rs:358-383`), so
   `must past P` → `Obligatory(Past(P))` — the §15 `Modified` order stands. To be pinned
   by a nibli-kr seam-gate golden. The same review produced the §6 reject errata
@@ -508,9 +509,9 @@ hyphen-vs-`->` lexing wrinkle.
   inert opaque constants — candidates for a v2 minimalism cull.
 - **O6**: correlated multi-witness find (§8) — needs engine support first.
 - **O7**: block determiners (`every dog $d: …`) must emit via `Prenex + GanaiGi`/`GeGi`
-  — gerna rejects description/quantified `gi'e` heads, so the block-`every` form may
+  — the Lojban parser rejected description/quantified `gi'e` heads, so the block-`every` form may
   compile to the *prenex* LogicBuffer shape rather than the restrictor-implication rule
-  shape. Whether the two coincide after smuni (incl. `UniversalRuleRecord` registration
+  shape. Whether the two coincide after nibli-semantics (incl. `UniversalRuleRecord` registration
   at assert time) must be pinned by a seam-gate golden before the grammar freezes; if
   they differ, §6's block-form framing needs an erratum. *Update (2026-07-12, gate
   landed):* the shape IS the prenex shape, CI-pinned by `verify-nibli-kr`'s O7 golden.
@@ -536,14 +537,14 @@ hyphen-vs-`->` lexing wrinkle.
 ## 14. Clean-core v2 profile (de-Lojbanized)
 
 Everything above this section is the **v0.1 compat profile**: it mirrors the implemented
-Lojban semantics one-to-one, so nibli KR and gerna compile to *identical* buffers and the
-nibli KR↔Lojban translation battery (§13) can hold while both front-ends live. This section
+Lojban semantics one-to-one, so nibli KR and the Lojban front-end compiled to *identical* buffers, and the
+nibli KR↔Lojban translation battery (§13) could hold while both front-ends lived (both retired at THE DROP). This section
 specifies the **clean-core v2 profile** — the target for replacing Lojban outright. Same
 language skeleton; the Lojban-*inherited* semantic decisions are re-decided on their own
 merits. v2 is a spec target, not implemented; each item names its engine change and
 verification impact. Migration rule: ship v0.1 first (the verified bridge), then land v2
-decisions **one at a time**, each with its GUARANTEES/gate re-pin, retiring gerna and the
-camxes gate when the shared fragment stops being useful.
+decisions **one at a time**, each with its GUARANTEES/gate re-pin, retiring the Lojban front-end and the
+camxes gate when the shared fragment stopped being useful — both retired at THE DROP.
 
 ### 14.1 Schema declarations replace the dictionary (the deepest cut)
 
@@ -595,7 +596,7 @@ pred obligated_by(who, duty).
 | tanru juxtaposition + `[ ]` grouping | non-intersective modification | **Removed.** Declare compound predicates (`pred health_data(record)`); lint L2 obsolete. |
 | `a+b` compounds (`zei`) | morphological compounding | **Removed** — same replacement. |
 | pronoun keywords (`me you we we_all we_others you_all this that yonder it_a..it_u`) | cmavo pro-sumti → opaque constants | **Removed.** A file-based KB has no speaker; use named constants (a REPL may offer session macros). `it` and `slot` stay — they are structural binders, not pronouns. |
-| xorlo presupposition witnesses | `lo`'s existential-import semantics, minted in logji | **Removed from semantics.** `some` = plain ∃. The one Lojban decision that reached the reasoner core. |
+| xorlo presupposition witnesses | `lo`'s existential-import semantics, minted in nibli-reason | **Removed from semantics.** `some` = plain ∃. The one Lojban decision that reached the reasoner core. |
 | `amount { }` / `concept { }` (`ni`/`si'o`) | five-way NU split | **Removed.** `event`/`fact`/`property` remain. |
 | da/de/di 3-variable lowering cap | cmavo inventory | **Lifted** — arbitrary distinct `$vars` per scope (resolves O1). |
 | builtin BAI tag names (`cause entails motive reason tool instead_of`) | BAI→gismu table | **Demoted** to a standard-library schema prelude; the `via` mechanism itself is unchanged. |
@@ -646,9 +647,9 @@ Engine (each contained, land one at a time):
 Verification:
 
 - The nibli KR **seam-conformance gate** (§13, obligation 1) re-pins to v2 shapes as each
-  decision lands — it is the shape authority for this front-end, as `seam.rs` is for gerna.
+  decision lands — it is the shape authority for this front-end, as `seam.rs` was for the Lojban front-end.
 - The **translation battery** (§13, obligation 3) only covers the shared-semantics fragment; every
-  v2 decision shrinks it. Expected. Retire gerna + the camxes differential when the
+  v2 decision shrinks it. Expected. Retiring the Lojban front-end + the camxes differential happened at THE DROP; historically this said: when the
   shared fragment stops paying for itself.
 - **Vampire/clingo differential gates: unaffected** — they consume the IR, below the
   front-end. Point the random-program generators at schema-declared vocabulary.
@@ -674,7 +675,7 @@ pred consents(who).
 pred obligated_by(who, duty).
 pred removed(what).
 
-obligated_by(every person where ~consents, duty: event { removed() }).
+obligated_by(every person where ~approves, event { removes() }).
 ```
 
 Identical logic to the v0.1/Lojban form — but the argument order is the declared one

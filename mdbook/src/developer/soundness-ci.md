@@ -10,7 +10,7 @@ truth for recipe contents.
 
 | Recipe | What it is |
 |--------|------------|
-| `just ci` | The fast native gate (no WASM build): `fmt-check`, `clippy-runtime`, the unit sweep (`test`), `test-engine`, `test-host`, `test-ui`, `test-formalize`, `test-backend`, `test-store`, `test-persistence-replay`, `verify-harness`, and the six `verify-*` gates below (plus `verify-book-vocab`, which self-skips when the private `book/` checkout is absent) |
+| `just ci` | The fast native gate (no WASM build): `fmt-check`, `release-check`, `clippy-runtime`, the unit sweep (`test`), `test-engine`, `test-host`, `test-ui`, `test-formalize`, `test-backend`, `test-store`, `test-persistence-replay`, and every `verify-*` gate in the table below — including `verify-proofs` (plus `verify-book-vocab`, which self-skips when the private `book/` checkout is absent) |
 | `just ci-wasm` | The WASM behavioral gate: builds the component + host once, then runs 15 `smoke-host-*` scripts (trap recovery, persist-replay, statement split, schema-v3 migration, NAF note, CWA-false note, `:debug`, proof collapse, backend-unavailable, quiet, strict, existential-import, materialize, determinism, script) plus `verify-wasm-node` |
 | `just ci-all` | `ci` + `ci-wasm` — the comprehensive pre-push gate |
 
@@ -33,6 +33,8 @@ supporting native gates that ride the same `ci` umbrella.
 | `just verify-dict` | Corpus arities must cover independent **Predilex** lower bounds (vendored, SHA-pinned), keyed through the gismu provenance bridge | 132 words checked, floor 120; arity-only scope |
 | `just verify-pins` | KB-level behavioural pins (`pins/*.nibli`) run by the native `nibli-pin` runner | Distinct exit codes: 1 = pinned property regressed, 2 = harness broken, 3 = a pinned defect no longer reproduces |
 | `just verify-harness` | The known-failures control tests (the FOL control must pass; the red backlog stays opt-in) | |
+| `just verify-doc-fences` | Every statement in a ` ```nibli-kr ` fence under `mdbook/src/` must compile through `NibliEngine::assert_text` — the same path as the REPL's `:load` | Lives here, not in the `docs` CI job, which has no Rust toolchain and stays a ~2-minute `mdbook build`. Scope is the tutorial docs only: the root specs carry metasyntax and historical examples that are red by design |
+| `just verify-grammar-parity` | `grammars/nibli.tmLanguage.json`'s keyword alternation must equal `nibli_lexicon::RESERVED_WORDS` — set, order, and the `\b` anchors | The shipped TextMate grammar is a third mirror of the keyword list; the pest twin was already pinned inside nibli-kr, this closes the last one |
 
 **Determinism** is a three-way gate: the same pinned corpus
 (`determinism-corpus.nibli`) must produce identical verdicts on the native

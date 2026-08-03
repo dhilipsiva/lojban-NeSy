@@ -28,8 +28,9 @@ How to read a query result (product README wording):
 | **TRUE** | A proof exists from your premises (facts + rules + trusted backend results). |
 | **FALSE** | *Not derivable* from those premises. This is **not** a proof of ¬P. |
 | **UNKNOWN** | The search could not decide (e.g. a cycle, incomplete knowledge, or negation over an undecided sub-goal). |
+| **RESOURCE_EXCEEDED** | A budget ran out before the search finished — `depth`, `fuel`, or `memory`. Not a verdict about the claim: raise the budget and re-run. |
 
-Hosts may also surface **resource** limits (fuel / memory / depth) as a separate non-answer when the budget is hit — see host/`NIBLI_*` env and [GUARANTEES.md](https://github.com/dhilipsiva/nibli/blob/main/GUARANTEES.md).
+All four are `QueryResult` variants in the engine itself, not host conventions — `RESOURCE_EXCEEDED` carries which limit was hit. Raise them with the `NIBLI_FUEL` / `NIBLI_MEMORY_MB` env vars or the `:fuel` / `:memory` REPL commands; see [GUARANTEES.md](https://github.com/dhilipsiva/nibli/blob/main/GUARANTEES.md).
 
 ## Trusted compute backend
 

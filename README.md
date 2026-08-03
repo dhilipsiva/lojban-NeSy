@@ -31,7 +31,7 @@ The guarantee is **soundness relative to what you asserted**, not omniscience �
 
 ## The nibli KR Language
 
-nibli KR is a strict predicate-call surface for first-order claims: intuitive to read, but every semantic distinction stays visible in the spelling (the anti-silent-mistranslation design rule). One statement per line, ending with a period. Unknown predicate words are a **compile error**, never a guess — names resolve through the committed English corpus (~1,342 strongly-typed predicate entries, every place named), fail-closed; `a+b` compounds resolve only via committed compound entries.
+nibli KR is a strict predicate-call surface for first-order claims: intuitive to read, but every semantic distinction stays visible in the spelling (the anti-silent-mistranslation design rule). One statement per line, ending with a period. Unknown predicate words are a **compile error**, never a guess — names resolve through the committed English corpus (a four-figure set of strongly-typed predicate entries, every place named), fail-closed; `a+b` compounds resolve only via committed compound entries.
 
 | nibli KR | Reads as |
 |-------|----------|
@@ -99,7 +99,7 @@ building alternative front-ends or consumers against it).
 
 **Supporting surfaces:**
 
-- **`nibli-engine`** — Shared native embedding library. Not a user-facing runtime.
+- **`nibli-engine`** — The native embedding library, published on crates.io: a library to build on rather than a runtime to launch ([Install](#install)).
 - **`nibli-wasm`** — wasm-bindgen wrapper exposing the in-browser pipeline (powers the live demo at dhilipsiva.dev/nibli).
 - **`nibli`** — Native direct-crate REPL and `nibli-validate`. Developer tooling, not the canonical production path.
 

@@ -53,7 +53,8 @@ tag vX.Y.Z ──▶ GitHub Release (+ optional .wasm / host bins)
 | **Docs Phase 4** | API index → docs.rs (2026-08-03): `mdbook/src/api-index.md` rows link versioned docs.rs URLs for all 13 published crates + the `cargo add nibli-engine` embed snippet; conceptual docs stay on primary/mirror only (restated on the page) |
 | **Release R3** | Automation (2026-08-03): `.github/workflows/release.yml` — tag `v[0-9]+.[0-9]+.[0-9]+*` (NOT `v*`, which matches the archival `v0.1-lojban-final`) → cargo-free preflight → gates (`gate` **calls ci.yml** via `workflow_call`, so the release gate IS the CI gate and cannot drift) ∥ wasm ∥ 3-platform binary matrix (x86_64-linux / aarch64-linux / aarch64-darwin, native runners) → **DRAFT** Release + SHA256SUMS → crates.io → undraft. Irreversible-last, draft-until-published, `permissions: {}` on the publish job (registry token and repo-write never share a job), Determinate actions SHA-pinned there, `cancel-in-progress: false`. `workflow_dispatch` is **forced** to a dry run (no approval gate ⇒ no mis-clickable publish) and still verify-builds every crate tarball. New `devShells.release` (rustToolchain + just + python3) — the default shell's vampire/clingo/lean4/dioxus risk source builds on aarch64-darwin and this workflow's Nix cache starts cold. Recipes: `release-prep` / `release-verify` / `release-notes` / `release-bins` / `release-dist` / `release-wasm` / `release-publish`; `release-check` joined `ci` and gained the `version.workspace = true`, pyproject-`dynamic`, `fuzz` `0.0.0` and `bench-bins`-not-default legs. Assets are now per-platform **tarballs** (upload-artifact drops the executable bit on raw binaries). [RELEASING.md](RELEASING.md) documents the reversibility table, yank policy, hotfix + merge-back, and partial-publish recovery |
 | **Release R0–R2** | **R0** packaging (lockstep `[workspace.package]` 0.1.0, `[workspace.dependencies]`, tier `publish` flags, per-crate descriptions + workspace readme, `CHANGELOG.md`, `just release-check` incl. the versionless-path-dep leg; internal dev-deps deliberately path-only — a `workspace = true` dev-dep is RETAINED at publish and would order-constrain it). **R1** (2026-08-03): tag `v0.1.0` + GitHub Release with `nibli-pipeline.wasm` / host / `nibli-validate` + SHA256SUMS; README badges (release / crates.io / docs). **R2** (2026-08-03): all 13 Tier A crates published to crates.io in dependency order (rate-limit-paced; 13× HTTP 200 verified). Bench bins are repo-only behind `bench-bins` (`required-features`) — they `include_str!` repo-root corpora no tarball can carry; `nibli-auth-py` wheel version is maturin-`dynamic` from Cargo.toml |
-| **Release policy** | This file’s decisions table + Tier A/Z; R3 (automation) still open below |
+| **Docs Phase 5** | Polish (2026-08-03): dynamic shields badges + a "these pages track `main`" note on the mdBook landing (**dynamic**, because docs-pages.yml does not fire on tags — a baked version string would be stale on arrival). **Two new gates, both in `ci`, neither in the `docs` job:** `verify-doc-fences` (every statement in a ` ```nibli-kr ` fence under `mdbook/src/` compiles through `NibliEngine::assert_text`; a Rust test in `nibli-verify`, so `assert!` is the gate — `nibli-validate` always exits 0 and is a reporter, not a gate; CommonMark-shaped fence scanner, per-fence cumulative KB, all failures collected, 20/5 coverage floors; scope is the tutorial docs only, the root specs carry metasyntax that is red by design) and `verify-grammar-parity` (`grammars/nibli.tmLanguage.json`'s keyword alternation vs `RESERVED_WORDS` — set, order, and the `\b` anchors; the pest twin was already pinned, this was the third and last unpinned mirror, and nothing in the repo referenced `grammars/` at all). The fence-lint deferral's actual constraint is honoured: the `docs` job is untouched and still Nix + `mdbook build` with no Rust toolchain. Plus a docs staleness sweep — ~24 defects across mdBook + root specs, each found by one agent and independently re-verified by another (GUARANTEES' §Equality Semantics was written entirely in the retired `du` spelling, which is now a compile error; a self-contradiction about clingo's utopia coverage; four stale WIT versions; two pages claiming the crates were unpublished; a nonexistent function and recipe cited in NIBLI_KR; all three of its opening examples failing to compile; LOGIC_IR's all-Lojban term-source table; a "four-valued" heading over a three-row table; drifted corpus counts; `just docs site_url=…`, which silently exports a broken base path) |
+| **Release policy** | This file’s decisions table + Tier A/Z; R0–R3 all landed |
 
 ---
 
@@ -63,16 +64,15 @@ tag vX.Y.Z ──▶ GitHub Release (+ optional .wasm / host bins)
 
 - Wire **`dhilipsiva.dev/docs/nibli/`** in `dhilipsiva/dhilipsiva.dev` on `nibli-updated`: checkout nibli → `just docs` → copy `mdbook/book/` → `public/docs/nibli/` (DEPLOY §2b). Do not claim primary live until HTTP 200.
 
-### Phase 5 — Polish
+### Still open
 
-- Version / release badge on mdBook landing (“docs for `main`” + latest `v*` when tags exist).
-- Optional KR fence lint (`nibli-validate`) — only if docs CI stays light.
-- Editor/LSP docs if root `TODO.md` editor track lands.
-
-### Deferred / optional
-
-- Fence lint in CI (deferred: keep docs job free of full cargo build).
-- mdBook search already default; no extra work unless broken under dual base paths.
+- **Editor/LSP docs** — blocked, precondition UNMET. Root `TODO.md`'s editor track has
+  design + seed artifacts only: `grammars/` holds a TextMate grammar and a
+  markdown-injection sketch that **no build, CI job, or test consumes**, and there is no
+  `editors/` dir, no `nibli-lsp` crate, no tree-sitter grammar, and no `tower-lsp`
+  anywhere (including `Cargo.lock`). Writing the docs now would present aspiration as
+  shipped. Revisit when `editors/vscode/` or `nibli-lsp` actually exists. (The keyword
+  half of that seed IS now pinned — see `verify-grammar-parity` in the Baseline row.)
 
 ---
 

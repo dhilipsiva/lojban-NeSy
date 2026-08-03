@@ -84,11 +84,11 @@ them, but the flattener expands `A ↔ B` to `(¬A ∨ B) ∧ (¬B ∨ A)` and `
 
 | Variant | Payload | Source |
 |---|---|---|
-| `Variable` | `String` | Bound/free variables (quantified vars, Skolem vars) |
-| `Constant` | `String` | Ground entities (from `la` names) |
-| `Description` | `String` | Opaque description reference (from `le`) |
-| `Unspecified` | — | `zo'e`, the unspecified-argument placeholder |
-| `Number` | `f64` | Numeric literal (`li` + digits) |
+| `Variable` | `String` | `$x`-sigiled logic variables (sigil preserved), the fresh vars minted by `some` / `every` / `exactly N`, `?` witnesses, `it` inside a `where` clause, `slot` inside a `property { }`, plus compiler-minted event/Skolem vars |
+| `Constant` | `String` | Capitalized names (`Adam` → `"adam"`), the closed pronoun set (`me`, `you`, `it_a`, …), and quoted string literals |
+| `Description` | `String` | The definite determiner `the <predicate>` only — payload is the English corpus predicate name (`the dog` → `Description("dog")`) |
+| `Unspecified` | — | The `_` placeholder, an omitted place (arity padding), or a bare `it` outside a relative clause |
+| `Number` | `f64` | A numeric literal (`2`, `2.5`); unsigned, and overflow is a parse error |
 
 All names in the flat IR are owned `String`s — the compiler's internal interner (`lasso::Spur`)
 never crosses the flatten boundary.
@@ -158,7 +158,7 @@ auto-asserted as a ground fact — the backend is a trusted axiom source, disclo
 Structurally, `NotNode` is plain ¬. The closed-world reading ("FALSE means *not derivable*, not
 *proved ¬P*"; negation-as-failure for stratified rules) is a **reasoner** property, not a buffer
 property — the verdict side carries it in `ProofTrace.naf_dependent` and `ProofTrace.cwa_false`.
-Note also that a universal's implication arrow flattens to the same `NotNode` as a genuine `na`,
+Note also that a universal's implication arrow flattens to the same `NotNode` as a genuine `~`,
 so "does this formula use real negation" is not decidable from the buffer alone (nibli-verify's
 fragment filter scans source tokens for exactly this reason). Scope details live in
 [GUARANTEES.md](GUARANTEES.md).

@@ -20,7 +20,7 @@ The **nibli KR pane is the knowledge base**. Each query rebuilds a fresh engine,
 
 **State a claim**, do not ask a question:
 
-```text
+```nibli-kr
 eats(Adam).
 ```
 
