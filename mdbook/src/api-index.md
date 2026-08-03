@@ -8,8 +8,8 @@ cargo add nibli-engine
 ```
 
 Every crate below is version `0.1.0` in workspace lockstep,
-`MIT OR Apache-2.0`, published in the dependency order the decisions table in
-[DOCS_TODO.md](https://github.com/dhilipsiva/nibli/blob/main/DOCS_TODO.md)
+`MIT OR Apache-2.0`, published in the dependency order the Tier A/Z decision
+table in [RELEASING.md](https://github.com/dhilipsiva/nibli/blob/main/RELEASING.md)
 locks. (docs.rs builds each crate shortly after publish — a page may briefly
 show “building” right after a release.) For local API docs from a checkout,
 `cargo doc -p <crate> --open` still works.

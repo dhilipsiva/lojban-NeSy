@@ -25,4 +25,4 @@
 
 **Query model:** state a claim to check for entailment (e.g. `dog(Adam).`), not an interrogative. The playground’s decorative `?` is not sent to the engine.
 
-The [developer guide](../developer/overview.md) covers the crate map, the IR, the WASM/host/compute path, the CI gates, and the WIT surface; published crate APIs are in the [API index](../api-index.md). Remaining docs work is tracked in [DOCS_TODO.md](https://github.com/dhilipsiva/nibli/blob/main/DOCS_TODO.md).
+The [developer guide](../developer/overview.md) covers the crate map, the IR, the WASM/host/compute path, the CI gates, and the WIT surface; published crate APIs are in the [API index](../api-index.md). Remaining docs work is tracked in [TODO.md](https://github.com/dhilipsiva/nibli/blob/main/TODO.md).

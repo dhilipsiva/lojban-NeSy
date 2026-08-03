@@ -5,8 +5,10 @@ delete it when it lands rather than marking it done, and put the record in the c
 Every entry was re-verified against the tree on 2026-08-01; where a claim cites a line,
 that line was checked, not remembered.
 
-Docs & release track: **`DOCS_TODO.md`**. Book manuscript: separate `book/` repo
-(`book/TODO.md`).
+Release runbook: **`RELEASING.md`**. Docs hosting: **`DEPLOY.md`**. Book manuscript:
+separate `book/` repo (`book/TODO.md`). The docs + release tracker `DOCS_TODO.md` was
+RETIRED 2026-08-03 — docs Phases 0–5 and releases R0–R3 all landed, so what survived it
+is the two entries below plus the policy that moved into RELEASING.md and CLAUDE.md.
 
 ---
 
@@ -64,9 +66,17 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   places, templates), optional format via `nibli_kr::render`, optional semantic
   tokens from `nibli_kr::highlight::lex`. Single-file first; multi-file KB
   projects later.
-- **Conformance guard (optional ratchet):** test or script that TextMate keyword
-  alternation ≡ `RESERVED_WORDS` (and document Tree-sitter keyword list the same
-  way when that grammar exists) so reserved-list edits cannot drift the editors.
+- **Conformance guard — TextMate half LANDED** (`just verify-grammar-parity`, in
+  `ci`: set, order and the `\b` anchors vs `RESERVED_WORDS`). Still owed: the same
+  ratchet for the Tree-sitter keyword list once that grammar exists.
+- **Editor/LSP docs (mdBook)** — blocked, precondition UNMET, and the last docs
+  item that outlived `DOCS_TODO.md`. Everything above is design + seed artifacts:
+  `grammars/` holds a TextMate grammar and an injection sketch that **no build or
+  CI job consumes** (only the keyword ratchet reads it), and there is no
+  `editors/` dir, no `nibli-lsp` crate, no tree-sitter grammar, and no `tower-lsp`
+  anywhere — `Cargo.lock` included. Writing the page now would present aspiration
+  as shipped, which the docs' own epistemic rule forbids. Revisit when
+  `editors/vscode/` or `nibli-lsp` actually exists.
 - **Book fence rename (optional, coordinated):** if/when fences go plain
   `nibli` only, retarget `verify_book.py` + capture harness + injection regex in
   one PR; keep `nibli-kr` as Linguist/VS Code alias forever.
@@ -156,6 +166,21 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ---
 
+## Docs hosting — site primary
+
+- **Wire `dhilipsiva.dev/docs/nibli/`** in the external `dhilipsiva/dhilipsiva.dev`
+  repo, on the `nibli-updated` dispatch this repo already fires: checkout nibli →
+  `just docs` (default `site-url=/docs/nibli/`) → copy `mdbook/book/` →
+  `public/docs/nibli/`. Recipe and requirements are `DEPLOY.md` §2b. **Do not call
+  the primary URL live until it returns HTTP 200** — until then the canonical
+  public docs URL is the GitHub Pages mirror, `dhilipsiva.github.io/nibli/`, which
+  `docs-pages.yml` already deploys. Blocked here only in the sense that the work
+  is in another repo; nothing in this one is missing. (Search needs no attention
+  under either base path: every mdBook asset, the searcher and the index included,
+  is referenced through `path_to_root`, verified in the built output.)
+
+---
+
 ## Docs / surface defects
 
 Surfaced by the book's review passes (2026-07-26) and RE-VERIFIED against the tree on
@@ -214,8 +239,9 @@ exists.
 
 ## Pointers
 
-| Tracker | Scope |
+| Tracker / doc | Scope |
 |---------|--------|
-| **`DOCS_TODO.md`** | mdBook docs, GH Pages / site primary, crates.io + GitHub Releases (R0–R3); auth chapter when A5 ships |
+| **This file** | Engine runtime, editors/tooling, docs hosting, open semantics decisions — the ONE repo tracker since `DOCS_TODO.md` retired |
+| **`RELEASING.md`** | Release decisions of record (tiers, lockstep, tags) + the operator runbook |
+| **`DEPLOY.md`** | Hosting: playground, wasm demo, mdBook primary + Pages mirror |
 | **`book/TODO.md`** | Manuscript only (private checkout; Orange AVA) |
-| **This file** | Engine runtime, editors/tooling, open semantics decisions |

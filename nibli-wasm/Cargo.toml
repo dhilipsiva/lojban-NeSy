@@ -6,7 +6,7 @@ description = "Browser wasm wrapper — gerna/nibli-semantics/logji + nibli-lexi
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Tier Z (DOCS_TODO): ships as the site's wasm bundle, never to crates.io.
+# Tier Z (RELEASING.md): ships as the site's wasm bundle, never to crates.io.
 publish = false
 
 [lib]

@@ -5,7 +5,7 @@ All notable changes to the nibli workspace are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the workspace adheres to lockstep [Semantic Versioning](https://semver.org/)
 for its published crates (Tier A in
-[DOCS_TODO.md](DOCS_TODO.md)'s decisions table). The WIT component ABI version
+[RELEASING.md](RELEASING.md)'s decision table). The WIT component ABI version
 (`nibli:engine@…` in `wit/world.wit`) is **independent** of crate semver.
 
 During 0.x, minor versions may break APIs; every release documents its changes
@@ -13,7 +13,15 @@ here first.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`nibli-formalize`:** the shipped LLM system prompt demonstrated
+  `every dog $d: animal($d) & barks($d).` — `barks` is not a corpus name, so
+  that statement is a compile error, in a prompt whose own text warns that the
+  compiler fails closed on unknown words. Corrected to `runs`. The
+  gate-validity guard covered the few-shot examples only; it now also compiles
+  every complete statement written in the instruction prose
+  (`prose_kr_statements_are_gate_valid`), so this class cannot recur.
 
 ## [0.1.0] - 2026-08-03
 

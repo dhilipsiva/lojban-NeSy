@@ -4,9 +4,9 @@
 //! and `nibli-validate`.
 //!
 //! Why here and not in the `docs` CI job: that job is Nix + `mdbook build`
-//! with no Rust toolchain at all (~2 min), and DOCS_TODO's deferral ("keep
-//! docs job free of full cargo build") protects exactly that lightness. `just
-//! ci` already compiles the workspace, so this rides along for free.
+//! with no Rust toolchain at all (~2 min), and the standing deferral ("keep
+//! the docs job free of a full cargo build") protects exactly that lightness.
+//! `just ci` already compiles the workspace, so this rides along for free.
 //!
 //! Why `nibli-verify`: it is `publish = false` (so reaching outside the
 //! package dir has no packaging consequence), it already depends on

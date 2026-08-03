@@ -6,7 +6,7 @@ edition = "2024"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Tier Z (DOCS_TODO): a repo tool, never to crates.io.
+# Tier Z (RELEASING.md): a repo tool, never to crates.io.
 publish = false
 
 # The corpus regeneration tool — NEVER a build dependency of anything: the

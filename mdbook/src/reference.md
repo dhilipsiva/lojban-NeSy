@@ -11,7 +11,8 @@ Normative and operational specs live at the **repository root** (and in-tree sou
 | Guarantees | [`GUARANTEES.md`](https://github.com/dhilipsiva/nibli/blob/main/GUARANTEES.md) | Soundness, gates, contracts |
 | Deploy | [`DEPLOY.md`](https://github.com/dhilipsiva/nibli/blob/main/DEPLOY.md) | Playground / static ship path |
 | WIT | [`wit/world.wit`](https://github.com/dhilipsiva/nibli/blob/main/wit/world.wit) | Component boundary |
-| Docs roadmap | [`DOCS_TODO.md`](https://github.com/dhilipsiva/nibli/blob/main/DOCS_TODO.md) | This site’s build-out tracker |
+| Releasing | [`RELEASING.md`](https://github.com/dhilipsiva/nibli/blob/main/RELEASING.md) | Tier A/Z decision table + operator runbook |
+| Roadmap | [`TODO.md`](https://github.com/dhilipsiva/nibli/blob/main/TODO.md) | Open engine, tooling and docs work |
 | Lexicon | `nibli-lexicon/src/corpus/` | Committed English predicate corpus |
 | Authorization | [`nibli-auth`](https://github.com/dhilipsiva/nibli/tree/main/nibli-auth), policy `auth-0.1.0.nibli` | Builtin auth; guide: [Authorization](user/authorization.md) |
 | WIT package | `nibli:engine@0.7.0` | Exports `engine` + `authorizer` (`object` = resource id) |

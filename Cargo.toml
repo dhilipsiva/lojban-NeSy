@@ -26,7 +26,7 @@ members = [
 exclude = ["fuzz"]
 resolver = "2"
 
-# R0 packaging (DOCS_TODO release track): lockstep workspace version + shared
+# R0 packaging (release track; decisions of record in RELEASING.md): lockstep workspace version + shared
 # metadata, inherited by every member (`version.workspace = true`, …). The WIT
 # package version (`nibli:engine@…`) is deliberately INDEPENDENT of this.
 # `homepage` points at the live docs mirror until the dhilipsiva.dev primary

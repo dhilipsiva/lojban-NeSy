@@ -1,8 +1,8 @@
 # Releasing nibli
 
-The operator runbook. Decisions of record (tiers, lockstep, tags) live in
-[DOCS_TODO.md](DOCS_TODO.md); this file is how to execute them, and what to do
-when something goes wrong.
+The operator runbook AND the decisions of record it executes. (Both used to be
+split — the decisions lived in `DOCS_TODO.md`, which retired 2026-08-03 once the
+docs and release tracks landed; the still-live half moved here.)
 
 ## Invariants
 
@@ -17,6 +17,23 @@ when something goes wrong.
   `just release-check` asserts both: `fuzz/` is workspace-excluded and pinned
   at `0.0.0`, and `nibli-auth-py`'s wheel version is maturin-`dynamic` from
   Cargo.toml.
+
+## Tier A / Tier Z — the publish decision table
+
+The decision of record for *which* crates go to crates.io. `just release-check`
+asserts the `publish` flag of every member against it, and each Tier Z manifest
+repeats its own reason in a comment at the top.
+
+| Tier | Crates | Ships as |
+|------|--------|----------|
+| **A — published**, in dependency order | `nibli-types` → `nibli-lexicon` → `nibli-protocol` → `nibli-kr` → `nibli-semantics` → `nibli-reason` → `nibli-render` → `nibli-session` → `nibli-store` → **`nibli-engine`** → `nibli-formalize` / `nibli-import` / `nibli` | crates.io → docs.rs |
+| **Z — `publish = false`** | `nibli-pipeline`, `nibli-host`, `nibli-ui`, `nibli-wasm`, `nibli-verify`, `tools/lexigen`, `fuzz` | GitHub Release, the site, or repo-only |
+
+`nibli-auth` and `nibli-auth-py` are also `publish = false` for now.
+
+**Out of scope for any release:** manuscript / Orange AVA material in a release
+asset; crates.io for the ui/wasm/playground bundles (site only); and equating
+crate semver with the WIT ABI version — the two move independently.
 
 ## The two gates
 
@@ -120,8 +137,8 @@ republishes **all 13** at 0.2.1 — 13 crates.io versions and 13 docs.rs builds,
 12 of which have an empty diff. That is the deliberate price of the lockstep
 decision: any `(nibli-*, X.Y.Z)` tuple is a coherent set, so nobody ever has to
 reason about a compatibility matrix across 13 crates. If that price becomes
-intolerable, the exit is per-crate semver — a decision change made in
-DOCS_TODO.md, not an improvisation during a hotfix.
+intolerable, the exit is per-crate semver — a change to the Invariants above,
+made deliberately, not an improvisation during a hotfix.
 
 **Merge-back (the step people skip).** Cherry-pick the *fix* commit onto
 `main`; do not merge the release commit. Then hand-edit `main`'s CHANGELOG:
@@ -193,5 +210,7 @@ caught at crate 7 of 13 it costs a version number and 13 yanks.
 - README badges are live shields.io endpoints; they need no edit.
 - The playground redeploys via the existing `nibli-updated` dispatch on the
   push to `main`, not the tag.
-- Update the release-track status in [DOCS_TODO.md](DOCS_TODO.md) — it is
-  hand-maintained prose and will otherwise drift.
+- Nothing to update in a tracker: `DOCS_TODO.md` retired, and [TODO.md](TODO.md)
+  is future-facing by rule (an entry is deleted when it lands, with the record
+  going into the commit), so a release leaves it alone unless it unblocks an
+  open entry.

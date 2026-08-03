@@ -6,7 +6,7 @@ edition = "2024"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Tier Z (DOCS_TODO): ships as the hosted playground bundle, never to crates.io.
+# Tier Z (RELEASING.md): ships as the hosted playground bundle, never to crates.io.
 publish = false
 
 [dependencies]

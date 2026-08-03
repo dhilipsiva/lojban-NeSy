@@ -613,7 +613,7 @@ verify-grammar-parity:
 # knowledge base.
 #
 # Deliberately NOT in the `docs` CI job: that job is Nix + `mdbook build` with no
-# Rust toolchain (~2 min), and DOCS_TODO's deferral protects that lightness.
+# Rust toolchain (~2 min), and the docs-job deferral protects that lightness.
 # `ci` already compiles the workspace, so this rides here for free.
 #
 # SCOPE: mdbook/src (recursively) AND the repo-root *.md specs (flat — descending
@@ -871,7 +871,7 @@ docs-serve:
     mdbook-mermaid install mdbook
     mdbook serve mdbook -p 3000 -n 127.0.0.1
 
-# Release-track consistency gate (R0, DOCS_TODO): lockstep versions across the
+# Release-track consistency gate (R0; decisions of record in RELEASING.md): lockstep versions across the
 # workspace, publish flags matching the Tier A/Z decision table, and required
 # crates.io metadata (description/license/repository) on every publishable
 # crate. Native + offline; run before any tag or publish.
@@ -881,7 +881,7 @@ release-check:
     cargo metadata --format-version 1 --no-deps | python3 -c '
     import json, sys, tomllib
     md = json.load(sys.stdin)
-    # publish = false expected: Tier Z (DOCS_TODO decisions) + the auth crates
+    # publish = false expected: Tier Z (RELEASING.md decision table) + the auth crates
     # (in neither tier row) + the example bin.
     NO_PUBLISH = {"nibli-pipeline", "nibli-host", "nibli-ui", "nibli-wasm",
                   "nibli-verify", "nibli-lexigen", "nibli-auth", "nibli-auth-py",

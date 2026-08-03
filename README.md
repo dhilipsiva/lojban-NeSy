@@ -119,7 +119,7 @@ Code-derived human docs live in **`mdbook/`** (mdBook). They are **not** the Ora
 | Playground | https://dhilipsiva.dev/nibli-playground/ |
 | Rust API | [docs.rs/nibli-engine](https://docs.rs/nibli-engine) — all published crates indexed in the [API index](https://dhilipsiva.github.io/nibli/api-index.html); locally `cargo doc -p <crate> --open` |
 | Releasing | [`RELEASING.md`](RELEASING.md) · changes land in [`CHANGELOG.md`](CHANGELOG.md) first |
-| Roadmap | [`DOCS_TODO.md`](DOCS_TODO.md) |
+| Roadmap | [`TODO.md`](TODO.md) |
 
 Root specs remain canonical: [`NIBLI_KR.md`](NIBLI_KR.md), [`LOGIC_IR.md`](LOGIC_IR.md), [`GUARANTEES.md`](GUARANTEES.md).
 

@@ -36,7 +36,7 @@ Primary host path is `/docs/nibli/`; the GitHub Pages project site uses base pat
 | Repo root `NIBLI_KR.md`, `LOGIC_IR.md`, `GUARANTEES.md`, … | Normative engine specs (linked from [Reference](reference.md)) |
 | `book/` | Private manuscript checkout — **never** imported into this tree |
 
-The live docs roadmap is [`DOCS_TODO.md`](https://github.com/dhilipsiva/nibli/blob/main/DOCS_TODO.md) at the repository root.
+Open work — engine, tooling and docs alike — is tracked in [`TODO.md`](https://github.com/dhilipsiva/nibli/blob/main/TODO.md) at the repository root.
 
 ## Start here
 
