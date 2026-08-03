@@ -60,10 +60,14 @@ tag vX.Y.Z ──▶ GitHub Release (+ optional .wasm / host bins)
 
 - Wire **`dhilipsiva.dev/docs/nibli/`** in `dhilipsiva/dhilipsiva.dev` on `nibli-updated`: checkout nibli → `just docs` → copy `mdbook/book/` → `public/docs/nibli/` (DEPLOY §2b). Do not claim primary live until HTTP 200.
 
-### Phase 4 — docs.rs links *(after Release R2)*
+### Phase 4 — docs.rs links *(remainder gated on Release R2)*
 
-- mdBook API index → versioned docs.rs URLs.
-- Conceptual docs stay on primary/mirror only.
+**Landed (interim):** `mdbook/src/api-index.md` — the Tier A publish-order
+table with per-crate one-liners and the `cargo doc -p <crate> --open` path
+(the decisions-table interim; no dead docs.rs links). Remaining at R2:
+
+- Flip each API-index row to its versioned docs.rs URL once published.
+- Conceptual docs stay on primary/mirror only (restated on the page).
 
 ### Phase 5 — Polish
 
@@ -80,16 +84,7 @@ tag vX.Y.Z ──▶ GitHub Release (+ optional .wasm / host bins)
 
 ## Open — release track (GitHub + crates.io)
 
-**Status:** all crates `0.1.0`; path-only deps; almost no package metadata; no tags/releases; no crates.io. Dual license files at repo root.
-
-### R0 — Packaging (no public release)
-
-- `[workspace.package]`: version, `license = "MIT OR Apache-2.0"`, repository, homepage; members inherit.
-- `publish = false` on Tier Z.
-- `[workspace.dependencies]` for internal crates (`path` + `version`).
-- Root `CHANGELOG.md` (Keep a Changelog; Unreleased stub).
-- `just release-check` (version consistency; optional metadata lint).
-- Confirm `nibli*` crate names free on crates.io; plan `CARGO_REGISTRY_TOKEN` secret.
+**Status:** **R0 landed (2026-08-03)** — `[workspace.package]` lockstep `0.1.0` (license/repository/homepage inherited by all 22 members; `homepage` = the live docs mirror until the dhilipsiva.dev primary goes live), `[workspace.dependencies]` (path + version) for the 13 internal dep crates, `publish = false` on Tier Z + the auth crates, per-crate descriptions everywhere, root `CHANGELOG.md`, and `just release-check` (lockstep + tier flags + required metadata; PASS). All 13 Tier A names confirmed **free** on crates.io (404s, 2026-08-03). Still needed before R2: add `CARGO_REGISTRY_TOKEN` as a repo secret (or `cargo login` locally). No `vX.Y.Z` release tags/releases (the archival `v0.1-lojban-final` tag predates the release track); no crates.io. Dual license files at repo root.
 
 ### R1 — First GitHub Release
 

@@ -26,3 +26,4 @@
 # Reference
 
 - [Engine specifications](reference.md)
+- [API index](api-index.md)

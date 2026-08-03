@@ -1,21 +1,26 @@
 [package]
 name = "nibli-engine"
 description = "Native engine wrapper library (in-process embedding of the nibli pipeline)"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-nibli-kr = { path = "../nibli-kr" }
-nibli-semantics = { path = "../nibli-semantics" }
-nibli-session = { path = "../nibli-session" }
-nibli-reason = { path = "../nibli-reason" }
-nibli-types = { path = "../nibli-types", features = ["serde"] }
-nibli-protocol = { path = "../nibli-protocol", features = ["compute-client"] }
-nibli-render = { path = "../nibli-render" }
-nibli-store = { path = "../nibli-store" }
+nibli-kr = { workspace = true }
+nibli-semantics = { workspace = true }
+nibli-session = { workspace = true }
+nibli-reason = { workspace = true }
+nibli-types = { workspace = true, features = ["serde"] }
+nibli-protocol = { workspace = true, features = ["compute-client"] }
+nibli-render = { workspace = true }
+nibli-store = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
 serde_json = "1"
 
+# PATH-ONLY internal dev-deps (see nibli-kr/Cargo.toml): stripped at publish,
+# so they impose no publish-order constraint.
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 serde_json = "1"
@@ -27,5 +32,4 @@ redb = "2"
 
 [[bench]]
 name = "engine_bench"
-description = "Native engine wrapper library (in-process embedding of the nibli pipeline)"
 harness = false

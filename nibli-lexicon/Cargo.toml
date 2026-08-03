@@ -1,7 +1,11 @@
 [package]
 name = "nibli-lexicon"
-version = "0.1.0"
+description = "The committed English predicate corpus — the dictionary as validated Rust source"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 # The dictionary IS committed Rust source (src/corpus/) — no build script, no
 # build-time data files, no runtime deps. `tools/lexigen` regenerates the

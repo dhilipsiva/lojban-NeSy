@@ -1,11 +1,14 @@
 [package]
 name = "nibli-session"
 description = "The shared session core: the ONE compile/assert/query chain every runtime surface wraps"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-nibli-kr = { path = "../nibli-kr" }
-nibli-semantics = { path = "../nibli-semantics" }
-nibli-reason = { path = "../nibli-reason" }
-nibli-types = { path = "../nibli-types" }
+nibli-kr = { workspace = true }
+nibli-semantics = { workspace = true }
+nibli-reason = { workspace = true }
+nibli-types = { workspace = true }

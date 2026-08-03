@@ -4,7 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "nibli-auth-native"
-version = "0.1.0"
+# Version comes from Cargo.toml (version.workspace = true) so the wheel rides
+# the workspace lockstep — a static value here would silently diverge on the
+# first [workspace.package] bump.
+dynamic = ["version"]
 description = "Native PyO3 extension for nibli-auth (thread-local warm Authorizer)"
 requires-python = ">=3.10"
 classifiers = [

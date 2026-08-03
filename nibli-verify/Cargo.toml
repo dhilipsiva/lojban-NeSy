@@ -1,23 +1,28 @@
 [package]
 name = "nibli-verify"
 description = "Differential soundness gate: check nibli's verdict against Vampire (classical FOL, Horn/NAF-free) and clingo (ASP, stratified-NAF + closed-world)"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Tier Z (DOCS_TODO): a CI gate, never to crates.io.
+publish = false
 
 [dependencies]
-nibli-engine = { path = "../nibli-engine" }
-nibli-types = { path = "../nibli-types" }
+nibli-engine = { workspace = true }
+nibli-types = { workspace = true }
 # The KR front-end + nibli-semantics/logji so nibli_kr_battery::kompile() runs the shipped
 # post-parse stages (compute-node marking included).
-nibli-kr = { path = "../nibli-kr" }
-nibli-semantics = { path = "../nibli-semantics" }
-nibli-reason = { path = "../nibli-reason" }
-nibli-session = { path = "../nibli-session" }
+nibli-kr = { workspace = true }
+nibli-semantics = { workspace = true }
+nibli-reason = { workspace = true }
+nibli-session = { workspace = true }
 # The Predilex gates key their Lojban lemmas through the provenance bridge
 # (nibli_lexicon::by_provenance) — a regular dep since the taxonomy leg
 # (src/lib.rs::run_predilex_taxonomy) re-keys edges to English corpus names;
 # the corpus/alias differential tests use the same crate.
-nibli-lexicon = { path = "../nibli-lexicon" }
+nibli-lexicon = { workspace = true }
 
 [dev-dependencies]
 

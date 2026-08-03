@@ -1,14 +1,18 @@
 [package]
 name = "nibli-protocol"
-version = "0.1.0"
+description = "Shared wire-format proof-trace types and the JSON helpers"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `serde` feature so the re-exported proof types (`ProofRule`/`ProofStep`/
 # `ProofTrace`/`LogicalTerm`) derive Serialize/Deserialize for the wire JSON.
-nibli-types = { path = "../nibli-types", features = ["serde"] }
+nibli-types = { workspace = true, features = ["serde"] }
 
 [features]
 # The native TCP compute-backend client (std::net::TcpStream). OFF by default so

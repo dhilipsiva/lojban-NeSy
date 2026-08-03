@@ -1,21 +1,26 @@
 [package]
 name = "nibli-ui"
 description = "Dioxus web UI for the Transparency Triad"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Tier Z (DOCS_TODO): ships as the hosted playground bundle, never to crates.io.
+publish = false
 
 [dependencies]
 dioxus = { version = "0.7.3", features = ["web"] }
 gloo-net = { version = "0.6", features = ["http"] }
-nibli-protocol = { path = "../nibli-protocol" }
-nibli-render = { path = "../nibli-render" }
-nibli-types = { path = "../nibli-types" }
-nibli-kr = { path = "../nibli-kr" }
-nibli-semantics = { path = "../nibli-semantics" }
-nibli-reason = { path = "../nibli-reason" }
-nibli-session = { path = "../nibli-session" }
-nibli-lexicon = { path = "../nibli-lexicon" }
-nibli-formalize = { path = "../nibli-formalize" }
+nibli-protocol = { workspace = true }
+nibli-render = { workspace = true }
+nibli-types = { workspace = true }
+nibli-kr = { workspace = true }
+nibli-semantics = { workspace = true }
+nibli-reason = { workspace = true }
+nibli-session = { workspace = true }
+nibli-lexicon = { workspace = true }
+nibli-formalize = { workspace = true }
 serde_json = "1"
 # The shipped-examples guard test detects full-vs-fallback build mode via
 # nibli-lexicon's DICTIONARY (a regular dep above), so no extra dev-dep is needed.

@@ -1,7 +1,11 @@
 [package]
 name = "nibli-kr"
-version = "0.1.0"
+description = "The nibli KR surface-syntax front-end — pest grammar, validating emit, render"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = []
@@ -16,13 +20,19 @@ pest_derive = "2"
 # identity-gismu passthrough arity source, both from nibli-lexicon. The grammar's
 # kw_* rules are pinned against its single-source RESERVED_WORDS by an exhaustive
 # unit test.
-nibli-lexicon = { path = "../nibli-lexicon" }
+nibli-lexicon = { workspace = true }
 # emit.rs targets nibli-types' AstBuffer; parse_checked returns NibliError.
-nibli-types = { path = "../nibli-types" }
+nibli-types = { workspace = true }
 reedline = { version = "0.45.0", optional = true }
 
 [dev-dependencies]
 # Golden tests: every emitted buffer must be accepted by smuni, and nibli KR
 # statements must compile to LogicBuffers EQUAL to their Lojban twins'
 # (the in-crate preview of the nibli-verify translation battery).
+# PATH-ONLY on purpose (not workspace = true): a versionless path dev-dep is
+# STRIPPED from the published manifest, while a workspace-inherited one keeps
+# its version and becomes a registry dep that must already exist on crates.io
+# — which would make the publish order depend on dev edges (kr before
+# semantics fails). Applies to every INTERNAL dev-dep below and in
+# nibli-reason / nibli-render / nibli-engine.
 nibli-semantics = { path = "../nibli-semantics" }

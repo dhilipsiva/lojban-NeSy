@@ -26,6 +26,36 @@ members = [
 exclude = ["fuzz"]
 resolver = "2"
 
+# R0 packaging (DOCS_TODO release track): lockstep workspace version + shared
+# metadata, inherited by every member (`version.workspace = true`, …). The WIT
+# package version (`nibli:engine@…`) is deliberately INDEPENDENT of this.
+# `homepage` points at the live docs mirror until the dhilipsiva.dev primary
+# copies the build (DEPLOY.md §2b) — flip it then.
+[workspace.package]
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dhilipsiva/nibli"
+homepage = "https://dhilipsiva.github.io/nibli/"
+
+# Internal crates carry BOTH path (local builds) and version (crates.io
+# publish resolves the version once the dep is published). Only crates that
+# something else depends on need an entry. fuzz/ is workspace-EXCLUDED and
+# cannot use these.
+[workspace.dependencies]
+nibli-types = { path = "nibli-types", version = "0.1.0" }
+nibli-lexicon = { path = "nibli-lexicon", version = "0.1.0" }
+nibli-protocol = { path = "nibli-protocol", version = "0.1.0" }
+nibli-kr = { path = "nibli-kr", version = "0.1.0" }
+nibli-semantics = { path = "nibli-semantics", version = "0.1.0" }
+nibli-reason = { path = "nibli-reason", version = "0.1.0" }
+nibli-render = { path = "nibli-render", version = "0.1.0" }
+nibli-session = { path = "nibli-session", version = "0.1.0" }
+nibli-store = { path = "nibli-store", version = "0.1.0" }
+nibli-engine = { path = "nibli-engine", version = "0.1.0" }
+nibli-import = { path = "nibli-import", version = "0.1.0" }
+nibli-formalize = { path = "nibli-formalize", version = "0.1.0" }
+nibli-auth = { path = "nibli-auth", version = "0.1.0" }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

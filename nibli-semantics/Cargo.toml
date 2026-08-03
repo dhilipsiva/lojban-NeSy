@@ -1,15 +1,18 @@
 [package]
 name = "nibli-semantics"
-description = "Semantic compiler — Lojban AST to First-Order Logic IR"
-version = "0.1.0"
+description = "Semantic compiler — flat AST buffer to First-Order Logic IR"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 lasso = "0.7.3"
-nibli-types = { path = "../nibli-types" }
+nibli-types = { workspace = true }
 # Single source of predicate arities (also drives back-translation + logji's
 # SignatureSource). smuni delegates instead of generating a parallel arity map.
-nibli-lexicon = { path = "../nibli-lexicon" }
+nibli-lexicon = { workspace = true }
 
 [lib]
 crate-type = ["lib"]

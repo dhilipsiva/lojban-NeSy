@@ -1,8 +1,13 @@
 [package]
 name = "nibli-host"
 description = "WASM host runner — Wasmtime REPL with compute backend TCP client"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Tier Z (DOCS_TODO): ships via GH Release / repo, never to crates.io.
+publish = false
 
 [dependencies]
 anyhow = "1.0.101"
@@ -10,9 +15,9 @@ reedline = "0.45.0"
 nu-ansi-term = "0.50"
 wasmtime = { version = "41.0.3", features = ["component-model"] }
 wasmtime-wasi = "41.0.3"
-nibli-kr = { path = "../nibli-kr", features = ["reedline"] }
-nibli-protocol = { path = "../nibli-protocol", features = ["compute-client"] }
-nibli-render = { path = "../nibli-render" }
-nibli-store = { path = "../nibli-store" }
-nibli-types = { path = "../nibli-types", features = ["serde"] }
+nibli-kr = { workspace = true, features = ["reedline"] }
+nibli-protocol = { workspace = true, features = ["compute-client"] }
+nibli-render = { workspace = true }
+nibli-store = { workspace = true }
+nibli-types = { workspace = true, features = ["serde"] }
 postcard = { version = "1", features = ["alloc"] }

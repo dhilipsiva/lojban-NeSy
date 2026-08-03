@@ -1,43 +1,50 @@
 [package]
 name = "nibli"
 description = "Native debug REPL and validation tooling"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-nibli-kr = { path = "../nibli-kr", features = ["reedline"] }
-nibli-engine = { path = "../nibli-engine" }
-nibli-import = { path = "../nibli-import" }
-nibli-render = { path = "../nibli-render" }
+nibli-kr = { workspace = true, features = ["reedline"] }
+nibli-engine = { workspace = true }
+nibli-import = { workspace = true }
+nibli-render = { workspace = true }
 reedline = "0.45.0"
 nu-ansi-term = "0.50"
 
+# (No per-target `description` keys: cargo has no such field and warned
+# `unused manifest key` on every invocation while they were here.)
 [[bin]]
 name = "nibli"
-description = "Native debug REPL and validation tooling"
 path = "src/main.rs"
 
+# nibli-validate: validation / data-generation CLI
 [[bin]]
 name = "nibli-validate"
-description = "Native debug REPL and validation tooling"
 path = "src/bin/validate.rs"
 
+# nibli-import: RDF Turtle / OWL import CLI. `doc = false`: the bin shares its
+# rustdoc output path with the `nibli-import` LIBRARY it wraps, and cargo doc
+# warned about the filename collision (nondeterministic clobber).
 [[bin]]
 name = "nibli-import"
-description = "RDF Turtle / OWL import CLI"
 path = "src/bin/import.rs"
+doc = false
 
+# nibli-pin: native pin runner for KB-level behavioural gates
 [[bin]]
 name = "nibli-pin"
-description = "Native pin runner for KB-level behavioural gates"
 path = "src/bin/pin.rs"
 
+# nibli-bench-book: release-profile timing pins for the book's quoted figures
 [[bin]]
 name = "nibli-bench-book"
-description = "Release-profile timing pins for the book's quoted figures"
 path = "src/bin/bench_book.rs"
 
+# nibli-bench-naf: release-profile timing for negation-as-failure evaluation
 [[bin]]
 name = "nibli-bench-naf"
-description = "Release-profile timing for negation-as-failure evaluation"
 path = "src/bin/bench_naf.rs"

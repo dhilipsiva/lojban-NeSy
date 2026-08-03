@@ -1,10 +1,12 @@
 [package]
 name = "nibli-auth"
 description = "Built-in authorization: warm Authorizer over nibli-session (policy once, ephemeral context, decision cache)"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 publish = false
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = []
@@ -13,9 +15,9 @@ async-graphql = ["dep:async-graphql"]
 juniper = ["dep:juniper"]
 
 [dependencies]
-nibli-session = { path = "../nibli-session" }
-nibli-types = { path = "../nibli-types", features = ["serde"] }
-nibli-protocol = { path = "../nibli-protocol" }
+nibli-session = { workspace = true }
+nibli-types = { workspace = true, features = ["serde"] }
+nibli-protocol = { workspace = true }
 axum = { version = "0.8", optional = true, default-features = false, features = ["json", "tokio"] }
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }

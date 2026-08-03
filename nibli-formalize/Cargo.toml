@@ -1,8 +1,11 @@
 [package]
 name = "nibli-formalize"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "Agentic English-to-KR formalizer: LLM + validation gates + self-correction loop"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 # Pure-logic engine consumed by nibli-ui. The nibli-kr/smuni gates and the
 # agent/provider logic build + unit-test on the NATIVE target with mocked
@@ -10,14 +13,14 @@ description = "Agentic English-to-KR formalizer: LLM + validation gates + self-c
 # (Lojban-only) are wasm-only. No Dioxus here — the UI shell is nibli-ui's job.
 
 [dependencies]
-nibli-kr = { path = "../nibli-kr" }
-nibli-semantics = { path = "../nibli-semantics" }
-nibli-render = { path = "../nibli-render" }
-nibli-types = { path = "../nibli-types" }
+nibli-kr = { workspace = true }
+nibli-semantics = { workspace = true }
+nibli-render = { workspace = true }
+nibli-types = { workspace = true }
 # The shipped alias map (ALIASES) — the LLM system prompt grounds on it so the
 # model uses valid predicate names. Transitive via nibli-kr, but named directly
 # to reach the public statics.
-nibli-lexicon = { path = "../nibli-lexicon" }
+nibli-lexicon = { workspace = true }
 serde_json = "1"
 
 [dev-dependencies]

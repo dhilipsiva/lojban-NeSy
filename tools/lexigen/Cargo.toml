@@ -1,7 +1,13 @@
 [package]
 name = "nibli-lexigen"
-version = "0.1.0"
+description = "Corpus regeneration tool — report-only refresh of the committed lexicon"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Tier Z (DOCS_TODO): a repo tool, never to crates.io.
+publish = false
 
 # The corpus regeneration tool — NEVER a build dependency of anything: the
 # committed corpus is the source of truth; this tool only bootstraps/refreshes
@@ -10,6 +16,6 @@ edition = "2024"
 # pin source (no syn-parsing, no drift).
 
 [dependencies]
-nibli-lexicon = { path = "../../nibli-lexicon" }
+nibli-lexicon = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,9 +1,12 @@
 [package]
 name = "nibli-import"
 description = "RDF/OWL import and KB export utilities"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-nibli-engine = { path = "../nibli-engine" }
-nibli-types = { path = "../nibli-types" }
+nibli-engine = { workspace = true }
+nibli-types = { workspace = true }

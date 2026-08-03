@@ -1,16 +1,19 @@
 [package]
 name = "auth-axum"
 description = "Example axum app using nibli-auth (same builtin policy as A1)"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "auth-axum"
 path = "src/main.rs"
 
 [dependencies]
-nibli-auth = { path = "../../nibli-auth", features = ["axum"] }
+nibli-auth = { workspace = true, features = ["axum"] }
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 serde = { version = "1", features = ["derive"] }

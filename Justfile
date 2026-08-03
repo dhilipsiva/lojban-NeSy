@@ -844,6 +844,64 @@ docs-serve:
     mdbook-mermaid install mdbook
     mdbook serve mdbook -p 3000 -n 127.0.0.1
 
+# Release-track consistency gate (R0, DOCS_TODO): lockstep versions across the
+# workspace, publish flags matching the Tier A/Z decision table, and required
+# crates.io metadata (description/license/repository) on every publishable
+# crate. Native + offline; run before any tag or publish.
+release-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo metadata --format-version 1 --no-deps | python3 -c '
+    import json, sys, tomllib
+    md = json.load(sys.stdin)
+    # publish = false expected: Tier Z (DOCS_TODO decisions) + the auth crates
+    # (in neither tier row) + the example bin.
+    NO_PUBLISH = {"nibli-pipeline", "nibli-host", "nibli-ui", "nibli-wasm",
+                  "nibli-verify", "nibli-lexigen", "nibli-auth", "nibli-auth-py",
+                  "auth-axum"}
+    errors = []
+    versions = {}
+    for p in md["packages"]:
+        versions[p["name"]] = p["version"]
+        publishable = p["publish"] is None  # metadata: None = anywhere, [] = publish=false
+        if p["name"] in NO_PUBLISH:
+            if publishable:
+                errors.append(p["name"] + ": expected publish = false")
+        else:
+            if not publishable:
+                errors.append(p["name"] + ": Tier A crate unexpectedly publish = false")
+            for k in ("description", "license", "repository"):
+                if not p.get(k):
+                    errors.append(p["name"] + ": missing " + k + " (crates.io requires it)")
+            # A versionless NORMAL/BUILD path dep is rejected by cargo publish
+            # (a member that quietly drops `workspace = true` regresses to
+            # this). Dev-deps are exempt: cargo STRIPS versionless path
+            # dev-deps at publish — internal dev-deps are path-only on
+            # purpose so they impose no publish-order constraint.
+            for d in p.get("dependencies", []):
+                if d.get("path") and d.get("kind") != "dev" and d.get("req") == "*":
+                    errors.append(p["name"] + ": path dep " + d["name"] + " has no version (cargo publish rejects it)")
+    if len(set(versions.values())) != 1:
+        errors.append("version lockstep broken: " + repr(sorted(set(versions.values()))))
+    else:
+        lock = next(iter(versions.values()))
+        with open("Cargo.toml", "rb") as f:
+            root = tomllib.load(f)
+        wsp = root.get("workspace", {}).get("package", {}).get("version")
+        if wsp != lock:
+            errors.append("[workspace.package] version " + repr(wsp) + " != member lockstep " + repr(lock))
+        for name, spec in root.get("workspace", {}).get("dependencies", {}).items():
+            v = spec.get("version") if isinstance(spec, dict) else None
+            if v != lock:
+                errors.append("[workspace.dependencies] " + name + " version " + repr(v) + " != lockstep " + repr(lock))
+    if errors:
+        print("release-check FAILED:")
+        for e in errors:
+            print("  - " + e)
+        sys.exit(1)
+    print("release-check PASS: " + str(len(md["packages"])) + " members at lockstep " + next(iter(versions.values())))
+    '
+
 # Wipes all compilation artifacts
 clean:
     cargo clean

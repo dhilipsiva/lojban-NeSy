@@ -1,9 +1,13 @@
 [package]
 name = "nibli-wasm"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Browser wasm wrapper — gerna/nibli-semantics/logji + nibli-lexicon behind wasm-bindgen, no persistence. Powers the live Transparency Triad demo at dhilipsiva.dev/nibli."
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Tier Z (DOCS_TODO): ships as the site's wasm bundle, never to crates.io.
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -13,14 +17,14 @@ wasm-opt = false
 
 [dependencies]
 # The nibli KR front-end — the sole compile path (`set_language` survives as a no-op shim).
-nibli-kr = { path = "../nibli-kr" }
-nibli-semantics = { path = "../nibli-semantics" }
-nibli-reason = { path = "../nibli-reason" }
-nibli-session = { path = "../nibli-session" }
-nibli-types = { path = "../nibli-types" }
-nibli-protocol = { path = "../nibli-protocol" }
-nibli-render = { path = "../nibli-render" }
-nibli-lexicon = { path = "../nibli-lexicon" }
+nibli-kr = { workspace = true }
+nibli-semantics = { workspace = true }
+nibli-reason = { workspace = true }
+nibli-session = { workspace = true }
+nibli-types = { workspace = true }
+nibli-protocol = { workspace = true }
+nibli-render = { workspace = true }
+nibli-lexicon = { workspace = true }
 wasm-bindgen = "0.2"
 serde_json = "1"
 
