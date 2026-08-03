@@ -448,7 +448,7 @@ test-all: test test-engine test-store test-backend
 
 # CI gate for the hardened runtime surface (fast; native only — no WASM build).
 # For the WASM behavioral smokes too, run `just ci-all`.
-ci: fmt-check clippy-runtime test test-engine test-host test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-book-vocab
+ci: fmt-check release-check clippy-runtime test test-engine test-host test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-book-vocab
 
 # WASM behavioral gate (pre-push, NOT part of `ci` — needs the WASM build, like
 # verify-book-capture). Bundles the gasnu smokes; each depends on
@@ -894,6 +894,36 @@ release-check:
             v = spec.get("version") if isinstance(spec, dict) else None
             if v != lock:
                 errors.append("[workspace.dependencies] " + name + " version " + repr(v) + " != lockstep " + repr(lock))
+    # `cargo metadata` reports only the RESOLVED version, so a member that
+    # replaces `version.workspace = true` with a literal passes the lockstep
+    # legs above and then silently fails to move at the NEXT bump — surfacing
+    # one release later as a mystery mismatch. Only reading the manifests
+    # closes it.
+    import os
+    for p in md["packages"]:
+        mf = p["manifest_path"]
+        with open(mf, "rb") as f:
+            pkg = tomllib.load(f).get("package", {})
+        if pkg.get("version") != {"workspace": True}:
+            errors.append(p["name"] + ": [package].version must be `version.workspace = true` (found " + repr(pkg.get("version")) + ")")
+    # Two version literals live OUTSIDE the lockstep by design and are
+    # invisible to cargo metadata. Assert both, or the only thing keeping them
+    # right is that someone remembers.
+    with open("nibli-auth-py/pyproject.toml", "rb") as f:
+        proj = tomllib.load(f).get("project", {})
+    if "version" not in proj.get("dynamic", []):
+        errors.append("nibli-auth-py/pyproject.toml: [project] must keep `dynamic = [\"version\"]` so the maturin wheel rides the lockstep")
+    with open("fuzz/Cargo.toml", "rb") as f:
+        fz = tomllib.load(f).get("package", {})
+    if fz.get("version") != "0.0.0":
+        errors.append("fuzz/Cargo.toml: workspace-excluded, must stay pinned at 0.0.0 (found " + repr(fz.get("version")) + ")")
+    # The bench bins include_str! repo-root corpora that no package tarball can
+    # carry — a default-on `bench-bins` would break `cargo publish` (see the
+    # comment block in nibli/Cargo.toml).
+    with open("nibli/Cargo.toml", "rb") as f:
+        nb = tomllib.load(f)
+    if "bench-bins" in nb.get("features", {}).get("default", []):
+        errors.append("nibli: `bench-bins` must NOT be a default feature (its bins include_str! repo-root corpora; cargo publish would fail)")
     if errors:
         print("release-check FAILED:")
         for e in errors:
@@ -901,6 +931,397 @@ release-check:
         sys.exit(1)
     print("release-check PASS: " + str(len(md["packages"])) + " members at lockstep " + next(iter(versions.values())))
     '
+
+# ── Release automation (R3) ────────────────────────────────────────────────
+# `release-check` above is the VERSION-AGNOSTIC structural gate and rides
+# `just ci`. Everything below is VERSION-SPECIFIC and must never join `ci` —
+# its answer is deliberately "false" on an ordinary main commit.
+# The operator runbook (incl. yank/hotfix policy) is RELEASING.md.
+
+# The release-moment gate: this tree IS exactly VERSION and is releasable.
+# Cheap (no compile, offline) so the release workflow's preflight can run it
+# before any toolchain spins up. Composes release-check for the structural half.
+release-verify VERSION: release-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    V="{{VERSION}}" python3 -c '
+    import os, re, sys, tomllib, subprocess
+    V = os.environ["V"]
+    errors = []
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?", V):
+        if V.startswith("v"):
+            print("release-verify FAILED: pass " + V[1:] + ", not " + V + " — the tag carries the v, the manifest does not")
+        else:
+            print("release-verify FAILED: " + repr(V) + " is not a semver version")
+        sys.exit(1)
+    with open("Cargo.toml", "rb") as f:
+        root = tomllib.load(f)
+    wsv = root["workspace"]["package"]["version"]
+    if wsv != V:
+        errors.append("[workspace.package] version is " + repr(wsv) + ", expected " + repr(V))
+    # ── CHANGELOG ──
+    text = open("CHANGELOG.md", encoding="utf-8").read()
+    lines = text.splitlines()
+    heads = []  # (index, version-or-None, raw)
+    fence = False
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        m = re.match(r"^## \[([^\]]+)\]\s*(?:-\s*(\S+))?\s*$", ln)
+        if m:
+            heads.append((i, m.group(1), m.group(2)))
+    names = [h[1] for h in heads]
+    if V not in names:
+        errors.append("CHANGELOG.md has no `## [" + V + "]` section (did you run `just release-prep " + V + "`?)")
+    else:
+        idx = names.index(V)
+        if names[0] != "Unreleased":
+            errors.append("CHANGELOG.md: first section must be `## [Unreleased]`, found " + repr(names[0]))
+        elif idx != 1:
+            errors.append("CHANGELOG.md: `## [" + V + "]` must be the first section after [Unreleased], found at position " + str(idx))
+        date = heads[idx][2]
+        if not date or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            errors.append("CHANGELOG.md: `## [" + V + "]` needs a YYYY-MM-DD date, found " + repr(date))
+        start = heads[idx][0] + 1
+        end = heads[idx + 1][0] if idx + 1 < len(heads) else len(lines)
+        body = "\n".join(lines[start:end]).strip()
+        if not body or body == "Nothing yet.":
+            errors.append("CHANGELOG.md: `## [" + V + "]` section is empty — a release with no documented changes violates the CHANGELOG-required decision")
+    # Link refs. The [Unreleased] compare must point at the NEW tag — the line
+    # everyone forgets on release 2 (and after a hotfix merge-back).
+    if not re.search(r"^\[" + re.escape(V) + r"\]:\s*\S*/releases/tag/v" + re.escape(V) + r"\s*$", text, re.M):
+        errors.append("CHANGELOG.md: missing link ref `[" + V + "]: .../releases/tag/v" + V + "`")
+    if not re.search(r"^\[Unreleased\]:\s*\S*/compare/v" + re.escape(V) + r"\.\.\.HEAD\s*$", text, re.M):
+        errors.append("CHANGELOG.md: `[Unreleased]:` must compare from v" + V + "...HEAD")
+    # ── Cargo.lock ── (precise message; the --locked run below is authoritative)
+    with open("Cargo.lock", "rb") as f:
+        lock = tomllib.load(f)
+    members = {p["name"] for p in __import__("json").loads(
+        subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"],
+                       capture_output=True, text=True, check=True).stdout)["packages"]}
+    for p in lock.get("package", []):
+        if p["name"] in members and p.get("version") != V:
+            errors.append("Cargo.lock: " + p["name"] + " at " + repr(p.get("version")) + ", expected " + V + " — run `cargo update --workspace`")
+    # ── the tag, ONLY on a real tag ref ──
+    # Gate on GITHUB_REF_TYPE, never on GITHUB_REF_NAME being non-empty: that
+    # is "main" on a branch push and would fail every CI run.
+    if os.environ.get("GITHUB_REF_TYPE") == "tag":
+        tag = os.environ.get("GITHUB_REF_NAME", "")
+        if tag != "v" + V:
+            errors.append("tag is " + repr(tag) + " but the workspace is at " + V)
+    if errors:
+        print("release-verify FAILED:")
+        for e in errors:
+            print("  - " + e)
+        sys.exit(1)
+    '
+    # Authoritative lock check: fails if the lock would change AT ALL.
+    cargo metadata --locked --format-version 1 --no-deps >/dev/null
+    echo "release-verify PASS: tree is {{VERSION}}, CHANGELOG rolled, lock in sync"
+
+# GitHub Release body for VERSION, to stdout. A recipe (not inline workflow
+# YAML) so it is locally testable and so the asset table stays in lockstep with
+# release-dist/release-wasm's naming. Never interpolate the result into a shell
+# string — the workflow writes it to a file and passes --notes-file.
+release-notes VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    V="{{VERSION}}" python3 -c '
+    import os, re, sys
+    V = os.environ["V"]
+    lines = open("CHANGELOG.md", encoding="utf-8").read().splitlines()
+    start = end = None
+    fence = False
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        if re.match(r"^## \[" + re.escape(V) + r"\]\s*(?:-.*)?$", ln):
+            start = i + 1
+        elif start is not None and ln.startswith("## "):
+            end = i
+            break
+    if start is None:
+        sys.exit("release-notes: CHANGELOG.md has no `## [" + V + "]` section")
+    body = lines[start:end if end is not None else len(lines)]
+    # Drop the trailing link-reference block.
+    while body and (not body[-1].strip() or re.match(r"^\[.+\]:", body[-1])):
+        body.pop()
+    body = "\n".join(body).strip()
+    if not body:
+        sys.exit("release-notes: `## [" + V + "]` section is empty")
+    print(body)
+    print()
+    print("## Assets")
+    print()
+    print("| File | What |")
+    print("|------|------|")
+    for slug, human in (("x86_64-linux", "Linux x86-64"), ("aarch64-linux", "Linux ARM64"), ("aarch64-darwin", "macOS Apple silicon")):
+        print("| `nibli-" + V + "-" + slug + ".tar.gz` | " + human + " binaries: `nibli-host`, `nibli`, `nibli-validate`, `nibli-pin` |")
+    print("| `nibli-pipeline-" + V + ".wasm` | The WASI P2 engine component (architecture-independent) |")
+    print("| `SHA256SUMS` | Checksums for every asset above |")
+    print()
+    print("`nibli-host` loads the component: `NIBLI_WASM_PATH=./nibli-pipeline-" + V + ".wasm ./nibli-host`")
+    print()
+    print("The macOS archive is unsigned — after a browser download, clear the quarantine flag:")
+    print("`xattr -dr com.apple.quarantine ./nibli-host`")
+    print()
+    print("Libraries are on crates.io at " + V + " (`cargo add nibli-engine`); API docs on docs.rs.")
+    print()
+    print("Full changelog: https://github.com/dhilipsiva/nibli/blob/v" + V + "/CHANGELOG.md")
+    print()
+    print("Docs: https://dhilipsiva.github.io/nibli/ · Playground: https://dhilipsiva.dev/nibli-playground/")
+    '
+
+# Release-profile binaries for the CURRENT platform.
+# NEVER --workspace: that links the cdylib/component crates and the WIT `@`
+# export symbols break the linker (see .cargo/mutants.toml). NEVER
+# --features bench-bins: those bins include_str! repo-root corpora.
+release-bins:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release --locked -p nibli-host -p nibli
+    for b in nibli-host nibli nibli-validate nibli-pin; do
+      if [ ! -x "target/release/$b" ]; then
+        echo "release-bins FAILED: target/release/$b missing (renamed [[bin]]?)" >&2
+        exit 1
+      fi
+    done
+    echo "release-bins PASS: 4 binaries in target/release/"
+
+# Package this platform's binaries as dist/nibli-VERSION-SLUG.tar.gz.
+# Tarred HERE, inside the matrix job, because actions/upload-artifact does not
+# preserve the executable bit — a raw binary would arrive mode 0644 and ship
+# un-runnable.
+release-dist VERSION SLUG: release-bins
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stage="target/release-stage/nibli-{{VERSION}}-{{SLUG}}"
+    rm -rf "$stage" && mkdir -p "$stage" dist
+    for b in nibli-host nibli nibli-validate nibli-pin; do cp "target/release/$b" "$stage/"; done
+    cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
+    tar czf "dist/nibli-{{VERSION}}-{{SLUG}}.tar.gz" -C "target/release-stage" "nibli-{{VERSION}}-{{SLUG}}"
+    echo "release-dist PASS: dist/nibli-{{VERSION}}-{{SLUG}}.tar.gz"
+
+# The WASI component, release profile, renamed for release.
+# Needs cargo-component → runs in the DEFAULT devshell, not `.#release`.
+# The lib target is named `nibli` (nibli-pipeline/Cargo.toml `[lib] name`), so
+# the artifact on disk is nibli.wasm; the rename lives here, not in YAML.
+release-wasm VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just profile=release build-wasm
+    mkdir -p dist
+    cp "target/wasm32-wasip2/release/nibli.wasm" "dist/nibli-pipeline-{{VERSION}}.wasm"
+    echo "release-wasm PASS: dist/nibli-pipeline-{{VERSION}}.wasm"
+
+# Publish the Tier A crates to crates.io. SAFE TO RE-RUN — that is the whole
+# design. `cargo publish --workspace` hard-errors on an already-published
+# version (verify_unpublished bails before uploading anything), so a resume
+# passes --exclude for each crate already live. Excluding is far better than a
+# hand-rolled per-crate loop: it keeps cargo's own dependency ordering and
+# index-propagation waits instead of re-implementing them.
+# Pass any non-empty second arg for a rehearsal (--dry-run needs no token).
+# A DRY RUN DELIBERATELY SKIPS THE PREFLIGHT and always runs cargo, so it
+# verify-BUILDS all 13 tarballs. Taking the early "all already live" exit
+# instead would make the rehearsal prove nothing about packaging — and at the
+# current release every crate IS already live, which is exactly when you most
+# want the rehearsal to mean something. cargo downgrades already-published from
+# an error to a warning under --dry-run, so no --exclude is needed here.
+release-publish VERSION DRY_RUN="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just release-verify {{VERSION}}
+    if [ "{{DRY_RUN}}" != "" ]; then
+      echo "release-publish: REHEARSAL — packaging + verify-building every Tier A crate."
+      echo "  (expect one 'already exists' warning per crate already on crates.io)"
+      cargo publish --workspace --locked --dry-run
+      echo "release-publish PASS (dry run): all tarballs package and build"
+      exit 0
+    fi
+    attempt=1
+    while :; do
+      # Partition against the SPARSE INDEX (the same source cargo's own
+      # verify_unpublished consults) — never against cargo's error text.
+      # Recomputed every attempt so a retry after a partial upload sees it.
+      mapfile -t already < <(V="{{VERSION}}" python3 -c '
+    import json, os, subprocess, sys, urllib.request
+    V = os.environ["V"]
+    md = json.loads(subprocess.run(["cargo","metadata","--format-version","1","--no-deps"],
+                                   capture_output=True, text=True, check=True).stdout)
+    # Derive Tier A from the manifests; never hardcode the list.
+    names = sorted(p["name"] for p in md["packages"] if p["publish"] is None)
+    print("::TIERA::" + str(len(names)), file=sys.stderr)
+    for n in names:
+        p = ("1/" if len(n) == 1 else "2/" if len(n) == 2 else "3/" + n[0] + "/" if len(n) == 3
+             else n[:2] + "/" + n[2:4] + "/")
+        url = "https://index.crates.io/" + p + n
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "nibli-release (github.com/dhilipsiva/nibli)"})
+            raw = urllib.request.urlopen(req, timeout=30).read().decode()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                print("::NEW::" + n, file=sys.stderr)   # never published at ANY version
+                continue
+            raise
+        if any(json.loads(l)["vers"] == V for l in raw.splitlines() if l.strip()):
+            print(n)
+    ' 2>>/tmp/nibli-publish-probe.log )
+      total=$(grep -o '::TIERA::[0-9]*' /tmp/nibli-publish-probe.log | tail -1 | cut -d: -f5)
+      if grep -q '::NEW::' /tmp/nibli-publish-probe.log; then
+        echo "warning: these crates have never been published — the crates.io NEW-CRATE rate limit (burst 5, then ~1/10min) applies; publish them manually once first:" >&2
+        grep -o '::NEW::.*' /tmp/nibli-publish-probe.log | sed 's/::NEW::/  - /' >&2
+      fi
+      echo "release-publish: ${#already[@]}/${total:-?} crates already live at {{VERSION}}"
+      if [ "${#already[@]}" -eq "${total:-0}" ] && [ "${total:-0}" -gt 0 ]; then
+        echo "release-publish: nothing to publish — all ${total} Tier A crates are already at {{VERSION}}"
+        exit 0
+      fi
+      excludes=()
+      for c in "${already[@]}"; do excludes+=(--exclude "$c"); done
+      if [ "${#already[@]}" -gt 0 ]; then
+        echo "release-publish: resuming, excluding ${#already[@]} already-published crate(s)"
+      fi
+      if cargo publish --workspace --locked ${excludes[@]+"${excludes[@]}"}; then
+        echo "release-publish PASS"
+        exit 0
+      fi
+      if [ "$attempt" -ge 3 ]; then
+        echo "release-publish FAILED after $attempt attempts. Already-live crates are permanent." >&2
+        echo "Re-run \`just release-publish {{VERSION}}\` — it skips what landed. See RELEASING.md §Partial-publish recovery." >&2
+        exit 1
+      fi
+      # cargo waits only 60s per dependency wave for index confirmation and the
+      # timeout is unstable-gated, so a slow index is the realistic failure.
+      # Sleep past the sparse-index CDN TTL before re-probing.
+      echo "release-publish: attempt $attempt failed; re-probing in 90s" >&2
+      sleep 90
+      attempt=$((attempt + 1))
+    done
+
+# Roll the tree to VERSION: bump the workspace version, move the CHANGELOG's
+# [Unreleased] into a dated section, refresh the lock. Does NOT commit or tag —
+# you review the diff. Refuses rather than pretending to be idempotent; the
+# undo is `git checkout -- Cargo.toml Cargo.lock CHANGELOG.md`.
+release-prep VERSION DATE="": release-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    V="{{VERSION}}" D="{{DATE}}" python3 -c '
+    import os, re, subprocess, sys, tomllib
+    from datetime import datetime, timezone
+    V = os.environ["V"]
+    D = os.environ["D"] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    def die(msg, hint=None):
+        print("release-prep REFUSED: " + msg)
+        if hint: print("  " + hint)
+        sys.exit(1)
+    if V.startswith("v"):
+        die("pass " + V[1:] + ", not " + V, "the tag carries the v, the manifest does not")
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", V):
+        die(repr(V) + " is not a plain X.Y.Z version",
+            "pre-release versions have no CHANGELOG/tag precedent here — cut them by hand")
+    with open("Cargo.toml", "rb") as f:
+        root = tomllib.load(f)
+    old = root["workspace"]["package"]["version"]
+    if old == V:
+        die("already at " + V + " — nothing to prep")
+    if tuple(int(x) for x in V.split(".")) <= tuple(int(x) for x in old.split(".")):
+        die("refusing to go from " + old + " down to " + V)
+    def git(*a):
+        return subprocess.run(["git", *a], capture_output=True, text=True).stdout.strip()
+    if subprocess.run(["git","diff","--quiet"]).returncode or subprocess.run(["git","diff","--cached","--quiet"]).returncode:
+        die("working tree is dirty", "the point of this recipe is that you review its diff — commit or stash first")
+    if git("tag","-l","v"+V):
+        die("tag v" + V + " already exists locally")
+    remote = subprocess.run(["git","ls-remote","--tags","origin","refs/tags/v"+V], capture_output=True, text=True)
+    if remote.returncode == 0 and remote.stdout.strip():
+        die("tag v" + V + " already exists on origin", "that release is public — bump the patch instead")
+    elif remote.returncode != 0:
+        print("release-prep: NOTE — could not reach origin to check for tag v" + V + " (offline?)")
+    branch = git("branch","--show-current")
+    if branch != "main":
+        print("release-prep: NOTE — on branch " + repr(branch) + ", not main.")
+        print("  Expected for a hotfix (RELEASING.md §Hotfix); otherwise check you meant this.")
+    # ── CHANGELOG parse ──
+    text = open("CHANGELOG.md", encoding="utf-8").read()
+    lines = text.splitlines()
+    heads, fence = [], False
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence: continue
+        m = re.match(r"^## \[([^\]]+)\]", ln)
+        if m: heads.append((i, m.group(1)))
+    names = [h[1] for h in heads]
+    if V in names:
+        die("CHANGELOG.md already has a `## [" + V + "]` section",
+            "undo a half-finished prep with: git checkout -- Cargo.toml Cargo.lock CHANGELOG.md")
+    if not names or names[0] != "Unreleased":
+        die("CHANGELOG.md must start with `## [Unreleased]`")
+    u_start = heads[0][0] + 1
+    u_end = heads[1][0] if len(heads) > 1 else len(lines)
+    body = "\n".join(lines[u_start:u_end]).strip()
+    if not body or body == "Nothing yet.":
+        if os.environ.get("NIBLI_RELEASE_ALLOW_EMPTY") != "1":
+            die("[Unreleased] is empty — a release with no documented changes violates the CHANGELOG-required decision",
+                "write the entries first, or set NIBLI_RELEASE_ALLOW_EMPTY=1")
+        body = "Maintenance release; no user-facing changes."
+    # ── Cargo.toml: SECTION-SCOPED line edits ──
+    # Not a tomllib round-trip: tomllib is parse-only, and any writer would
+    # discard the root manifest comment blocks that encode locked decisions.
+    dep_names = {k for k, v in root["workspace"].get("dependencies", {}).items()
+                 if isinstance(v, dict) and "version" in v}
+    expected = 1 + len(dep_names)          # derived, never hardcoded
+    out, section, edits = [], None, 0
+    for ln in open("Cargo.toml", encoding="utf-8").read().splitlines(keepends=True):
+        h = re.match(r"^\[([^\]]+)\]", ln)
+        if h: section = h.group(1)
+        if section == "workspace.package" and re.match(r"^version\s*=\s*\"" + re.escape(old) + r"\"\s*$", ln.strip()):
+            ln = ln.replace("\"" + old + "\"", "\"" + V + "\"", 1); edits += 1
+        elif section == "workspace.dependencies" and ln.split("=")[0].strip() in dep_names:
+            new_ln = re.sub(r"(version\s*=\s*)\"" + re.escape(old) + r"\"", r"\1\"" + V + "\"", ln, count=1)
+            if new_ln != ln: ln = new_ln; edits += 1
+        out.append(ln)
+    if edits != expected:
+        die("expected " + str(expected) + " version edits in Cargo.toml, made " + str(edits) + " — aborting before write")
+    open("Cargo.toml", "w", encoding="utf-8").writelines(out)
+    with open("Cargo.toml", "rb") as f:
+        chk = tomllib.load(f)
+    bad = [k for k, v in chk["workspace"].get("dependencies", {}).items()
+           if isinstance(v, dict) and "version" in v and v["version"] != V]
+    if chk["workspace"]["package"]["version"] != V or bad:
+        die("post-write reparse disagrees (workspace.package or " + repr(bad) + ") — restore with git checkout")
+    # ── CHANGELOG roll ──
+    new = lines[:u_start] + ["", "Nothing yet.", "", "## [" + V + "] - " + D, ""] + body.splitlines() + [""] + lines[u_end:]
+    text = "\n".join(new) + "\n"
+    text = re.sub(r"^\[Unreleased\]:\s*(\S*)/compare/\S+\.\.\.HEAD\s*$",
+                  lambda m: "[Unreleased]: " + m.group(1) + "/compare/v" + V + "...HEAD\n[" + V + "]: " + m.group(1) + "/releases/tag/v" + V,
+                  text, count=1, flags=re.M)
+    open("CHANGELOG.md", "w", encoding="utf-8").write(text)
+    print("release-prep: " + old + " -> " + V + " (" + D + "); " + str(edits) + " manifest edits")
+    '
+    # Refresh the lock. --workspace is REQUIRED: a bare `cargo update`
+    # re-resolves every third-party dep and turns a version bump into an
+    # unreviewable diff. Never "fix" a failure here by dropping the flag.
+    cargo update --workspace --offline || cargo update --workspace
+    just release-verify {{VERSION}}
+    echo ""
+    echo "Nothing has been committed or tagged. Review, then:"
+    echo "  git diff"
+    echo "  just ci-all"
+    echo "  git commit -am 'release(v{{VERSION}}): <summary>'"
+    echo "  git push origin main          # let CI go green BEFORE tagging"
+    echo "  git tag -a v{{VERSION}} -m 'v{{VERSION}}' && git push origin v{{VERSION}}"
+    echo ""
+    echo "The tag push runs .github/workflows/release.yml: gates -> artifacts ->"
+    echo "draft Release -> crates.io -> publish. See RELEASING.md."
+    echo "Undo this prep with: git checkout -- Cargo.toml Cargo.lock CHANGELOG.md"
 
 # Wipes all compilation artifacts
 clean:

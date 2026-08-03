@@ -1,0 +1,323 @@
+name: Release
+
+# Tag -> gates -> artifacts -> DRAFT GitHub Release -> crates.io -> publish.
+#
+# The publish is FULLY AUTOMATIC (no approval environment), so the compensating
+# controls are: a cargo-free preflight that fails closed, an IRREVERSIBLE-LAST
+# job order, and a DRAFT release that only goes public once crates.io succeeded.
+# crates.io cannot be undone — a version number is consumed forever, yanked or
+# not. See RELEASING.md.
+#
+# Everything substantive lives in `just release-*` recipes so it is locally
+# testable and reviewable; this file is wiring.
+
+on:
+  push:
+    tags:
+      # NOT 'v*' — that also matches the archival tag `v0.1-lojban-final` and
+      # would drive the whole pipeline with VERSION=0.1-lojban-final.
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to rehearse, no leading v (blank = the workspace version)'
+        required: false
+        type: string
+
+# A manual run is ALWAYS a rehearsal — see the `dry_run` output in `setup`.
+
+permissions:
+  contents: read
+
+concurrency:
+  # Global, not per-ref: serialises back-to-back releases so two runs never
+  # race the same crates.io rate-limit bucket. cancel-in-progress MUST stay
+  # false — cancelling mid-`cargo publish` is how a half-published workspace
+  # happens. (Deliberately the opposite of docs-pages.yml.)
+  group: nibli-release
+  cancel-in-progress: false
+
+jobs:
+  # ── Everything knowable without a compiler, in ~1 minute ──────────────────
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    env:
+      # Never the token itself — just whether it exists. Secrets are not
+      # available in a step-level `if:`, so hoisting to job env is what makes
+      # the check legal (same mechanism as redeploy-site.yml, opposite polarity:
+      # that one self-skips, this one must fail LOUDLY).
+      HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The ancestry check below needs history; the other jobs stay shallow.
+          fetch-depth: 0
+
+      - name: Resolve version, tag and mode
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
+            VERSION="${REF_NAME#v}"
+            DRY=false
+          else
+            # A manual run is FORCED to a rehearsal. With no approval gate a
+            # mis-clicked "publish for real" checkbox would be a permanent
+            # crates.io write, so the option simply does not exist. Recovery
+            # for a failed tag run is GitHub's "Re-run failed jobs", which
+            # preserves event_name == 'push'.
+            VERSION="${INPUT_VERSION:-$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')}"
+            DRY=true
+          fi
+          case "$VERSION" in
+            *-*) PRERELEASE=true ;;
+            *)   PRERELEASE=false ;;
+          esac
+          {
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            echo "dry_run=$DRY"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+          echo "### Release $VERSION (dry_run=$DRY, prerelease=$PRERELEASE)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Require the crates.io token for a real release
+        env:
+          DRY: ${{ steps.resolve.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY" != "true" ] && [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error title=CARGO_REGISTRY_TOKEN unset::This tag push would publish to crates.io. Add the repo secret (scope: publish-update on the Tier A crates, with an expiry) and re-run." >&2
+            exit 1
+          fi
+
+      - name: Tagged commit must be on main
+        if: github.event_name == 'push'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error title=Tag is not on main::$SHA is not an ancestor of origin/main. Push main first (and let CI go green), then tag. If you pushed branch and tag together, re-run this job." >&2
+            exit 1
+          fi
+
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41
+      - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98
+
+      - name: Preflight — tag / manifest / lock / CHANGELOG agree
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: nix develop --extra-experimental-features 'nix-command flakes' .#release --command just release-verify "$VERSION"
+
+  # ── The full engine gate, reusing ci.yml so the two can never drift ───────
+  gate:
+    needs: setup
+    uses: ./.github/workflows/ci.yml
+
+  # ── The WASI component: architecture-independent, so built once ──────────
+  wasm:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41
+      - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98
+
+      # The DEFAULT devshell here: this is the one job that needs
+      # cargo-component, which .#release deliberately omits.
+      - name: Build the release component
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: nix develop --extra-experimental-features 'nix-command flakes' --command just release-wasm "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-wasm
+          path: dist/*.wasm
+          retention-days: 14
+          if-no-files-found: error
+
+  # ── Native binaries, one job per target ──────────────────────────────────
+  bins:
+    needs: setup
+    timeout-minutes: 90
+    strategy:
+      # A partial asset set must never reach the draft release.
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    slug: x86_64-linux,   arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, slug: aarch64-linux,  arch: aarch64 }
+          # Pinned, not macos-latest: a moving alias would silently shift the
+          # ABI floor of the shipped binaries.
+          - { runner: macos-15,         slug: aarch64-darwin, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41
+      - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98
+
+      - name: Confirm the runner architecture
+        env:
+          WANT: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          GOT="$(uname -m)"
+          [ "$GOT" = "$WANT" ] || { echo "::error::runner reports $GOT, matrix expects $WANT — a runner label changed under us" >&2; exit 1; }
+
+      # .#release, not the default shell: the default one carries
+      # vampire/clingo/lean4/dioxus-cli, which on aarch64-darwin risk source
+      # builds or unavailability — and this workflow's Nix cache starts cold.
+      - name: Build and package
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          SLUG: ${{ matrix.slug }}
+        run: nix develop --extra-experimental-features 'nix-command flakes' .#release --command just release-dist "$VERSION" "$SLUG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bin-${{ matrix.slug }}
+          path: dist/*.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+
+  # ── Draft release: everything reversible happens here ────────────────────
+  release:
+    needs: [setup, gate, wasm, bins]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41
+      - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # Explicit globs so SHA256SUMS never hashes itself; sort makes the
+          # file deterministic regardless of matrix completion order.
+          sha256sum -- *.tar.gz *.wasm | sort -k2 > SHA256SUMS
+          { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release notes from CHANGELOG
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: nix develop --extra-experimental-features 'nix-command flakes' .#release --command just release-notes "$VERSION" > NOTES.md
+
+      - name: Create or update the DRAFT release
+        if: needs.setup.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.setup.outputs.tag }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          PRERELEASE: ${{ needs.setup.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # NOTE: deliberately no --draft here. Passing --draft to `edit` on
+            # an already-published release would RETRACT it.
+            gh release edit "$TAG" --title "nibli $VERSION" --notes-file NOTES.md
+          else
+            args=(--draft --title "nibli $VERSION" --notes-file NOTES.md)
+            [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+            gh release create "$TAG" "${args[@]}"
+          fi
+          gh release upload "$TAG" dist/* --clobber
+
+      - name: Rehearsal — what would have shipped
+        if: needs.setup.outputs.dry_run == 'true'
+        run: |
+          { echo '## Dry run — no release created'; echo; echo '### Assets'; echo '```';
+            ls -la dist; echo '```'; echo '### Notes'; cat NOTES.md; } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── The irreversible step, last ──────────────────────────────────────────
+  publish:
+    needs: [setup, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Zero GITHUB_TOKEN scopes: the registry token and repo-write are never in
+    # the same job. Magic Nix Cache uses ACTIONS_RUNTIME_TOKEN, not
+    # GITHUB_TOKEN, so it still works here.
+    permissions: {}
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41
+      - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98
+
+      # A MISSING token was caught in setup; an EXPIRED or REVOKED one is not,
+      # and would otherwise fail at upload time — after some crates landed.
+      - name: crates.io token is live
+        if: needs.setup.outputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: $CARGO_REGISTRY_TOKEN" \
+            -H "User-Agent: nibli-release (github.com/dhilipsiva/nibli)" \
+            https://crates.io/api/v1/me)
+          [ "$code" = "200" ] || { echo "::error title=crates.io token rejected::HTTP $code from /api/v1/me — the secret is expired, revoked, or malformed." >&2; exit 1; }
+
+      - name: Publish Tier A
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          DRY: ${{ needs.setup.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # In a rehearsal this still packages and verify-BUILDS all Tier A
+          # tarballs — the part most likely to be broken by a packaging change.
+          # Bind through env, never interpolate an expression into the command.
+          MODE=""
+          [ "$DRY" = "true" ] && MODE="dry"
+          nix develop --extra-experimental-features 'nix-command flakes' .#release \
+            --command just release-publish "$VERSION" "$MODE"
+
+  # ── Make it public, and only now ─────────────────────────────────────────
+  finalize:
+    needs: [setup, publish]
+    if: needs.setup.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Undraft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.setup.outputs.tag }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --draft=false
+
+      - name: docs.rs build links
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "## docs.rs builds (check in a few hours)" >> "$GITHUB_STEP_SUMMARY"
+          for c in nibli-types nibli-lexicon nibli-protocol nibli-kr nibli-semantics \
+                   nibli-reason nibli-render nibli-session nibli-store nibli-engine \
+                   nibli-formalize nibli-import nibli; do
+            echo "- https://docs.rs/crate/$c/$VERSION/builds" >> "$GITHUB_STEP_SUMMARY"
+          done

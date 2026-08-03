@@ -31,6 +31,20 @@
         nightlyFuzzToolchain = pkgs.rust-bin.nightly."2026-03-15".default;
       in
       {
+        # Minimal shell for the RELEASE workflow's artifact + publish jobs
+        # (`nix develop .#release`). Deliberately NOT the default shell: that
+        # one carries vampire/clingo/lean4/dioxus-cli/cargo-fuzz/maturin, which
+        # on aarch64-darwin risk source builds or unavailability — and
+        # release.yml starts with a COLD Magic Nix Cache (the cache is
+        # per-workflow), so closure size matters far more there than in ci.yml.
+        # Reuses the same `rustToolchain` binding as the default shell, so every
+        # released binary comes from the flake-pinned rustc on all three targets.
+        # python3 is here because the release-* recipes follow release-check's
+        # `python3 + tomllib` idiom.
+        devShells.release = pkgs.mkShell {
+          buildInputs = [ rustToolchain pkgs.just pkgs.python3 ];
+        };
+
         devShells.default = pkgs.mkShell {
 
           buildInputs = with pkgs; [

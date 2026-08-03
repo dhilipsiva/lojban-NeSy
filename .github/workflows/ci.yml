@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  # release.yml's `gate` job calls this workflow, so the release gate IS the CI
+  # gate by construction and the two can never drift.
+  workflow_call:
 
 jobs:
   runtime-ci:
