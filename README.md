@@ -39,12 +39,12 @@ nibli KR is a strict predicate-call surface for first-order claims: intuitive to
 | `animal(every dog).` | every dog is an animal (a rule) |
 | `~eats(Adam).` | Adam does not eat |
 | `past eats(me, some food).` | I ate some food |
-| `dog(Adam) & cat(Betis).` | conjunction (`\|` or, `->` if-then) |
+| `dog(Adam) & cat(Betis).` | conjunction (`->` if-then; `\|` or is queryable, but a *bare* disjunction cannot be asserted — it ingests no facts) |
 | `goes(Adam, destination: some market).` | named argument places, Python-style |
 | `beautiful(every person where ~cat).` | rule with a negated restrictor (negation-as-failure) |
 | `Kim = Adam.` | identity — Kim and Adam are the same individual |
 | `red(exactly 2 red).` | exact-count claim |
-| `runs(some [big dog]).` | compound predicate: a big-dog kind of runner |
+| `runs(some [big dog]).` | tanru — juxtaposed modifier, `[ ]` groups explicitly: a big-dog kind of runner (productive, unlike the fail-closed `a+b` compounds) |
 | `desires(desired: every teaches, desirer: event { studies() }).` | event abstraction |
 | `all $x: dangerous($x) & uses(Adam, $x) -> warns($x).` | explicit prenex rule with variables |
 
@@ -61,11 +61,11 @@ nibli KR text ──> Front-end (nibli-kr) ──> Semantic Compiler (FOL IR) �
              (fail-closed name resolution)          + event semantics         over indexed fact store
 ```
 
-Both front-ends emit the same flat AST buffer, so everything downstream is shared. The pipeline stages are linked as internal Rust crate dependencies and compiled into a single WASM component:
+The front-end emits a flat AST buffer, so everything downstream is shared — an alternative front-end only has to produce that buffer (see [LOGIC_IR.md](LOGIC_IR.md)). The pipeline stages are linked as internal Rust crate dependencies and compiled into a single WASM component:
 
 | Crate | Name origin | Role |
 |-------|---------------|------|
-| **nibli-kr** | — | nibli KR text → AST → flat WIT buffer (pest grammar + fail-closed alias resolution + the canonical renderer) |
+| **nibli-kr** | — | nibli KR text → flat AST buffer — the *internal* front-end↔compiler interchange, not a WIT boundary (pest grammar + fail-closed alias resolution + the canonical renderer) |
 | **nibli-semantics** | — | AST buffer → FOL logic IR → flat WIT logic buffer |
 | **nibli-reason** | — | FOL logic buffer → backward-chaining assertion, query, and proof |
 | **nibli-pipeline** | — | Orchestrator: chains the front-end → nibli-semantics → nibli-reason into a single WASM component |
@@ -76,10 +76,12 @@ Supporting crates:
 | Crate | Role |
 |-------|------|
 | **nibli-lexicon** | The committed English corpus — strongly-typed predicate + compound entries (name, named places, gloss, template, gismu provenance), const-validated; the single vocabulary source for every stage |
-| **nibli-engine** | Native in-process embedding of the pipeline (used by tests and the store layer) |
+| **nibli-engine** | Native in-process embedding of the pipeline — **the crate to depend on when embedding nibli in Rust** ([Install](#install)) |
 | **nibli-ui** | Standalone Dioxus web UI — the engine is compiled in and runs fully in-browser |
 | **nibli-wasm** | wasm-bindgen wrapper exposing the in-browser pipeline (powers the live demo) |
-| **nibli** | Native debug REPL and `nibli-validate` tooling |
+| **nibli** | Native debug REPL and the `nibli-validate` / `nibli-import` / `nibli-pin` tooling |
+
+Everything above **except `nibli-pipeline`, `nibli-host`, `nibli-ui` and `nibli-wasm`** is published on crates.io at the workspace version — those four ship as the WASM component, the host binary and the hosted sites instead ([Install](#install)).
 
 The FOL IR in the middle of the pipeline — the `LogicBuffer` — is nibli's language-agnostic
 seam and is publicly specified in **[LOGIC_IR.md](LOGIC_IR.md)** (node types, flat-buffer
@@ -111,11 +113,12 @@ Code-derived human docs live in **`mdbook/`** (mdBook). They are **not** the Ora
 
 | Surface | How |
 |---------|-----|
-| **Live mirror** | https://dhilipsiva.github.io/nibli/ |
+| **Docs site** | https://dhilipsiva.github.io/nibli/ |
 | Local | `just docs` / `just docs-serve` (http://127.0.0.1:3000) inside `nix develop` |
-| Primary (site integration) | https://dhilipsiva.dev/docs/nibli/ — see [`DEPLOY.md`](DEPLOY.md) |
+| Site integration (planned) | `dhilipsiva.dev/docs/nibli/` — pending the site-repo copy, see [`DEPLOY.md`](DEPLOY.md) §2b |
 | Playground | https://dhilipsiva.dev/nibli-playground/ |
-| Rust API | `cargo doc -p <crate> --open` — [docs.rs](https://docs.rs) when crates are published |
+| Rust API | [docs.rs/nibli-engine](https://docs.rs/nibli-engine) — all published crates indexed in the [API index](https://dhilipsiva.github.io/nibli/api-index.html); locally `cargo doc -p <crate> --open` |
+| Releasing | [`RELEASING.md`](RELEASING.md) · changes land in [`CHANGELOG.md`](CHANGELOG.md) first |
 | Roadmap | [`DOCS_TODO.md`](DOCS_TODO.md) |
 
 Root specs remain canonical: [`NIBLI_KR.md`](NIBLI_KR.md), [`LOGIC_IR.md`](LOGIC_IR.md), [`GUARANTEES.md`](GUARANTEES.md).
@@ -127,13 +130,94 @@ Built-in, zero-hallucination **authorization** (entailment of `authorized(...)` 
 | Piece | Location |
 |-------|----------|
 | Guide | [mdBook: Authorization](https://dhilipsiva.github.io/nibli/user/authorization.html) (or `just docs-serve`) |
-| Rust crate | `nibli-auth` — `Authorizer`, `tls` (thread-local for async servers) |
-| WIT | `nibli:engine@0.6.0` export `authorizer` |
+| Rust crate | `nibli-auth` — `Authorizer`, `tls` (thread-local for async servers). Not on crates.io yet (`publish = false`) — use a git or path dependency |
+| WIT | `nibli:engine@0.7.0` export `authorizer` (the version lives in `wit/world.wit`) |
 | Python | `just build-auth-py` → `nibli_auth` / `nibli_auth_native` |
 | Examples | `examples/auth-axum`, `examples/auth-fastapi` (same policy) |
 | Tests | `just test-auth`; Python: `just test-auth-py` (local, maturin) |
 
 Policy file: `nibli-auth/policy/auth-0.1.0.nibli`. Extism is **not** the primary interface (optional future PDK only).
+
+## Install
+
+All published crates share one version (workspace lockstep), dual-licensed `MIT OR Apache-2.0`.
+
+> **0.x caveat.** Minor versions may break APIs; the embed surface (`nibli-engine`) is not
+> yet declared stable. Every change is documented in [`CHANGELOG.md`](CHANGELOG.md) first.
+
+### Embed the engine in Rust
+
+```bash
+cargo add nibli-engine
+```
+
+`nibli-engine` is the native in-process embedding — no Wasmtime, no server, no network:
+
+```rust
+use nibli_engine::{EngineError, NibliEngine, display_query_result, display_term};
+
+// NOTE: EngineError does not implement std::error::Error, so main returns it
+// directly rather than Box<dyn Error>.
+fn main() -> Result<(), EngineError> {
+    let engine = NibliEngine::new();
+
+    // Assert facts and rules — one nibli KR statement per call.
+    engine.assert_text("animal(every dog).")?;
+    engine.assert_text("dog(Adam).")?;
+
+    // A query STATES the claim to check; there is no interrogative form.
+    let (verdict, proof, _json) = engine.query_text_with_proof("animal(Adam).")?;
+    println!("{}", display_query_result(&verdict)); // TRUE
+    print!("{proof}");
+
+    // Witness extraction: every binding that satisfies the claim.
+    for bindings in engine.query_find_text("dog($x).")? {
+        for b in bindings.iter().filter(|b| b.variable.starts_with('$')) {
+            println!("{} = {}", b.variable, display_term(&b.term)); // $x = adam
+        }
+    }
+    Ok(())
+}
+```
+
+`NibliEngine::open(path)` swaps the in-memory store for a durable redb one; `query_holds`
+returns just the verdict; `retract_fact(id)` retracts by the id `assert_text` minted.
+Full API: [docs.rs/nibli-engine](https://docs.rs/nibli-engine).
+
+### Install the CLI (no Nix required)
+
+```bash
+cargo install nibli
+```
+
+Installs `nibli` (a native REPL that reasons in-process, so it needs no WASM component),
+plus `nibli-validate`, `nibli-import` and `nibli-pin`.
+
+### Prebuilt binaries
+
+From the [latest release](https://github.com/dhilipsiva/nibli/releases/latest). **v0.1.0**
+ships Linux x86-64 only, as raw binaries — `nibli-host-v0.1.0-x86_64-linux`,
+`nibli-validate-v0.1.0-x86_64-linux`, `nibli-pipeline-v0.1.0.wasm`, and `SHA256SUMS`.
+
+`nibli-host` is the Wasmtime host REPL; it loads the component from `NIBLI_WASM_PATH` and
+otherwise looks for a source-tree path that will not exist beside a downloaded binary:
+
+```bash
+NIBLI_WASM_PATH=./nibli-pipeline-v0.1.0.wasm ./nibli-host-v0.1.0-x86_64-linux
+```
+
+> **The asset layout changes from 0.2.0.** Releases then ship one
+> `nibli-<version>-<slug>.tar.gz` per platform (`x86_64-linux`, `aarch64-linux`,
+> `aarch64-darwin`), each bundling `nibli-host`, `nibli`, `nibli-validate`, `nibli-pin`
+> and the licenses, alongside the `.wasm` and `SHA256SUMS`. Read the asset table on the
+> release page itself.
+
+### Build from source
+
+See [Getting Started](#getting-started) — Nix supplies the full toolchain
+(cargo-component, wasmtime, just) needed for the WASM component, the UI, and the CI gates.
+
+---
 
 ## Getting Started
 
@@ -155,7 +239,7 @@ just test
 ```
 
 > **Dictionary data.** The dictionary is COMMITTED Rust source: `nibli-lexicon/src/corpus/`
-> holds ~1,342 strongly-typed predicate entries (every place named in English;
+> holds a four-figure set of strongly-typed predicate entries (every place named in English;
 > `arity = places.len()` by construction) plus curated `a+b` compound entries, derived
 > from the [lensisku](https://lensisku.lojban.org) Lojban dictionary (jbovlaste data,
 > CC-BY-SA) and const-validated on every compile. There is ONE build mode — no JSON is
@@ -261,10 +345,16 @@ You query by **stating the proposition you want checked**, not by asking a quest
 | `:memory [mb]` | Show or set the WASM memory limit |
 | `:strict [on\|off]` | Show or set strict mode — reject arity/constraint violations instead of warn-and-insert (also `NIBLI_STRICT=1`) |
 | `:existential-import [on\|off]` | Show or set xorlo witness minting (default ON) — off is the clean-core profile where a description universal (`animal(every dog).`) presupposes nothing, so `some` = plain ∃ (also `NIBLI_EXISTENTIAL_IMPORT=0`) |
-| `:contradictions` | Scan the KB for contradictions |
-| `:trace <predicate>` | Enable tracing for a predicate |
-| `:untrace <predicate>` | Disable tracing for a predicate |
-| `:traces` | List all active traces |
+| `:materialize [on\|off]` | Show or set stratum-ordered NAF materialisation (default ON) and print the saturation report — which relations were completed, and why any were refused (also `NIBLI_MATERIALIZE=0`) |
+| `:db` | Show the persistent store status (set `NIBLI_DB_PATH` to enable) |
+| `:proof-verbose <statement>` | Query with the full role-level proof trace instead of the collapsed one |
+
+Environment: `NIBLI_WASM_PATH` (component path), `NIBLI_FUEL`, `NIBLI_MEMORY_MB`,
+`NIBLI_COMPUTE_ADDR`, `NIBLI_DB_PATH`, `NIBLI_QUIET`, plus the mode flags above.
+
+The `nibli` developer REPL (`just run-native`, or `cargo install nibli`) is a *different*
+surface — it reasons in-process without Wasmtime and carries extra debugging commands
+(`:trace` / `:untrace` / `:traces`) that `nibli-host` does not have.
 
 ---
 
@@ -358,7 +448,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Backward chaining** over a typed, hash-indexed fact store with predicate-indexed lookup
 - **Universal rules** compiled to backward-chaining templates (`UniversalRuleRecord`) at assertion time
 - **Skolemization:** independent constants and dependent Skolem functions (`SkolemFn` + `DepPair` for multi-dependency)
-- **Proof traces:** every query produces a proof tree (20 `ProofRule` variants) with DAG memoization via `ProofRef`
+- **Proof traces:** every query produces a proof tree over the `ProofRule` taxonomy (`nibli-types/src/logic.rs`) with DAG memoization via `ProofRef`
 - **Witness extraction:** `query-find` returns all satisfying binding sets for existential variables
 - **Belief revision:** retract-and-rebuild with monotonic fact IDs; `:retract <id>` and `:facts` REPL commands
 - **Four-valued query result:** `TRUE`, `FALSE`, `UNKNOWN` (cycle cut / incomplete knowledge / NAF dependent / backend unavailable / non-finite), `RESOURCE_EXCEEDED` (depth / fuel / memory)
@@ -368,7 +458,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Numerical comparisons:** `greater` (>), `less` (<), `num_equal` (==) evaluated at query time on `Num` terms
 - **Compute dispatch:** `compute-backend` WIT protocol with `ComputeNode` IR variant; results auto-asserted into KB
 - **Ground conjunction flattening:** top-level `And` trees flattened before assertion; ground material conditionals auto-registered as zero-variable rules for modus ponens
-- **Equality reasoning:** `du` (identity) with union-find congruence closure
+- **Equality reasoning:** the `=` identity builtin (compiled relation `equals`) with union-find congruence closure
 - **Stratification enforcement:** predicate dependency graph analysis prevents unsound negative cycles
 - **Stratum-ordered materialisation:** the stratification is also USED, not only checked — the relations a query reads under `~` are saturated bottom-up in stratum order, so `~p(x)` is a set-membership test rather than an exhaustive attempt to prove `p(x)` and fail. Fail-closed: tense/deontic flavours, `du` equivalence classes, compute conditions and non-projectable rules are refused and keep the ordinary backward-chaining path. `NIBLI_MATERIALIZE=0` turns it off
 - **Integrity constraints:** `deny` rules enforce assertion-time invariants
@@ -377,15 +467,15 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Hypothetical reasoning:** `with_assumptions()` for clone-query-discard patterns
 - **Selective forward chaining:** `forward: bool` on rules with `trigger_forward_rules`
 - **Aggregation:** `count_witnesses`, `aggregate(Sum/Min/Max/Avg)`
-- **Persistent fact store:** `FactStore` trait with InMemory, Redb, and WASI backends
+- **Persistent fact store:** `FactStore` trait with in-memory (`InMemoryFactStore`) and redb (`RedbFactStore`) backends
 - **Iterative deepening:** shallowest-proof guarantee
 - **Tabling:** cached results with invalidation on mutations
-- **KB import/export:** RDF Turtle parser, OWL class mapping via the `nibli-import` crate and CLI (`just import <file.ttl>`, with `--raw`/`--export`/`--lang`/`--query` flags)
+- **KB import/export:** RDF Turtle parser, OWL class mapping via the `nibli-import` crate and CLI (`just import <file.ttl>`, with `--raw`/`--export`/`--query` flags)
 - **Failure traces:** `PredicateNotFound`, `RuleAttemptFailed`, `EqualitySubstitution` proof rule variants explain why derivations fail
 - **Argument-position indexing:** `(relation, position, value)` secondary index for efficient witness extraction
 - **Predicate signature validation:** arity checking from PHF dictionary with permissive warnings
 - **Closed-world visibility:** `naf_dependent` (a `na→True` NAF result) and its dual `cwa_false` (a `FALSE` that is closed-world — "not derivable", not a disproof — vs. a numeric FALSE that was decided) flag CWA-dependent conclusions on every proof trace; both render a closed-world caveat
-- **Interactive debugging:** `:trace`/`:untrace`/`:traces` REPL commands
+- **Interactive debugging:** `:debug <text>` in the `nibli-host` REPL; `:trace`/`:untrace`/`:traces` in the `nibli` developer REPL (`just run-native`)
 - **WASM fuel limits:** configurable via `NIBLI_FUEL` or `:fuel` REPL command
 - **WASM memory limits:** configurable via `NIBLI_MEMORY_MB` or `:memory` REPL command
 - **Error types:** `nibli-error` variant (`syntax`/`semantic`/`reasoning`/`backend`) with line:column for parse errors
@@ -413,11 +503,39 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 | `just fuzz-assert [SECS]` | Fuzz assertion pipeline |
 | `just fuzz-query [SECS]` | Fuzz stateful KB queries |
 | `just fuzz-ci [SECS]` | Time-boxed fuzz gate (all 3 targets, corpus-seeded) — runs in CI |
-| `just ci` | Full CI suite |
+| `just verify-soundness` | The differential soundness gate (Vampire + clingo oracles, plus the stratification/retraction/materialisation differentials) |
+| `just verify-proofs` | Check the Lean 4 mechanized soundness proofs |
+| `just verify-pins` | KB-level behavioural pins (`pins/*.nibli`) |
+| `just release-check` | Release consistency gate (lockstep versions, publish flags, crates.io metadata) — part of `ci` |
+| `just ci` | Fast native gate: fmt, clippy, all native test + verify gates (no WASM build) |
+| `just ci-all` | Comprehensive gate — `ci` + the 16 WASM behavioural smokes. This is what GitHub CI runs |
 | `just clean` | `cargo clean` |
+
+---
+
+## Releasing
+
+Full runbook: **[`RELEASING.md`](RELEASING.md)** — it covers what is and is not reversible,
+the yank policy, hotfixes, and partial-publish recovery. Changes land in
+[`CHANGELOG.md`](CHANGELOG.md) first.
+
+All publishable crates share one version (lockstep — there is no per-crate semver), and the
+WIT ABI version (`nibli:engine@…`) moves independently of it.
+
+| Command | Description |
+|---------|-------------|
+| `just release-prep X.Y.Z` | Bump the version, roll the CHANGELOG, refresh the lock — commits and tags nothing |
+| `just release-verify X.Y.Z` | Is this tree exactly X.Y.Z and ready to ship? (release moment only) |
+
+Pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml):
+preflight → gates + artifacts → **draft** GitHub Release → crates.io → undraft. The
+irreversible step runs last, and the release stays a draft until it succeeds. Rehearse any
+time via Actions → Release → *Run workflow*; a manual run is always a dry run.
 
 ---
 
 ## License
 
-See `LICENSE` for details.
+Dual-licensed under either [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
+option. See [`NOTICE`](NOTICE) for third-party attributions — the committed corpus derives
+from lensisku/jbovlaste data under CC-BY-SA.
