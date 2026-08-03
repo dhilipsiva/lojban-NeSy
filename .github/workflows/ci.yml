@@ -2,6 +2,11 @@ name: CI
 
 on:
   push:
+    # Branches only. Naming `branches` at all suppresses TAG pushes, which
+    # release.yml now owns — its `gate` job calls this workflow, so a tagged
+    # commit still gets the full gate, once instead of twice. '**' matches
+    # across slashes, so feat/foo still runs.
+    branches: ['**']
   pull_request:
   # release.yml's `gate` job calls this workflow, so the release gate IS the CI
   # gate by construction and the two can never drift.
