@@ -94,6 +94,9 @@
 
             # Code-derived docs site (`just docs` / `just docs-serve` → mdbook/)
             mdbook
+            # Mermaid preprocessor for the developer-guide crate map; `just docs`
+            # runs `mdbook-mermaid install` so the JS assets stay ungenerated in git
+            mdbook-mermaid
 
             # PyO3 extension for nibli-auth (`just build-auth-py`)
             maturin

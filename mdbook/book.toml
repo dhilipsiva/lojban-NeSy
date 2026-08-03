@@ -9,6 +9,13 @@ src = "src"
 build-dir = "book"
 create-missing = false
 
+# Renders ```mermaid fences (the developer-guide crate map). The JS assets
+# (mermaid.min.js / mermaid-init.js) are generated into mdbook/ by
+# `mdbook-mermaid install` — `just docs` runs it before every build; they are
+# gitignored, never committed.
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
 [output.html]
 # Relative chapter/asset links so one artifact can later ship under both:
 #   primary:  https://dhilipsiva.dev/docs/nibli/
@@ -18,3 +25,4 @@ create-missing = false
 git-repository-url = "https://github.com/dhilipsiva/nibli"
 edit-url-template = "https://github.com/dhilipsiva/nibli/edit/main/mdbook/{path}"
 site-url = "/docs/nibli/"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]

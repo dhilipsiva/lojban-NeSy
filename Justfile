@@ -830,6 +830,9 @@ docs site_url="":
     if [ -n "{{site_url}}" ]; then
       export MDBOOK_OUTPUT__HTML__SITE_URL="{{site_url}}"
     fi
+    # Regenerate the gitignored mermaid JS assets (idempotent; book.toml is
+    # already configured, so this only drops mermaid.min.js + mermaid-init.js).
+    mdbook-mermaid install mdbook
     mdbook build mdbook
 
 # Same as `just docs /nibli/` (GitHub Pages project base path)
@@ -838,6 +841,7 @@ docs-pages-build:
 
 # Serve docs locally (http://127.0.0.1:3000) — default primary site-url
 docs-serve:
+    mdbook-mermaid install mdbook
     mdbook serve mdbook -p 3000 -n 127.0.0.1
 
 # Wipes all compilation artifacts

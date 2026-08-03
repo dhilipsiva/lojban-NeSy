@@ -17,6 +17,11 @@
 # Developer guide
 
 - [Overview](developer/overview.md)
+- [Crate map](developer/crate-map.md)
+- [Pipeline & IR](developer/pipeline-and-ir.md)
+- [WASM, host & compute](developer/wasm-host-compute.md)
+- [Soundness & CI index](developer/soundness-ci.md)
+- [WIT surface](developer/wit-surface.md)
 
 # Reference
 

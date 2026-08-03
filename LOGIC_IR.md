@@ -180,7 +180,7 @@ fragment filter scans source tokens for exactly this reason). Scope details live
 - **Persistence** uses postcard (binary) over the same serde derives — `nibli-engine` stores
   each asserted root's `LogicBuffer` verbatim; a round-trip test covers every node and term
   variant.
-- **WIT** ([wit/world.wit](wit/world.wit), package `nibli:engine@0.6.0`) declares the same types
+- **WIT** ([wit/world.wit](wit/world.wit), package `nibli:engine@0.7.0`) declares the same types
   for the WASM component boundary: kebab-case variant names (`for-all-node` ↔ `ForAllNode`),
   identical declaration order (the component-model discriminant is positional). The
   ABI-matching types (`logic-node`/`logical-term`/`logic-buffer`/`query-result`/…) are
@@ -214,7 +214,7 @@ without touching the IR:
 |---|---|---|
 | `nibli_engine::NibliEngine` (native Rust) | `assert_text -> Vec<u64>`, `query_text_with_proof`, `query_find_text`, `retract_fact`, `compile_debug`, optional redb persistence | Splits roots: a multi-statement text becomes N independent facts |
 | `nibli-wasm` `Session` (browser JS) | `assert_text -> Vec<u64>`, `query_with_proof -> JSON string`, `list_facts -> JSON`, `retract_fact`, `reset` | The query JSON has keys `status`, `detail`, `naf_dependent`, `cwa_false`, `proof_text`, `why`, `proof` (the full `ProofTrace`) |
-| `nibli-pipeline` WASM component (WIT world `nibli-pipeline`) | `assert-text -> list<(fact-id, logic-buffer)>`, `assert-buffer-with-id` (recompile-free replay), `query-text-with-proof -> (query-result, proof-trace)`, `compile-debug -> logic-buffer`, `assert-fact`, `set-strict`, … | Imports `compute-backend` from the host. Splits roots like the native surfaces; each pair carries the root's compiled buffer so a persisting host (nibli-host) stores the FACT itself. `assert-text-with-id` remains as a legacy replay path for pre-buffer text-payload store rows |
+| `nibli-pipeline` WASM component (WIT world `nibli-pipeline`) | `assert-text -> list<(fact-id, logic-buffer)>`, `assert-buffer-with-id` (recompile-free replay), `query-text-with-proof -> (query-result, proof-trace)`, `compile-debug -> logic-buffer`, `assert-fact`, `set-strict`, … | Imports `compute-backend` from the host. Splits roots like the native surfaces; each pair carries the root's compiled buffer so a persisting host (nibli-host) stores the FACT itself. (The legacy `assert-text-with-id` text-replay path was removed at `nibli:engine@0.5.0` with store schema v3 — `assert-buffer-with-id` is the one replay primitive) |
 
 Verdicts everywhere are `QueryResult`: `True`, `False`, `Unknown(reason)` (cycle-cut /
 incomplete-knowledge / naf-dependent / backend-unavailable / non-finite), or
@@ -256,7 +256,7 @@ differentially tested), so a producer gets soundness checking for free.
 - The `ProofRule`/`ProofStep`/`ProofTrace` JSON contract, and the `[Syntax Error]` /
   `[Semantic Error]` / `[Reasoning Error]` / `[Backend Error]` prefixes of `NibliError`'s
   `Display` (documented in-source as a formal cross-consumer contract).
-- The WIT `logic-types` interface (`nibli:engine@0.6.0`).
+- The WIT `logic-types` interface (`nibli:engine@0.7.0`).
 
 **Internal (may change without notice):**
 - Variable naming (`_v0…`, `_ev0…`), Skolem names (`sk_N` — minted by the reasoner, never in a
@@ -267,7 +267,7 @@ differentially tested), so a producer gets soundness checking for free.
 - `AggregateOp` and the compute wire structs are Rust-side auxiliaries, not buffer types.
 
 **Versioning:** the buffer itself carries no version field. The WIT package version
-(`nibli:engine@0.6.0`) and the persistence layers' fail-closed schema versions (`nibli-store`)
+(`nibli:engine@0.7.0`) and the persistence layers' fail-closed schema versions (`nibli-store`)
 are the only version markers; adding a `LogicNode`/`LogicalTerm` variant is a breaking change
 across every conversion site (an in-source exhaustiveness guard enumerates them). Treat the
 format as pre-1.0: pin a commit if you build against it, and expect additive evolution.
