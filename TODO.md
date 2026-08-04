@@ -2,8 +2,9 @@
 
 **Future-facing only.** An entry is here because it is still true and still wants doing —
 delete it when it lands rather than marking it done, and put the record in the commit.
-Every entry was re-verified against the tree on 2026-08-01; where a claim cites a line,
-that line was checked, not remembered.
+The pre-existing entries were re-verified against the tree on 2026-08-01. The
+review-derived entries added on 2026-08-04 were checked against the cited current source;
+where a claim cites a line, that line was checked, not remembered.
 
 Release runbook: **`RELEASING.md`**. Docs hosting: **`DEPLOY.md`**. Book manuscript:
 separate `book/` repo (`book/TODO.md`). The docs + release tracker `DOCS_TODO.md` was
@@ -105,6 +106,73 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   so a refactor to fresh-per-scope Skolems would silently break it; whichever way this
   resolves, it wants a pin. Ripple: Ch 21 + NIBLI_KR.md §6 together.
 
+- **Eliminate hash-only semantic identity (rules and opaque abstractions).** Two
+  correctness decisions currently depend on a 64-bit digest with no equality fallback:
+  `nibli-reason/src/rules.rs`:4-10 hashes a rule and `known_rules: HashSet<u64>` silently
+  skips any second rule with the same digest (:1251-1257, :1746-1754), while
+  `nibli-semantics/src/semantic/predicate.rs`:34-46,355-371 turns the canonical content
+  of an opaque abstraction into `__abs_<fnv64>`. The abstraction body is deliberately
+  ignored by reasoning, so a collision makes different quoted propositions identical;
+  a rule collision silently removes a premise-to-conclusion path. “Astronomically
+  unlikely” is not a soundness argument for adversarial input. Replace both hash-only
+  identities with lossless canonical keys or collision buckets that compare the full
+  canonical structure before dedup/match. Preserve stable rendering without making a
+  digest the source of truth. **Exit:** forced-collision tests prove distinct rules and
+  abstractions remain distinct, alpha-equivalent forms still deduplicate, assert/query
+  compiles agree across sessions, and `just test`, `just test-engine`,
+  `just verify-nibli-kr-seam`, and `just verify-soundness` pass. Ripple: Chapters 4, 7,
+  9, and Appendix H must stop claiming structural hashes establish semantic identity.
+
+- **Make temporal lifting a declared semantic choice, not an untyped global rule.**
+  `try_backward_chain_typed` unconditionally gives every tensed goal a second pass over
+  bare rules (`nibli-reason/src/reasoning.rs`:2548-2577), re-tensing every condition.
+  That is defensible for timeless taxonomy (`dog -> animal`) but can be false for causal,
+  episodic, or normative rules; the language has no rule class that distinguishes them.
+  Decide between explicit opt-in lifting, a restricted proved-safe class, or removal of
+  automatic lifting. Specify how tensed antecedents/conclusions, NAF, proof labels, and
+  materialisation interact. **Exit:** paired taxonomy and causal counterexamples pin the
+  chosen behavior through the KR surface, the seam and soundness differentials cover it,
+  and NIBLI_KR/guarantees/Chapters 4, 5, 9 and Appendix H state the same contract.
+
+- **Reconcile existential import with find/count semantics.** A description universal
+  mints `presupposition_witnesses` when existential import is on
+  (`nibli-reason/src/rules.rs`:1290-1320). Those constants satisfy existential and
+  universal queries, but `CountNode` explicitly removes them
+  (`nibli-reason/src/reasoning.rs`:1046-1068), and the KB contract says `??` does too
+  (`nibli-reason/src/kb.rs`:734-740). The same KB can therefore report that some `P`
+  exists while exposing zero `P` witnesses/count, which is not ordinary FOL counting and
+  is easy to misread as a contradiction. Choose one coherent profile: include imported
+  witnesses everywhere, expose separate logical-versus-observed count/find operations,
+  or make clean-core/no-import the high-assurance default. In every case expose witness
+  origin. **Exit:** metamorphic tests cover `some P`, `?? P`, `exactly 0/1 P`, and count
+  before/after retraction with import on/off; UI/host report the active profile; Chapters
+  5 and 8 plus Appendices A, B, E, and K match the implemented algebra.
+
+- **Separate internal Skolem identity from user constants.** `GroundTerm::Constant`
+  represents both user data and generated witnesses (`nibli-reason/src/kb.rs`:145-165),
+  the generator emits unchecked `sk_<counter>` strings (:956-965), and reasoning uses
+  that spelling as a semantic classifier (`nibli-reason/src/reasoning.rs`:2440-2452).
+  Direct LogicBuffer/WIT, replay, and compute paths can supply the same string even if the
+  KR surface normally cannot, aliasing user data with an internal witness. Introduce a
+  tagged/opaque Skolem term, or reserve and reject the namespace at every ingress and stop
+  inferring origin from a prefix. **Exit:** adversarial `sk_0` constants remain distinct
+  through equality, event roles, find/count, proof, persistence, and retraction/rebuild;
+  rendering may show a friendly `sk_N` without using that display as identity; direct,
+  component, replay, and compute collision tests pass with `just test`,
+  `just test-engine`, `just ci-wasm`, and `just verify-soundness`.
+
+- **Stop presenting generative exact-count assertions as persistent cardinality
+  constraints.** A top-level `big(exactly 1 dog).` currently creates one fresh matching
+  witness (`nibli-reason/src/rules.rs`:1783-1834); it does not register an invariant.
+  A later matching assertion can make the original count false, and `exactly 0` stores no
+  prohibition at all. Choose one explicit contract: persist/enforce an atomic cardinality
+  constraint (including zero), reject count assertions and retain counts as queries, or
+  introduce separately named generative syntax. **Exit:** sequences for exactly-one then a
+  second match, zero then a match, duplicate/equality-collapsed entities, retraction,
+  rebuild/reopen, proof provenance, and import on/off are pinned through the KR surface;
+  the renderer/spec/Chapters 4 and 8 plus Appendices A/B/E stop calling witness generation
+  an exact-cardinality assertion.
+
 ---
 
 ## Compute / fact lifecycle
@@ -121,6 +189,30 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   current outage-cache semantics as the contract (dispatch-first on every query;
   the stored fact is consulted only when dispatch errors) and say so in
   GUARANTEES.md.
+
+- **Track fact origin so traces cannot call derived/cache facts “asserted.”**
+  `trace_predicate_provenance_typed` treats any exact `fact_store` hit as
+  `ProofRule::Asserted` (`nibli-reason/src/reasoning.rs`:2724-2735), but that same store
+  receives forward-derived facts (`nibli-reason/src/rules.rs`:985-1098) and compute
+  auto-ingestion. Neither carries the user `FactRecord` id/label/source. This can turn a
+  derived or trusted-oracle premise into a displayed `[given]`, defeating the proof's
+  trust-boundary story. Introduce explicit origin metadata (user assertion id, rule id,
+  compute request/response provenance, presupposition, or other internal source), retain
+  it through equivalence and rebuild, and render origins honestly. **Exit:** tests force
+  the same ground fact through each origin and require distinct serialized/WIT proof
+  steps; duplicate user assertions remain separately citable; retraction/reopen retains
+  provenance; Chapters 10, 11, 16 and Appendices C/E recapture real output.
+
+- **Define a high-assurance compute admission policy.** Today a backend `true` crosses a
+  plaintext JSONL/TCP seam and is inserted as a premise. The current disclosure is honest,
+  but there is no authenticated request/response binding, backend/schema version,
+  freshness/expiry/revocation policy, or durable provenance. Decide whether v0.1 remains
+  explicitly low-assurance or add an opt-in policy that verifies identity/integrity and
+  records the exact request, response, backend version, timestamp/nonce, and admission
+  decision before assertion. **Exit:** tampered, replayed, stale, mismatched, unavailable,
+  and revoked responses have fail-closed tests; proof/export surfaces identify oracle
+  premises; protocol and host docs state the residual TCB. Ripple: Chapters 2, 16, 21 and
+  Appendices C/E/H.
 
 ---
 
@@ -147,6 +239,82 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   one-tuple delta rather than rebuild — `eval_rule`'s `delta_pos` marker is already a
   delta-driven round. `Invalid` for retraction, rebuild, reset, rule registration, and
   any non-`Bare` or `equals` insert (both can retroactively disqualify a relation).
+
+- **Bind proof traces to the full verdict and durable evidence.** `ProofStep` exposes only
+  `holds: bool`, while `ProofTrace` carries `naf_dependent` and `cwa_false` but not the
+  root `QueryResult`, UNKNOWN reason, or RESOURCE_EXCEEDED kind
+  (`nibli-types/src/logic.rs`:268-297). Native callers receive a separate tuple, but a
+  serialized/cached trace can no longer prove which non-TRUE result it accompanied.
+  `ProofRule::Asserted` also contains only a display string, not a fact id. Define one
+  versioned result-plus-certificate envelope (or narrow the public “proof” contract), with
+  configuration/corpus/engine versions and stable evidence ids sufficient for an
+  independent checker. **Exit:** round-trip and independent-validation tests cover TRUE,
+  closed-world FALSE, arithmetic FALSE, every UNKNOWN reason, every resource kind, NAF,
+  equality, duplicate assertions, compute premises, and replay; WIT/protocol/host/UI and
+  Appendix C evolve together.
+
+- **Use structural proof-memo keys and checked proof indices.** The provenance tracer
+  memoizes by `fact.to_display_string()` (`nibli-reason/src/reasoning.rs`:2700-2719), even
+  though `StoredFact` already implements structural `Eq + Hash`. Human rendering is not a
+  safe identity boundary (numeric bit patterns, wrappers, descriptions, and future display
+  changes can alias), and step indices repeatedly cast `usize` to `u32`. Key memoization by
+  `StoredFact` (plus any proof context that affects derivation), keep display at the render
+  edge, and fail cleanly if a proof cannot be indexed. **Exit:** collision-shaped tests
+  exercise structurally distinct facts with identical/ambiguous renderings and confirm no
+  cross-reference reuse; oversized/deep traces return a typed resource/error outcome; the
+  memo regression suite and `just verify-proofs` remain green.
+
+- **Preserve or explicitly invalidate rule execution settings across rebuild.**
+  `set_rule_forward` and `set_rule_priority` mutate compiled `UniversalRuleRecord`s, but
+  those settings are not part of `FactRecord`; `rebuild_inner` recreates rules at default
+  `forward=false, priority=0` and suppresses forward firing while `rebuilding` is true
+  (`nibli-reason/src/lib.rs`:238-308; `rules.rs`:599-607,985-988). An unrelated retraction
+  therefore changes rule configuration and fact-store/proof shape even when definitive
+  query answers remain backward-derivable. Either persist/reapply the settings as session
+  configuration or make the setters explicitly ephemeral and remove claims of replay
+  equivalence that include them. **Exit:** set forward/priority, retract an unrelated id,
+  rebuild/reopen, and assert the documented configuration, eager facts, proof origin, and
+  verdict; add this case to the retraction differential.
+
+- **Make aggregation fail closed instead of returning a partial numeric result.**
+  `KnowledgeBase::aggregate` uses `filter_map` over witness bindings
+  (`nibli-reason/src/lib.rs`:1128-1159), silently dropping a witness when the requested
+  variable is absent or nonnumeric and then summing/averaging the survivors. It also does
+  not reject non-finite operands or overflowed results, while the embedding API exposes
+  only `Option<f64>`. Define a typed outcome that distinguishes empty input, incomplete or
+  mixed bindings, non-finite input/result, and a valid aggregate; preserve the existing
+  depth/cycle incompleteness refusal. **Exit:** missing-variable, mixed string/number,
+  NaN/infinity, overflow, empty, and all-numeric controls are pinned; session/engine/WIT
+  callers propagate the outcome without collapsing it; aggregate provenance states the
+  contributing witnesses/count or the book narrows its proof claim. Ripple: Chapter 20 and
+  Appendices B/E.
+
+---
+
+## Shipped case-study corpora
+
+- **Redesign `drug-interactions.nibli` around a patient-local exposure event.** The
+  concentration rules at :71-72 derive drug-level risk from global inhibition/metabolism,
+  and the alert rule at :94 checks only that Adam uses the risky substrate. Retracting
+  `uses(Adam, Flukonazol)` therefore does not withdraw the warfarin alert; a second patient
+  taking warfarin alone can inherit risk from an inhibitor nobody in that regimen takes.
+  Model co-administration explicitly and decide/document the dosage, route, timing,
+  phenotype, evidence-quality, and uncertainty boundary with a pharmacology reviewer.
+  **Exit:** patient-isolation and inhibitor-retraction negatives, dose/route/time boundary
+  tests, and clinically reviewed scenario fixtures pass in `nibli-engine`, `nibli-ui`, and
+  the pin/seam gates; Chapter 20 is recaptured from the live corpus and is labeled a
+  synthetic teaching model until that review exists.
+
+- **Replace person-level GDPR proxies with operation-scoped legal facts.**
+  `gdpr.nibli`:46-78 derives a generic `permitted(person)` from `approves/promise/obliged`
+  and uses absence of `approves` under NAF as the erasure trigger. It does not identify the
+  processing operation, controller, data, purpose, consent scope/withdrawal time,
+  alternative lawful bases, Article 17 exceptions, or jurisdiction/effective text; NAF
+  absence is not a legal finding. Design an operation-scoped schema and corpus with legal
+  review, explicit coverage assumptions, exceptions, and dated primary sources. **Exit:**
+  multi-controller/multi-purpose/withdrawal/alternative-basis/exception counterexamples
+  are pinned; missing evidence yields an honest non-compliance-neutral result rather than
+  a legal conclusion; engine/UI fixtures and Chapter 19 consume the same live artifact.
 
 ---
 
@@ -186,6 +354,35 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 Surfaced by the book's review passes (2026-07-26) and RE-VERIFIED against the tree on
 2026-08-01 — every entry below still reproduces. Each names its book ripple where one
 exists.
+
+- **Render computed FALSE as a decision, not closed-world non-derivability.** A query such
+  as `greater(3, 5)` carries a false `ComputeCheck` leaf, but
+  `nibli-render/src/summary.rs`:191-211 has no compute-false arm and falls back to “could
+  not be derived from the known facts and rules.” Handle local arithmetic/numeric FALSE
+  and trusted-backend FALSE explicitly, without a CWA caveat, while ordinary missing-fact
+  FALSE keeps the non-derivability explanation. **Exit:** renderer, host, UI, protocol and
+  WASM tests distinguish local computed FALSE, backend FALSE, backend unavailable,
+  non-finite UNKNOWN, and ordinary CWA FALSE; Chapter 17 is recaptured from real bytes.
+
+- **Settle the RDF export contract.** `nibli-import/src/export.rs`:1-17 calls its output
+  N-Triples/RDF-like but emits only comment lines of the form `# fact:<id> <label>` and
+  still describes labels as Lojban source. This is neither RDF nor a typed round-trip,
+  while Chapter 21 advertises Turtle import and export. Either implement valid
+  Turtle/N-Triples export from typed facts with tested IRI/literal mapping, or rename the
+  feature to a fact-label dump and remove RDF-export claims. **Exit:** real RDF takes an
+  export -> independent parser -> re-import round trip with identity/literal/alias tests;
+  a narrowed dump gets an exact-format contract and stale comments removed. Synchronize
+  Chapters 16/21, CLI help, README, and the reference gate.
+
+- **Remove the retired two-path retraction story from active docs and benchmarks.**
+  `KnowledgeBase::retract_fact_inner` now always rebuilds and ID-sorts survivors
+  (`nibli-reason/src/lib.rs`:200-229,286-295), but the public API comment at :1179-1180,
+  `nibli-engine/benches/engine_bench.rs`:198-246, and Chapter 11 still describe or measure
+  an incremental/O(1) ground-fact path. Rename or remove the stale benchmark leg, measure
+  the one real path, and reconcile API prose plus Chapter 11. **Exit:**
+  `rg -n 'incremental.*retract|retraction_incremental|two-path' nibli-reason nibli-engine/benches book/P3_C11*`
+  finds no active two-path claim; the replacement benchmark asserts its fixture/verdicts
+  and reports reproducible hardware/profile/methodology; retraction tests remain green.
 
 - **`obliged`-spelled every-duty renders the wrong obligated party.**
   `obliged(every data governs, event { message() }).` back-translates as "For every
