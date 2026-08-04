@@ -262,6 +262,7 @@ mod provenance;
 mod retraction_negation;
 mod rules_edges;
 mod skolem;
+mod stacked_modifiers;
 mod strict;
 mod tense;
 mod traces;

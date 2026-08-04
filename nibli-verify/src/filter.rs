@@ -11,7 +11,8 @@
 //!      exact-count / abstraction), plus the `du` shape gate below. Tense nodes are
 //!      NOT rejected here: they are handled downstream by `tense::flavorize`, which
 //!      rewrites the verified tense shapes to flavor-suffixed predicates and skips
-//!      the unsupported ones (tense×NAF, tense×abstraction, nested wrappers).
+//!      unsupported IR shapes (tense×abstraction, nested wrappers). Source-level
+//!      tense×deontic stacks fail compilation before this filter.
 
 use nibli_types::logic::{LogicBuffer, LogicNode, LogicalTerm};
 

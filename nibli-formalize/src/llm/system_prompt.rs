@@ -44,8 +44,9 @@ A restrictor may add a modifier (last word is the head: \"every data controller\
 
 Operators, precedence tightest-first: \"~\" (not) · the \"past\"/\"now\"/\"future\" and \"must\"/\"may\" prefixes · \"&\" (and) · \"|\" (or) · \"^\" (xor) · \"<->\" (iff) · \"->\" (if-then, right-associative). Parentheses group. \"A -> B\" is a rule.
 
-Prefixes — at most one deontic (\"must\"/\"may\"), one tense (\"past\"/\"now\"/\"future\"), and one \"~\", written in THAT fixed order (deontic outermost, then tense, then negation innermost):
-- \"must past ~eats(Adam).\" is legal; keep that order.
+Prefixes — choose at most ONE prefix family per atom: either one deontic (\"must\"/\"may\") OR one tense (\"past\"/\"now\"/\"future\"), optionally followed by one \"~\" (negation innermost):
+- \"must ~eats(Adam).\" and \"past ~eats(Adam).\" are legal single-prefix examples.
+- Never combine a tense and a deontic: both must-past and past-must orderings are rejected because the runtime has one flavor slot.
 - \"past ~P\" is fine; \"~past P\" is NOT expressible — reword.
 - Prefixes and \"~\" attach to a single predicate atom only: \"past (A & B)\" and \"~(A & B)\" are REJECTED — distribute by hand (write \"~A | ~B\").
 
@@ -219,6 +220,10 @@ mod tests {
         assert!(
             prompt.contains(nibli_kr::GRAMMAR.trim_end()),
             "system prompt does not embed the pest grammar"
+        );
+        assert!(
+            prompt.contains("Never combine a tense and a deontic"),
+            "system prompt does not teach the fail-closed prefix contract"
         );
         // Known corpus lines are present, gismu-free.
         assert!(

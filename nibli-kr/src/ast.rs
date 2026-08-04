@@ -9,10 +9,11 @@
 //!
 //! Shape invariants the parser guarantees (NIBLI_KR §6 + the 2026-07-12
 //! errata):
-//! - [`Claim::Prefixed`] exists only when at least one prefix is present, and
+//! - [`Claim::Prefixed`] exists only when exactly one prefix family is present
+//!   (one tense OR one deontic, never both), and
 //!   its `atom` is a `Predication`, an `Equality`, or `Not` of one of those
-//!   (`must past ~P` ≡ `Obligatory(Past(Not(P)))` — negation innermost,
-//!   matching nibli-semantics's verified wrapper-emission order).
+//!   (`past ~P` ≡ `Past(Not(P))` and `must ~P` ≡ `Obligatory(Not(P))` —
+//!   negation innermost).
 //! - [`Claim::Not`] wraps only a `Predication` or `Equality` (never another
 //!   `Not`, never a prefixed or compound claim — those spellings are
 //!   grammar-level rejects).
@@ -65,9 +66,9 @@ pub enum Claim {
     And(Box<Claim>, Box<Claim>),
     /// `~A` — negation (`na`). Operand is a `Predication`/`Equality` only.
     Not(Box<Claim>),
-    /// Tense/deontic prefixes (`must past P`). Present only when at least one
-    /// prefix is set; `atom` is `Predication`/`Equality`, optionally under
-    /// `Not` (`past ~P`).
+    /// One tense OR deontic prefix (`past P`, `must P`). Present only when
+    /// exactly one field is set; `atom` is `Predication`/`Equality`, optionally
+    /// under `Not` (`past ~P`, `must ~P`).
     Prefixed {
         deontic: Option<DeonticMood>,
         tense: Option<Tense>,

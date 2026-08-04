@@ -127,8 +127,14 @@ contract, not accident:
   this IR; a same- or
   cross-flavor rule has wrappers on its antecedent/conclusion literals.
   Built-in identity and query-time compute dispatch retain their own semantics.
-  Although the IR can nest tense and deontic nodes, the current fact/rule store
-  has one flavor slot; nested modifier composition is not implied by this rule.
+  One formula path may contain at most one temporal or deontic wrapper. The KR
+  parser rejects mixed prefixes in either order, the AST compiler and renderer
+  reject a programmatic proposition carrying both fields, and the reasoner
+  rejects any manually nested temporal/deontic `LogicNode` wrappers before
+  assertion, query/find, proof construction, materialisation, or replay. The WIT
+  variants remain individually representable, but their nesting is not admitted
+  engine input because the fact/rule store has one flavor slot. The check is
+  path-sensitive: separate rule literals may still carry different wrappers.
 - **Abstractions are opaque.** `event { }`/`fact { }`/`property { }`/`amount { }`/
   `concept { }` bodies compile to
   `And(type_pred, And(__abs_v1_<digest>_<key>(referent), body))`. `<key>` is the hex encoding

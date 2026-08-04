@@ -101,22 +101,26 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   lifting), not an engine-code change. **Exit:** examples distinguish bare-rule FALSE
   from explicitly flavored TRUE and cross-flavor causation; implementation walkthroughs
   contain no deleted helper/phase; limitations describe conservative surface-relation
-  stratification and the separately tracked stacked-modifier gap; `verify_book.py`,
+  stratification and the fail-closed mixed-prefix restriction; `verify_book.py`,
   `verify_book_refs.py`, and `capture_book.py --check` pass in the book repo, and root
   `just verify-book-refs` reports no stale temporal claim.
 
-- **Make stacked tense×deontic semantics compositional or reject the syntax.**
-  KR accepts and the seam structurally pins `must past ~P` as
-  `Obligatory(Past(Not(P)))` (`NIBLI_KR.md` §6; `nibli_kr_seam_gate.rs`), but runtime
-  facts/rule templates have one mutually exclusive `StoredFact` flavor and the
-  evaluator/flatteners overwrite an outer wrapper when they descend into an inner one
-  (`nibli-reason/src/reasoning.rs`:561-637; `rules.rs`:186-237,361-409). The compiled
-  tree therefore advertises a modifier product the reasoner cannot represent. Choose a
-  real product type with defined NAF/proof/materialisation semantics, or fail closed on
-  stacked modifiers before assertion/query; do not silently pick one wrapper. **Exit:**
-  fact, query, antecedent, conclusion, NAF, proof-trace, and retraction tests cover both
-  modifier orders; the seam and external oracle either model the product or pin rejection;
-  KR/IR/guarantees and the relevant book chapters state the same implemented contract.
+- **Synchronize the manuscript with fail-closed stacked tense×deontic syntax
+  (engine decision complete 2026-08-04).** The engine now rejects a second flavor
+  wrapper on the same formula path instead of silently discarding one: both mixed
+  prefix orders fail in KR, programmatic dual-field AST propositions fail at
+  compile/render, and manually nested raw IR fails before assertion, rules/NAF,
+  query/find, proof, materialisation, retraction replay, or persisted-buffer replay.
+  Engine docs and tests pin the path-sensitive boundary; separate rule literals may
+  still map flavors explicitly (`past P -> must Q`). The nested `book/` repo must now
+  sweep every chapter/appendix occurrence of stacked modifiers, `must past`, compiler
+  ordering, the old O3 pin, or the one-slot "not guaranteed" limitation. This is a
+  `book-todo` task, not an engine-code change. **Exit:** valid examples distinguish
+  `past ~P`, `must ~P`, and separate-literal flavor mappings; invalid examples and
+  limitations state that both mixed orders are compile errors; no prose advertises a
+  nested product the runtime cannot encode; `verify_book.py`, `verify_book_refs.py`,
+  and `capture_book.py --check` pass in the book repo, and root
+  `just verify-book-refs` reports no stale stacked-modifier claim.
 
 - **Reconcile existential import with find/count semantics.** A description universal
   mints `presupposition_witnesses` when existential import is on

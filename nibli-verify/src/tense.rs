@@ -39,9 +39,10 @@
 //! - **tense × abstraction** (`__abs_` under any flavor): suffixing would break the
 //!   opaque lossless marker identity between rule head and query.
 //! - **nested / exotic tense placements** (tense inside an event group, tensed
-//!   whole-rule spines, stacked tense×deontic wrappers): outside this verifier's
-//!   single-temporal-wrapper fragment, so they fail closed rather than acquire an
-//!   invented suffix product.
+//!   whole-rule spines): outside this verifier's single-temporal-wrapper fragment,
+//!   so they fail closed rather than acquire an invented suffix product. Source KR
+//!   tense×deontic stacks are rejected before IR emission; the raw-IR defense below
+//!   still refuses a hand-built stack in either order.
 
 use nibli_types::logic::{LogicBuffer, LogicNode};
 
@@ -314,6 +315,10 @@ mod tests {
         nodes.push(LogicNode::PresentNode(c));
         (nodes.len() - 1) as u32
     }
+    fn obligatory(nodes: &mut Vec<LogicNode>, c: u32) -> u32 {
+        nodes.push(LogicNode::ObligatoryNode(c));
+        (nodes.len() - 1) as u32
+    }
     fn var(s: &str) -> LogicalTerm {
         LogicalTerm::Variable(s.to_string())
     }
@@ -376,6 +381,30 @@ mod tests {
         assert_eq!(kb2.len(), 1);
         assert_eq!(rels(&kb2[0]), vec!["gerku__pu", "gerku__pu_x1"]);
         assert_eq!(rels(&q2), vec!["gerku__pu", "gerku__pu_x1"]);
+    }
+
+    #[test]
+    fn raw_tense_deontic_stacks_never_reach_an_external_oracle() {
+        let query = {
+            let mut nodes = Vec::new();
+            let root = group1(&mut nodes, "_ev0", "gerku", con("adam"));
+            buf(nodes, vec![root])
+        };
+
+        for temporal_outer in [false, true] {
+            let mut nodes = Vec::new();
+            let leaf = group1(&mut nodes, "_ev0", "gerku", con("adam"));
+            let root = if temporal_outer {
+                let deontic = obligatory(&mut nodes, leaf);
+                past(&mut nodes, deontic)
+            } else {
+                let temporal = past(&mut nodes, leaf);
+                obligatory(&mut nodes, temporal)
+            };
+            let error = flavorize(&[buf(nodes, vec![root])], &query)
+                .expect_err("raw mixed stack must be refused before oracle translation");
+            assert!(error.contains("unsupported"), "{error}");
+        }
     }
 
     /// `∀v. Or(Not(gerku-group(v)), danlu-group(v))` — the unmarked taxonomy rule.

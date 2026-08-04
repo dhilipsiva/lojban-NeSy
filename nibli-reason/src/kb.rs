@@ -121,6 +121,61 @@ pub(super) fn get_node(buffer: &LogicBuffer, node_id: u32) -> Result<&LogicNode,
     })
 }
 
+/// Validate the runtime's one-flavor-per-formula-path invariant at the raw
+/// [`LogicBuffer`] boundary. KR and the AST compiler reject mixed tense/deontic
+/// prefixes, but embedders and persisted rows can provide a buffer directly.
+/// Descending two flavor wrappers on one path used to let the inner wrapper
+/// overwrite the outer one in facts, rules, NAF, queries, and proof traces.
+///
+/// The walk is path-sensitive: `And(Past(P), Obligatory(Q))` is legal because
+/// neither branch nests a flavor, while `Past(Not(Obligatory(P)))` rejects.
+/// `(node, already_flavored)` memoization handles DAG sharing and cycles without
+/// conflating a node reached through differently flavored paths.
+pub(super) fn validate_single_flavor_paths(buffer: &LogicBuffer) -> Result<(), String> {
+    let mut stack: Vec<(u32, bool)> = buffer
+        .roots
+        .iter()
+        .copied()
+        .map(|root| (root, false))
+        .collect();
+    let mut visited: HashSet<(u32, bool)> = HashSet::new();
+
+    while let Some((node_id, already_flavored)) = stack.pop() {
+        if !visited.insert((node_id, already_flavored)) {
+            continue;
+        }
+        match get_node(buffer, node_id)? {
+            LogicNode::Predicate(_) | LogicNode::ComputeNode(_) => {}
+            LogicNode::AndNode((left, right)) | LogicNode::OrNode((left, right)) => {
+                stack.push((*right, already_flavored));
+                stack.push((*left, already_flavored));
+            }
+            LogicNode::NotNode(inner)
+            | LogicNode::ExistsNode((_, inner))
+            | LogicNode::ForAllNode((_, inner))
+            | LogicNode::CountNode((_, _, inner)) => {
+                stack.push((*inner, already_flavored));
+            }
+            LogicNode::PastNode(inner)
+            | LogicNode::PresentNode(inner)
+            | LogicNode::FutureNode(inner)
+            | LogicNode::ObligatoryNode(inner)
+            | LogicNode::PermittedNode(inner) => {
+                if already_flavored {
+                    return Err(
+                        "nested tense/deontic LogicNode wrappers are unsupported: the \
+                         reasoner stores one flavor per fact or rule literal; rejecting \
+                         the LogicBuffer rather than silently discarding a wrapper"
+                            .to_string(),
+                    );
+                }
+                stack.push((*inner, true));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Relation-name prefix of the opaque abstraction marker emitted by nibli-semantics for
 /// `event`/`fact`/`property`/`amount`/`concept`. The marker is a versioned,
 /// lossless alpha-canonical unary predicate
@@ -2241,6 +2296,7 @@ pub(super) fn process_assertion(
     inner: &mut KnowledgeBaseInner,
     logic: &mut LogicBuffer,
 ) -> Result<(), String> {
+    validate_single_flavor_paths(logic)?;
     canonicalize_abstraction_markers(logic)?;
     // Strict-mode violations from PREVIOUS work (e.g. a mid-query compute
     // auto-assert, which has no error channel) must not bleed into THIS

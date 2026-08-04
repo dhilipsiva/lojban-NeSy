@@ -77,6 +77,23 @@ fn validate_ast_buffer(ast: &flat_ast::AstBuffer) -> Result<(), NibliError> {
         }
     }
 
+    // The public AST type retains separate optional fields for wire/backward
+    // compatibility, but the runtime has one fact/rule flavor slot. A hand-built
+    // buffer must not bypass nibli-kr's one-prefix-family rule and advertise a
+    // modifier product the reasoner cannot represent.
+    for (i, sentence) in ast.sentences.iter().enumerate() {
+        if let Sentence::Simple(proposition) = sentence
+            && proposition.tense.is_some()
+            && proposition.deontic.is_some()
+        {
+            return Err(NibliError::Semantic(format!(
+                "unsupported AST buffer: sentence index {i} combines tense and deontic \
+                 prefixes, but the runtime has one flavor slot — rejecting the whole \
+                 buffer rather than discarding either modifier"
+            )));
+        }
+    }
+
     // Child references of one node: (kind, index) pairs.
     let children = |kind: Kind, idx: u32| -> Vec<(Kind, u32)> {
         match kind {
@@ -612,6 +629,30 @@ mod ast_buffer_validation_tests {
                 },
                 "sigil-less Variable payload",
             );
+        }
+    }
+
+    #[test]
+    fn stacked_tense_deontic_proposition_rejected() {
+        let ast = AstBuffer {
+            predicates: vec![Predicate::Root("gerku".to_string())],
+            arguments: vec![Argument::Name("rex".to_string())],
+            sentences: vec![Sentence::Simple(Proposition {
+                relation: 0,
+                terms: vec![0],
+                x1_present: true,
+                negated: false,
+                tense: Some(Tense::Past),
+                deontic: Some(DeonticMood::Obligation),
+            })],
+            roots: vec![0],
+        };
+        match compile_from_ast(ast) {
+            Err(nibli_types::error::NibliError::Semantic(msg)) => {
+                assert!(msg.contains("combines tense and deontic"), "{msg}");
+                assert!(msg.contains("one flavor slot"), "{msg}");
+            }
+            other => panic!("expected semantic stack rejection, got {other:?}"),
         }
     }
 }

@@ -8,8 +8,8 @@
 //!   nothing about the errata, argument ordering, count integrality, or the
 //!   mandatory-`it` rule — encoding those as grammar would bury the spec
 //!   guidance under generic "expected …" messages.
-//! - The walker (this file) owns the FAIL-CLOSED PARSE-TIME SHAPE: ≤1 deontic,
-//!   ≤1 tense, deontic-before-tense, `~` innermost and single, prefixes/`~`
+//! - The walker (this file) owns the FAIL-CLOSED PARSE-TIME SHAPE: at most one
+//!   tense OR one deontic prefix (never both), `~` innermost and single, prefixes/`~`
 //!   only over a single predication/equality, positionals-before-named,
 //!   `exactly N` integrality and u32 range, number finiteness, string
 //!   unescaping, and mandatory-`it` in full-claim clause bodies.
@@ -41,6 +41,9 @@ pub struct ParseError {
     pub line: u32,
     pub column: u32,
 }
+
+pub(crate) const STACKED_TENSE_DEONTIC: &str = "tense and deontic prefixes cannot be stacked: their product has no compositional \
+     runtime encoding; use at most one prefix family per atom (NIBLI_KR §6)";
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -355,13 +358,7 @@ fn build_unary(pair: Pair<Rule>, input: &str, base: usize) -> Result<Claim, Pars
                             return Err(err_at(input, at, NOT_OVER_PREFIX));
                         }
                         if tense.is_some() {
-                            return Err(err_at(
-                                input,
-                                at,
-                                "deontic comes before tense: write `must past P`, never \
-                                 `past must P` (nesting is Obligatory(Past(…)), \
-                                 NIBLI_KR §6)",
-                            ));
+                            return Err(err_at(input, at, STACKED_TENSE_DEONTIC));
                         }
                         if deontic.is_some() {
                             return Err(err_at(input, at, "duplicate deontic prefix"));
@@ -378,6 +375,9 @@ fn build_unary(pair: Pair<Rule>, input: &str, base: usize) -> Result<Claim, Pars
                         }
                         if tense.is_some() {
                             return Err(err_at(input, at, "duplicate tense prefix"));
+                        }
+                        if deontic.is_some() {
+                            return Err(err_at(input, at, STACKED_TENSE_DEONTIC));
                         }
                         tense = Some(match m.as_rule() {
                             Rule::kw_past => Tense::Past,
@@ -1131,9 +1131,20 @@ mod tests {
     fn equality_prefixes_negation() {
         assert_claim("Kim = Adam.", Claim::Equality(name("Kim"), name("Adam")));
         assert_claim(
-            "must past ~goes(me).",
+            "must ~goes(me).",
             Claim::Prefixed {
                 deontic: Some(DeonticMood::Obligation),
+                tense: None,
+                atom: Box::new(Claim::Not(Box::new(pred(
+                    "goes",
+                    vec![pos(Term::Key(KeyTerm::Me))],
+                )))),
+            },
+        );
+        assert_claim(
+            "past ~goes(me).",
+            Claim::Prefixed {
+                deontic: None,
                 tense: Some(Tense::Past),
                 atom: Box::new(Claim::Not(Box::new(pred(
                     "goes",
@@ -1141,14 +1152,41 @@ mod tests {
                 )))),
             },
         );
+        assert!(
+            parse_statements("past permitted(me, you).").is_ok(),
+            "a tensed ordinary predicate whose name is `permitted` is not a deontic stack"
+        );
+
+        for deontic in ["must", "may"] {
+            for tense in ["past", "now", "future"] {
+                for text in [
+                    format!("{deontic} {tense} goes(me)."),
+                    format!("{tense} {deontic} goes(me)."),
+                ] {
+                    let e = err(&text);
+                    assert_eq!(e.message, STACKED_TENSE_DEONTIC, "{text}: {e}");
+                }
+            }
+        }
+        assert_eq!(err("must past goes(me).").column, 6);
+        assert_eq!(err("past must goes(me).").column, 6);
+
         let e = err("~past goes(me).");
         assert!(e.message.contains("past ~P"), "{e}");
         let e = err("~~goes(me).");
         assert!(e.message.contains("double negation"), "{e}");
         let e = err("past (a(A) & b(A)).");
         assert!(e.message.contains("single predication"), "{e}");
-        let e = err("past must goes(me).");
-        assert!(e.message.contains("deontic comes before tense"), "{e}");
+        assert!(
+            err("past now goes(me).")
+                .message
+                .contains("duplicate tense")
+        );
+        assert!(
+            err("must may goes(me).")
+                .message
+                .contains("duplicate deontic")
+        );
         let e = err("goes(to: some market, me).");
         assert!(
             e.message.contains("positional arguments must come before"),

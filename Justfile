@@ -577,8 +577,9 @@ regen-lexicon:
 # The KR→smuni seam-conformance gate — the KR front-end's LOJBAN-FREE
 # independent oracle, built to outlive THE DROP (TODO.md): hand-verified
 # FOL structural goldens for the core construct classes (event decomposition,
-# rule vs ∃-conjunction shapes, converted-alias/named-arg routing, tense/
-# deontic order incl. the O3 pin, flat `du`, prenex implication, abstraction
+# rule vs ∃-conjunction shapes, converted-alias/named-arg routing, standalone
+# temporal/deontic wrappers plus the mixed-stack rejection matrix, flat `du`,
+# prenex implication, abstraction
 # opacity, exact-count-0, `?`-independence), the CONSTRUCT_INVENTORY
 # acceptance sweep (every §3–§9 KR spelling compiles), KR-internal
 # metamorphic relations (the O7 block-every ≡ prenex pin re-anchored KR≡KR,

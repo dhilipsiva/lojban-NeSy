@@ -176,6 +176,13 @@ impl<'a> Renderer<'a> {
     }
 
     fn proposition_impl(&self, proposition: &Proposition, inject_it: bool) -> R<String> {
+        if proposition.tense.is_some() && proposition.deontic.is_some() {
+            return Err(nope(
+                "tense and deontic prefixes cannot be stacked: the runtime has one \
+                 flavor slot; rejecting this programmatic AST rather than rendering \
+                 unsupported KR",
+            ));
+        }
         let mut prefix = String::new();
         if let Some(att) = &proposition.deontic {
             prefix.push_str(match att {
@@ -937,5 +944,21 @@ mod tests {
             let e = render(&buffer).expect_err("must fail closed");
             assert!(format!("{e}").contains(needle), "{e}");
         }
+
+        let stacked = AstBuffer {
+            predicates: vec![Predicate::Root("gerku".into())],
+            arguments: vec![Argument::Name("rex".into())],
+            sentences: vec![Sentence::Simple(Proposition {
+                relation: 0,
+                terms: vec![0],
+                x1_present: true,
+                negated: false,
+                tense: Some(Tense::Past),
+                deontic: Some(DeonticMood::Obligation),
+            })],
+            roots: vec![0],
+        };
+        let e = render(&stacked).expect_err("mixed prefix AST must fail closed");
+        assert!(format!("{e}").contains("cannot be stacked"), "{e}");
     }
 }

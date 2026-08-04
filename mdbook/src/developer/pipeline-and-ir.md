@@ -106,9 +106,12 @@ These shapes are contract, not accident — pinned by the seam-conformance gate
   literals are Bare-only; the reasoner does not clone them into temporal
   flavors. A temporal mapping such as Past→Present therefore exists only when
   the KR rule declares both wrappers. Built-in identity and query-time compute
-  dispatch keep their separately documented semantics. Nested tense×deontic IR
-  is structurally preserved, but the current fact/rule store has only one flavor
-  slot and does not promise their compositional product.
+  dispatch keep their separately documented semantics. One formula path may
+  carry one temporal or one deontic wrapper, never both: KR rejects mixed
+  prefixes, AST compilation/rendering rejects dual-field propositions, and the
+  reasoner rejects manually nested raw IR before assertion, query/find, proof
+  construction, materialisation, or replay. Separate rule literals may still
+  carry different wrappers.
 - **Flat-atom families.** Not everything is event-decomposed: `equals` (the
   identity) stays a flat 2-argument atom (the union-find ingests exactly that
   shape); `via` modal tags, the `the_domain_<name>` restrictors, and the

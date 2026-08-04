@@ -72,7 +72,7 @@ use crate::ast::{
     AbsKind, Arg, Claim, ClauseBody, Det, KeyTerm, PredSeq, PredUnit, Predication, RelKind, Restr,
     RestrKind, Statement, Tag, Term,
 };
-use crate::parser::{ParseError, err_at};
+use crate::parser::{ParseError, STACKED_TENSE_DEONTIC, err_at};
 use crate::resolve::{PredInfo, ResolvedEntry, label_index, lookup, lookup_compound};
 use nibli_types::ast::BlockQuant;
 
@@ -286,6 +286,9 @@ impl<'a> Emitter<'a> {
                 tense,
                 atom,
             } => {
+                if deontic.is_some() && tense.is_some() {
+                    return Err(err_at(self.input, at, STACKED_TENSE_DEONTIC));
+                }
                 let (negated, inner) = match atom.as_ref() {
                     Claim::Not(inner) => (true, inner.as_ref()),
                     other => (false, other),
@@ -1153,7 +1156,8 @@ mod tests {
     //! acceptance pins. All vocabulary is fallback-safe (CI has no
     //! dictionary-en.json).
 
-    use crate::parse_checked;
+    use crate::ast::{Claim, Tense};
+    use crate::{parse_checked, parser};
 
     fn nibli_kr_lb(text: &str) -> String {
         let buffer = parse_checked(text).unwrap_or_else(|e| panic!("nibli-kr {text:?}: {e}"));
@@ -1288,11 +1292,24 @@ mod tests {
             "goes(every chemical where increases where thin).",
             "goes(some dog where it = Adam).",
             "knows(me, fact { dog(Adam) }).",
-            "must past ~goes(me).",
+            "must ~goes(me).",
+            "past ~goes(me).",
             "[big fast] dog(Rex).",
         ] {
             nibli_kr_lb(text); // panics if the walk or nibli-semantics rejects
         }
+    }
+
+    #[test]
+    fn hand_built_stacked_prefix_tree_fails_closed() {
+        let mut statements = parser::parse_statements("must goes(me).").unwrap();
+        let Claim::Prefixed { tense, .. } = &mut statements[0].claim else {
+            panic!("expected prefixed parser tree")
+        };
+        *tense = Some(Tense::Past);
+        let e = super::emit("must goes(me).", &statements)
+            .expect_err("emitter must defend the programmatic tree boundary");
+        assert!(e.message.contains("cannot be stacked"), "{e}");
     }
 
     #[test]

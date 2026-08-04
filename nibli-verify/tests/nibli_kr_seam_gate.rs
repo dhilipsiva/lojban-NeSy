@@ -8,6 +8,8 @@
 //!    core construct classes (the retired Lojban seam gate pattern from
 //!    differential_gate.rs, re-anchored on KR spellings), probing nodes
 //!    directly via `seam::{root, node, pred_args, role_is_const}`.
+//!    A separate fail-closed matrix pins mixed tense/deontic rejection in
+//!    assertion, query, rule-literal, and NAF positions.
 //! 2. **The construct-inventory acceptance sweep** — every
 //!    `CONSTRUCT_INVENTORY` KR spelling must compile (the twin-equality leg
 //!    retired at THE DROP).
@@ -31,6 +33,7 @@ const SEAM_BATCH: u64 = 60;
 #[test]
 fn kr_semantics_seam_conformance() {
     let mut structural = 0usize;
+    let mut rejected = 0usize;
     let mut metamorphic = 0usize;
 
     // ── 1. structural FOL goldens (hand-verified shapes, direct probes) ──
@@ -283,21 +286,39 @@ fn kr_semantics_seam_conformance() {
         structural += 1;
     }
 
-    // THE O3 PIN (re-hosted from nibli_kr_gate so it survives THE DROP):
-    // deontic outermost, tense inside — Obligatory(Past(…)).
+    // A single deontic prefix wraps the proposition as Obligatory(…). Mixed
+    // tense/deontic stacks are rejected separately below.
     {
-        let b = kompile("must past goes(me).").unwrap();
-        let LogicNode::ObligatoryNode(inner) = seam::root(&b) else {
-            panic!(
-                "must past P root is not ObligatoryNode: {:?}",
-                seam::root(&b)
-            );
-        };
+        let b = kompile("must goes(me).").unwrap();
         assert!(
-            matches!(seam::node(&b, *inner), LogicNode::PastNode(_)),
-            "must past P second layer is not PastNode"
+            matches!(seam::root(&b), LogicNode::ObligatoryNode(_)),
+            "must P root is not ObligatoryNode: {:?}",
+            seam::root(&b)
         );
         structural += 1;
+    }
+
+    // The one-slot runtime cannot represent a tense×deontic product. Pin
+    // fail-closed source behavior for both orders and every semantic placement
+    // that previously could lose a wrapper downstream.
+    for (deontic, tense) in [("must", "past"), ("may", "future")] {
+        for stack in [format!("{deontic} {tense}"), format!("{tense} {deontic}")] {
+            let fact = format!("{stack} dog(Rex).");
+            for result in [kompile(&fact), kompile_query(&fact)] {
+                let error = result.expect_err("stacked fact/query must fail closed");
+                assert!(error.contains("cannot be stacked"), "{fact}: {error}");
+                rejected += 1;
+            }
+            for rule in [
+                format!("all $x: {stack} dog($x) -> animal($x)."),
+                format!("all $x: dog($x) -> {stack} animal($x)."),
+                format!("all $x: person($x) & {stack} ~dog($x) -> animal($x)."),
+            ] {
+                let error = kompile(&rule).expect_err("stacked rule literal must fail closed");
+                assert!(error.contains("cannot be stacked"), "{rule}: {error}");
+                rejected += 1;
+            }
+        }
     }
 
     // Exact-count roots (re-hosted): `no dog` is the exactly-0 CountNode.
@@ -415,12 +436,16 @@ fn kr_semantics_seam_conformance() {
 
     // ── non-vacuity floors ──
     eprintln!(
-        "kr→nibli-semantics seam: {structural} structural golden + {inventory} inventory + \
-         {metamorphic} metamorphic checks passed"
+        "kr→nibli-semantics seam: {structural} structural golden + {rejected} fail-closed \
+         stack checks + {inventory} inventory + {metamorphic} metamorphic checks passed"
     );
     assert!(
         structural >= 10,
         "structural family near-vacuous ({structural})"
+    );
+    assert!(
+        rejected >= 20,
+        "stack-rejection family near-vacuous ({rejected})"
     );
     assert!(
         metamorphic >= (SEAM_BATCH as usize) + 4,

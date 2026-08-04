@@ -189,7 +189,8 @@ pub(super) fn collect_condition_exists(
 /// `Past(Exists(ev, And(broda(ev), broda_x1(ev, x))))`) flattens to tensed leaf
 /// atoms instead of one opaque `Past(...)` node that would be rejected. Deontic
 /// `Obligatory/Permitted` wrappers likewise set an exact flavor on every leaf. The
-/// current slot is not a product: an inner nested wrapper overwrites an outer one.
+/// The raw-IR ingress validator guarantees at most one flavor wrapper per path,
+/// so this single slot is lossless rather than an inner-wins approximation.
 pub(super) fn flatten_conjuncts_through_exists(
     buffer: &LogicBuffer,
     node_id: u32,
@@ -365,8 +366,9 @@ fn flatten_group_leaves(buffer: &LogicBuffer, id: u32, ev: &str, out: &mut Vec<u
 /// as a tensed antecedent), and threading deontic `Obligatory`/`Permitted` flavors
 /// through event-decomposed conclusions that `build_rule_template_fact`'s deontic arm
 /// alone cannot reach through the inner `And`). Each returned leaf carries one selected
-/// flavor; an inner nested wrapper overwrites an outer one (the current one-slot limit).
-/// path to it. A top-level `Or` is returned opaque (one leaf with its tense) — the
+/// flavor. The raw-IR ingress validator rejects nested wrappers before this walk,
+/// so the one-slot representation cannot discard an outer flavor. A top-level
+/// `Or` is returned opaque (one leaf with its tense) — the
 /// caller detects it for the disjunctive-conclusion-constraint path.
 fn flatten_consequent(
     buffer: &LogicBuffer,

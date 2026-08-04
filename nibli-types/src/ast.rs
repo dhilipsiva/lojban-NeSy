@@ -260,7 +260,11 @@ pub struct Proposition {
     /// inject-`it` spelling.
     pub x1_present: bool,
     pub negated: bool,
+    /// Temporal prefix. Public-buffer invariant: this and [`Self::deontic`]
+    /// are never both populated; nibli-semantics rejects a hand-built buffer
+    /// that violates it.
     pub tense: Option<Tense>,
+    /// Deontic prefix. Mutually exclusive with [`Self::tense`].
     pub deontic: Option<DeonticMood>,
 }
 

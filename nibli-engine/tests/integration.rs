@@ -80,6 +80,58 @@ fn cleanup(path: &Path) {
 // ─── Basic assertion and query ──────────────────────────────────────
 
 #[test]
+fn stacked_tense_deontic_is_a_fail_closed_surface_error() {
+    let engine = fresh_engine();
+    let valid_id = engine.assert_text("dog(Rex).").unwrap()[0];
+
+    for text in [
+        "must past dog(Rex).",
+        "past must dog(Rex).",
+        "all $x: must past dog($x) -> animal($x).",
+        "all $x: dog($x) -> past must animal($x).",
+        "all $x: person($x) & must past ~dog($x) -> animal($x).",
+        "all $x: person($x) & past must ~dog($x) -> animal($x).",
+    ] {
+        let error = engine
+            .assert_text(text)
+            .expect_err("stacked assertion/rule must fail closed");
+        assert!(
+            error.to_string().contains("cannot be stacked"),
+            "{text}: {error}"
+        );
+    }
+    assert_eq!(
+        engine.list_facts().unwrap().len(),
+        1,
+        "rejected source mutated KB"
+    );
+
+    for query in ["must past dog(Rex).", "past must dog(Rex)."] {
+        let error = engine
+            .query_holds(query)
+            .expect_err("stacked query must fail closed");
+        assert!(
+            error.to_string().contains("cannot be stacked"),
+            "{query}: {error}"
+        );
+        let error = engine
+            .query_text_with_proof(query)
+            .expect_err("stacked proof query must fail before producing a trace");
+        assert!(
+            error.to_string().contains("cannot be stacked"),
+            "{query}: {error}"
+        );
+    }
+
+    engine.retract_fact(valid_id).unwrap();
+    assert!(engine.list_facts().unwrap().is_empty());
+    assert_false(
+        &engine.query_holds("dog(Rex).").unwrap(),
+        "ordinary retraction must remain sound after rejected stacks",
+    );
+}
+
+#[test]
 fn simple_assertion_and_query() {
     let engine = engine_with_facts(&["big(some dog)."]);
     let (holds, trace, json) = engine.query_text_with_proof("big(some dog).").unwrap();

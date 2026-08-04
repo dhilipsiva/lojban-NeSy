@@ -268,15 +268,23 @@ Precedence, tightest first: `~` · deontic/tense prefixes · `&` · `|` · `^` �
 | `A -> B` | `ganai…gi` / `.inaja` — `Or(Not A, B)`; a ground `->` auto-registers as a zero-variable rule |
 | `A & ~B` etc. | `jenai`, `.enai`, … — the `~` is explicit, so the bare-`na`-after-connective trap (rejected at the Lojban grammar level 2026-07-10) cannot exist here |
 
-**Prefixes** (at most one of each per bridi, enforced by the grammar):
-`past` / `now` / `future` (`pu/ca/ba` wrappers) and `must` / `may`
+**Prefixes** (choose one family per atom, enforced fail-closed):
+either `past` / `now` / `future` (`pu/ca/ba` wrappers) **or** `must` / `may`
 (`.ei`→Obligatory / `.e'e`→Permitted — the v0.1 surface's mapping, preserved as
 history; in standard Lojban permission is `.e'a` and `.e'e` is competence, per
-CLL ch. 13 — the deviation belongs to that front end, not to Lojban). Nesting is pinned to nibli-semantics's verified emission
-order (`nibli-semantics/src/semantic/compile.rs:358-383`): deontic outermost, then tense, then
-negation innermost — `must past ~P` compiles to `Obligatory(Past(Not(P)))`. This
-resolves former open issue O3; the §15 `Modified <- Deontic? Tense? Atom` order stands.
-Consequences the grammar enforces fail-closed (2026-07-12 design-review errata):
+CLL ch. 13 — the deviation belongs to that front end, not to Lojban). Negation
+may sit inside either single prefix: `past ~P` compiles as `Past(Not(P))`, and
+`must ~P` as `Obligatory(Not(P))`.
+
+The families are mutually exclusive because the fact/rule store has one flavor
+slot. Both `must past P` and `past must P` are syntax errors; the parser rejects
+at the second prefix instead of emitting a tree whose runtime meaning would
+silently discard one modifier. The public AST compiler and renderer reject a
+hand-built proposition with both fields populated, and nibli-reason rejects any
+manually nested flavor wrappers in a raw `LogicBuffer` before assertion, query,
+find, proof, materialisation, or persisted-row replay.
+
+Other consequences the grammar enforces fail-closed (2026-07-12 design-review errata):
 
 - `past ~P` is legal (`Past(Not(P))`); **`~past P` is rejected** — `Not(Past(P))` has
   no encoding in the compat profile (the flat AST's only negation carriers are
@@ -320,11 +328,9 @@ Neither acquires temporal meaning merely by appearing under a wrapper. NAF
 stratification is also deliberately conservative at the surface-relation level:
 different flavors of the same relation do not bypass a negative-cycle rejection.
 
-The compiler's nested ordering for `must past P` remains a structural seam
-contract, not a promise of compositional tense×deontic reasoning: the current
-fact/rule store has one mutually exclusive flavor slot and cannot represent the
-product. Do not rely on stacked modifiers for inference until that separate
-language decision is resolved.
+Temporal/deontic rule literals on separate formula paths remain valid. For
+example, `all $x: past dog($x) -> must animal($x).` declares a Past antecedent
+and an Obligatory conclusion; it does not nest two wrappers on one literal.
 
 **The two universal forms compile to different shapes and look different:**
 
@@ -548,11 +554,12 @@ hyphen-vs-`->` lexing wrinkle.
   verbatim; the inherited `da/de/di` three-variable lowering cap no longer exists.
 - **O2**: whole-rule tense (`past animal(every dog)`) parses and fails at nibli-reason assert,
   same as Lojban; static rejection would duplicate an engine check.
-- **O3 (RESOLVED 2026-07-12)**: nibli-semantics's wrapper emission is
-  `Attitudinal(Tense(Not(matrix)))` (`nibli-semantics/src/semantic/compile.rs:358-383`), so
-  `must past P` → `Obligatory(Past(P))` — the §15 `Modified` order stands. To be pinned
-  by a nibli-kr seam-gate golden. The same review produced the §6 reject errata
-  (`~past P`, `past (A & B)`, `~(A & B)`).
+- **O3 (SUPERSEDED 2026-08-04)**: the early v0.1 compiler accepted
+  `must past P` as `Obligatory(Past(P))`, but the runtime has one flavor slot,
+  so the structural tree advertised a product inference could not preserve.
+  The implemented contract now rejects both mixed-prefix orders at KR, AST,
+  render, and raw-IR ingress. The same earlier review's other §6 reject errata
+  (`~past P`, `past (A & B)`, `~(A & B)`) remain.
 - **O4**: `every the dog` (ro le) is grammatical but awkward; zero corpus occurrences,
   ugliness accepted.
 - **O5**: the five clusivity pronouns (`we_all` etc.) and `it_a..it_u` are semantically
@@ -710,7 +717,8 @@ Verification:
 ### 14.5 Open-issue and lint disposition
 
 - Resolved by v2: **O1** (variable cap — engine item 2), **O4** (`every the` gone),
-  **O5** (pronoun cull happens here). O3 was resolved in v0.1 (see §13).
+  **O5** (pronoun cull happens here). O3's former ordering decision was
+  superseded by fail-closed mixed-prefix rejection in v0.1 (see §6).
 - Unchanged: **O6** (correlated multi-witness find — still needs engine support);
   **O7** (block-determiner shape pin) applies to both profiles.
 - Lints: **L1, L2, L4 obsolete** (their hazards are unwritable in v2);
@@ -758,13 +766,13 @@ IffE        <- XorE ("<->" XorE)*
 XorE        <- OrE  ("^" OrE)*
 OrE         <- AndE ("|" AndE)*
 AndE        <- Unary ("&" Unary)*
-Unary       <- "~" Unary / Modified
-Modified    <- Deontic? Tense? Atom                    # deontic outermost (O3 resolved);
-                                                       # prefixes/(~ over prefixed) atoms
-                                                       # restricted per §6 errata
+Unary       <- Modified / "(" Claim ")"
+Modified    <- (Deontic / Tense)? "~"? ScalarAtom      # choose one prefix family;
+                                                       # prefixes and ~ attach only to
+                                                       # a single predication/equality
 Deontic     <- "must" / "may"
 Tense       <- "past" / "now" / "future"
-Atom        <- "(" Claim ")" / Equality / Predication
+ScalarAtom  <- Equality / Predication
 Equality    <- Term "=" Term                           # du — binary only
 Predication <- PredSeq Args Tag*
 Tag         <- "via" PredName "(" Term ")"

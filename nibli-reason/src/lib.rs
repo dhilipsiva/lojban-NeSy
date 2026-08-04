@@ -124,6 +124,9 @@ impl KnowledgeBase {
     /// Assert FOL facts from a logic buffer into the knowledge base.
     /// Stores the buffer in the fact registry and returns a unique fact ID.
     fn assert_fact_inner(&self, mut logic: LogicBuffer, label: String) -> Result<u64, String> {
+        // Validate before minting an id or borrowing/mutating the KB. The same
+        // guard also lives in process_assertion so rebuild replay cannot bypass it.
+        validate_single_flavor_paths(&logic)?;
         let mut inner = self.inner.borrow_mut();
         let id = inner.fresh_fact_id();
         inner.current_assertion_id = Some(id);
@@ -166,6 +169,8 @@ impl KnowledgeBase {
         label: String,
         id: u64,
     ) -> Result<(), String> {
+        // A persisted/pre-assigned row must fail before advancing the live id counter.
+        validate_single_flavor_paths(&logic)?;
         let mut inner = self.inner.borrow_mut();
         if id >= inner.fact_counter {
             inner.fact_counter = id + 1;
@@ -447,6 +452,7 @@ impl KnowledgeBase {
     /// Uses iterative deepening: tries depth 1, 2, ..., max_chain_depth.
     /// Guarantees finding the shallowest proof.
     fn query_entailment_inner(&self, mut logic: LogicBuffer) -> Result<QueryResult, String> {
+        validate_single_flavor_paths(&logic)?;
         canonicalize_abstraction_markers(&mut logic)?;
         // Tabling: clear once, persist across depth iterations.
         self.ensure_materialized(&logic);
@@ -479,6 +485,7 @@ impl KnowledgeBase {
     /// Find all satisfying binding sets for existential variables in the query formula.
     /// Returns one `Vec<WitnessBinding>` per satisfying assignment.
     fn query_find_inner(&self, mut logic: LogicBuffer) -> Result<Vec<Vec<WitnessBinding>>, String> {
+        validate_single_flavor_paths(&logic)?;
         canonicalize_abstraction_markers(&mut logic)?;
         // Surfaced (as an Err) when witness enumeration is CUT at the depth/cycle
         // horizon: find/count/aggregate must refuse a definitive (under)count rather
@@ -685,6 +692,7 @@ impl KnowledgeBase {
         &self,
         mut logic: LogicBuffer,
     ) -> Result<(QueryResult, ProofTrace), String> {
+        validate_single_flavor_paths(&logic)?;
         canonicalize_abstraction_markers(&mut logic)?;
         // Same saturation the untraced path uses — the NAF probe stays on, and its trace
         // shape is unaffected (`emit_derived` records a `Negation` leaf per group without

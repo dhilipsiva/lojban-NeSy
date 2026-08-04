@@ -25,8 +25,17 @@ here first.
   erase wrappers. The Vampire/clingo flavorizer now emits each rule once and
   differentially checks bare taxonomy/causal/NAF non-lifting alongside explicit
   same- and cross-flavor controls; every curated temporal case must reach its
-  oracle rather than silently skip. Stacked tense×deontic composition remains a
-  separately tracked one-slot limitation.
+  oracle rather than silently skip.
+- **Mixed tense×deontic stacks now fail closed instead of losing a wrapper:** one
+  atom may carry one temporal prefix or one deontic prefix, but not both.
+  `must past P` and `past must P` are compile errors; AST compilation/rendering
+  rejects programmatic dual-field propositions, and raw `LogicBuffer` ingress
+  rejects any second flavor wrapper on the same path before facts, rules, NAF,
+  queries, finds, proofs, materialisation, or replay can observe it. Separate
+  rule literals may still have different flavors. This is a breaking surface
+  syntax restriction during 0.x; the individual WIT node variants are unchanged.
+  A legacy persisted buffer containing a mixed stack fails replay with a reasoning
+  error rather than being rewritten, deleted, or interpreted with one wrapper.
 
 ### Fixed
 

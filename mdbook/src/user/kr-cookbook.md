@@ -56,6 +56,12 @@ all $x: past eats($x) -> now be_hungry($x).
 With only `all $x: dog($x) -> animal($x).`, a `past dog(Adam).` fact does not
 derive `past animal(Adam).`
 
+Choose exactly one prefix family per atom. `past ~eats(Adam).` and
+`must ~eats(Adam).` are valid, while `must past eats(Adam).` and
+`past must eats(Adam).` are compile errors. This restriction is per formula
+path, so separate rule literals may still declare a mapping such as
+`past P -> must Q`.
+
 ## Negation-as-failure
 
 ```nibli-kr

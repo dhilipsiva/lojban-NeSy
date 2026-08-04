@@ -129,8 +129,8 @@ op_or      = { "|" }
 op_and     = { "&" }
 
 // Modifiers parse PERMISSIVELY in any order/count; the walker enforces the §6
-// shape (≤1 deontic, ≤1 tense, deontic-before-tense, ≤1 `~`, `~` innermost)
-// with targeted errors.
+// shape (one tense OR one deontic, never both; ≤1 `~`, `~` innermost) with
+// targeted errors at the second incompatible prefix.
 unary    = { modifier* ~ atom }
 modifier = { kw_must | kw_may | kw_past | kw_now | kw_future | tilde }
 tilde    = { "~" }

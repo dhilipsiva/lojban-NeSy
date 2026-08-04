@@ -225,7 +225,8 @@ pub fn run_lines(
     // 3b. Tense flavorization: rewrite tensed buffers into flavor-suffixed tense-free
     //     buffers (identity when no tense occurs; see `tense::flavorize`). Tense ×
     //     restrictor-NAF flavorizes; only tense×abstraction, a top-level `na` query, and
-    //     nested wrappers are a conservative skip — never mis-judged.
+    //     hand-built nested wrappers are a conservative skip — never mis-judged. KR
+    //     tense×deontic stacks fail compilation before any oracle path.
     let (kb_buffers, query_buf) = match tense::flavorize(&kb_buffers, &query_buf) {
         Ok(x) => x,
         Err(e) => return Outcome::SkipNonMappable { name, reason: e },

@@ -458,7 +458,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Witness extraction:** `query-find` returns all satisfying binding sets for existential variables
 - **Belief revision:** retract-and-rebuild with monotonic fact IDs; `:retract <id>` and `:facts` REPL commands
 - **Four-valued query result:** `TRUE`, `FALSE`, `UNKNOWN` (cycle cut / incomplete knowledge / NAF dependent / backend unavailable / non-finite), `RESOURCE_EXCEEDED` (depth / fuel / memory)
-- **Temporal reasoning:** `Past`/`Present`/`Future` wrappers are preserved end-to-end and ordinary predicate rule literals are flavor-exact. Bare rules are bare-only; write mappings explicitly (`all $x: past dog($x) -> past animal($x).`)
+- **Temporal reasoning:** `Past`/`Present`/`Future` wrappers are preserved end-to-end and ordinary predicate rule literals are flavor-exact. Bare rules are bare-only; write mappings explicitly (`all $x: past dog($x) -> past animal($x).`). One atom may have a temporal prefix or a deontic prefix, never both: mixed stacks fail at KR compilation, and manually nested raw-IR wrappers fail at engine ingress
 - **Neo-Davidsonian event semantics:** every predication decomposes into event type + role predicates; compound predicates share event variables
 - **Conjunction introduction:** `And(A, B)` verified recursively with mutual `InDomain` entities (bounded, no exponential blowup)
 - **Numerical comparisons:** `greater` (>), `less` (<), `num_equal` (==) evaluated at query time on `Num` terms
