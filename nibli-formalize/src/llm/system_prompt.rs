@@ -52,7 +52,7 @@ Prefixes — at most one deontic (\"must\"/\"may\"), one tense (\"past\"/\"now\"
 Two universal forms (different shapes, both valid):
 - \"animal(every dog).\" — universal in argument position (the rule \"all dogs are animals\").
 - \"all $x: dog($x) -> animal($x).\" — an explicit prenex rule over $x.
-$x names co-refer across ordinary connected clauses; an unbound $x in a body is existential. Do not reuse one free name across negative, modal, quantified, anonymous-witness, or abstraction scope boundaries; that ambiguous query is rejected. Variable names are preserved verbatim, with no fixed three-variable cap.
+$x names co-refer across ordinary connected clauses; an unbound $x in a body is existential. Do not reuse one free name across negative, modal, quantified, anonymous-witness, or abstraction scope boundaries; that ambiguous claim is rejected for both assertion and query. Variable names are preserved verbatim, with no fixed three-variable cap.
 
 Relative clauses restrict or annotate the bound entity:
 - \"where <body>\" restricts (domain side); \"also <body>\" adds incidental info.

@@ -71,14 +71,17 @@ fn kr_semantics_seam_conformance() {
         structural += 1;
     }
 
-    // Query-side statement-wide co-reference (§6): one free textual `$x`
-    // binder must dominate BOTH connected propositions. Proposition-local
-    // closure would instead let two different entities satisfy the query.
+    // Claim-wide co-reference (§6): assertion and query lowering are identical,
+    // and one free textual `$x` binder dominates BOTH connected propositions.
+    // Proposition-local closure would let two different entities satisfy the
+    // stored assertion or query.
     {
-        let b = kompile_query("bite($x, Bel) & bite($x, Dana).").unwrap();
+        let b = kompile("bite($x, Bel) & bite($x, Dana).").unwrap();
+        let query = kompile_query("bite($x, Bel) & bite($x, Dana).").unwrap();
+        assert_eq!(b, query, "assertion and query claim IR must be canonical");
         let LogicNode::ExistsNode((name, body)) = seam::root(&b) else {
             panic!(
-                "shared-name query root is not ExistsNode: {:?}",
+                "shared-name claim root is not ExistsNode: {:?}",
                 seam::root(&b)
             );
         };

@@ -86,27 +86,6 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Language semantics
 
-- **NIBLI_KR.md §6 co-reference — ASSERTION SIDE remains.** Query text now has an
-  explicit lowering path: `nibli-semantics::compile_query_from_ast` factors repeated,
-  safely exposed textual `$name` binders once around an ordinary connected region; unresolved
-  negative/modal/quantified/anonymous/abstraction scope crossings reject fail-closed.
-  Verdict, proof, find, count, and aggregate all use that path through `CoreSession`;
-  `NibliEngine::compile_query_debug` gives the differential oracles that exact query IR,
-  and the UI's preset guard + live query reading use the same compiler. Split witnesses
-  therefore cannot satisfy `bite($x, Bel) & bite($x, Dana)`, while `$p`/`$q` remain
-  independent and single-region scope is unchanged.
-
-  Assertions deliberately retain the old proposition-local buffer shape for now.
-  `collect_exists_for_skolem` (`nibli-reason/src/rules.rs`:37-49) keys its substitution map
-  by variable name across the whole buffer, so repeated `$x` nodes currently collapse onto
-  one Skolem witness — observable agreement with §6, but still an INCIDENTAL property of
-  Skolem collection rather than a designed compiler invariant. Make that behavior explicit:
-  either compile assertion roots with the same statement-wide binder pass, or specify and
-  enforce name-keyed collapse as the assertion contract. Pin shared versus distinct names
-  through stored facts, a downstream rule requiring the joint witness, retraction/replay,
-  and repeated names under explicit universal scopes. Do not assert exact `sk_N` spellings.
-  The book-side Chapter 21 correction remains a coordinated manuscript task.
-
 - **Eliminate hash-only semantic identity (rules and opaque abstractions).** Two
   correctness decisions currently depend on a 64-bit digest with no equality fallback:
   `nibli-reason/src/rules.rs`:4-10 hashes a rule and `known_rules: HashSet<u64>` silently

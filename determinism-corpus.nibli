@@ -25,7 +25,8 @@
 # (fires + blocked), du identity (substitutivity + NAF-through-equality), tense
 # (diagonal isolation + flavor-polymorphic rules), exact-count (incl. the
 # du-merged-entity counting behavior, pinned as-is), tolerant/exact/guarded
-# arithmetic, and post-retraction rebuild.
+# arithmetic, assertion/query named-variable co-reference, and post-retraction
+# rebuild.
 
 # ── ground facts + rule chain ──
 dog(Adam).
@@ -104,3 +105,17 @@ fast(Tam) & ~small(Tam).
 small(Tam).
 ? small(Tam).
 # => TRUE
+
+# ── named-variable co-reference: assertions and queries share one canonical
+#    binder; distinct names stay independent; retraction rebuild preserves it ──
+bite($shared, Bel) & bite($shared, Dana).
+? bite($who, Bel) & bite($who, Dana).
+# => TRUE
+loves($left, Bel) & loves($right, Dana).
+? loves($who, Bel) & loves($who, Dana).
+# => FALSE
+? loves($left, Bel) & loves($right, Dana).
+# => TRUE
+:retract 13
+? bite($who, Bel) & bite($who, Dana).
+# => FALSE

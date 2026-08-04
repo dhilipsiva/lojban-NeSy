@@ -2112,6 +2112,118 @@ fn named_query_variable_corefers_across_conjuncts() {
 }
 
 #[test]
+fn named_assertion_variable_corefers_across_conjuncts_and_rules() {
+    let joint_rule = "all $w: bite($w, Bel) & bite($w, Dana) -> animal($w).";
+
+    let shared = engine_with_facts(&["bite($x, Bel) & bite($x, Dana).", joint_rule]);
+    assert_true(
+        &shared
+            .query_holds("bite($w, Bel) & bite($w, Dana).")
+            .unwrap(),
+        "one shared assertion name must store one joint witness",
+    );
+    assert_true(
+        &shared.query_holds("animal($who).").unwrap(),
+        "a downstream rule requiring the joint witness must fire",
+    );
+
+    let distinct = engine_with_facts(&["bite($p, Bel) & bite($q, Dana).", joint_rule]);
+    assert_false(
+        &distinct
+            .query_holds("bite($w, Bel) & bite($w, Dana).")
+            .unwrap(),
+        "different assertion names must mint independent witnesses",
+    );
+    assert_false(
+        &distinct.query_holds("animal($who).").unwrap(),
+        "the joint-witness rule must not combine independent assertion names",
+    );
+    assert_true(
+        &distinct
+            .query_holds("bite($p, Bel) & bite($q, Dana).")
+            .unwrap(),
+        "the two independently stored witnesses remain queryable",
+    );
+
+    let separate = fresh_engine();
+    assert_eq!(
+        separate
+            .assert_text("bite($x, Bel). bite($x, Dana).")
+            .unwrap()
+            .len(),
+        2,
+        "period-terminated statements are separate fact and binder scopes"
+    );
+    assert_false(
+        &separate
+            .query_holds("bite($w, Bel) & bite($w, Dana).")
+            .unwrap(),
+        "the same spelling in separate statements must not co-refer",
+    );
+    assert_true(
+        &separate
+            .query_holds("bite($p, Bel) & bite($q, Dana).")
+            .unwrap(),
+        "separate statements retain their independent witnesses",
+    );
+}
+
+#[test]
+fn assertion_coreference_is_shared_inside_one_explicit_universal_scope() {
+    let shared = engine_with_facts(&[
+        "dog(Bel).",
+        "all $owner: dog($owner) -> bite($w, $owner) & loves($w, $owner).",
+    ]);
+    assert_true(
+        &shared
+            .query_holds("bite($w, Bel) & loves($w, Bel).")
+            .unwrap(),
+        "both universal conclusions must expose the same dependent witness",
+    );
+
+    let distinct = engine_with_facts(&[
+        "dog(Bel).",
+        "all $owner: dog($owner) -> bite($p, $owner) & loves($q, $owner).",
+    ]);
+    assert_false(
+        &distinct
+            .query_holds("bite($w, Bel) & loves($w, Bel).")
+            .unwrap(),
+        "different conclusion names must remain different dependent witnesses",
+    );
+}
+
+#[test]
+fn assertion_coreference_rejects_universal_scope_crossings_atomically() {
+    for text in [
+        "bite(every person, $x) & bite($x, Dana).",
+        "bite($x, Dana) & bite(every person, $x).",
+    ] {
+        let engine = fresh_engine();
+        let err = engine
+            .assert_text(text)
+            .expect_err("a ground/dependent witness choice must not depend on operand order");
+        assert!(
+            matches!(err, EngineError::Semantic(_)),
+            "scope rejection must retain its Semantic error class: {err}"
+        );
+        assert!(
+            err.to_string().contains("de-re/de-dicto"),
+            "scope rejection must explain the ambiguity: {err}"
+        );
+        assert!(
+            engine.list_facts().unwrap().is_empty(),
+            "a rejected compound assertion must ingest no partial fact"
+        );
+        assert_eq!(
+            engine.assert_text("dog(Adam).").unwrap(),
+            vec![0],
+            "compile-time rejection must not consume a fact id"
+        );
+    }
+}
+
+#[test]
 fn partial_parse_fails_closed_for_query() {
     // The unified fail-closed policy: the parser recovers per statement, so this input
     // has a valid first sentence and an unlexable second. A QUERY must abort on
@@ -2687,6 +2799,61 @@ fn persistent_engine_replays_asserted_facts_after_reopen() {
                 .expect("Derived query should run after reopen")
                 .is_true(),
             "Reopened engine should replay persisted rule and fact"
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn assertion_coreference_survives_rebuild_reopen_and_retraction() {
+    let path = temp_db_path("assertion_coreference_replay");
+    cleanup(&path);
+
+    let shared_id = {
+        let engine = fresh_open(&path, "Persistent engine should open");
+        let spacer_id = engine.assert_text("cat($spacer).").unwrap()[0];
+        let shared_id = engine
+            .assert_text("bite($x, Bel) & bite($x, Dana).")
+            .unwrap()[0];
+        engine
+            .assert_text("all $w: bite($w, Bel) & bite($w, Dana) -> animal($w).")
+            .unwrap();
+        assert_true(
+            &engine.query_holds("animal($who).").unwrap(),
+            "the stored compound must initially expose one joint witness",
+        );
+
+        engine
+            .retract_fact(spacer_id)
+            .expect("retracting an earlier existential must rebuild the KB");
+        assert_true(
+            &engine.query_holds("animal($who).").unwrap(),
+            "Skolem renumbering during rebuild must preserve co-reference",
+        );
+        shared_id
+    };
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should replay the compound");
+        assert_true(
+            &reopened.query_holds("animal($who).").unwrap(),
+            "serialized-buffer replay must preserve the joint witness",
+        );
+        reopened
+            .retract_fact(shared_id)
+            .expect("the shared compound must retract as one fact");
+        assert_false(
+            &reopened.query_holds("animal($who).").unwrap(),
+            "retracting the compound must remove the joint derivation",
+        );
+    }
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should retain the tombstone");
+        assert_false(
+            &reopened.query_holds("animal($who).").unwrap(),
+            "the retracted compound must not resurrect after reopen",
         );
     }
 

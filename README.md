@@ -326,6 +326,12 @@ Query results use a four-valued contract: `TRUE`, `FALSE`, `UNKNOWN` (with reaso
 
 You query by **stating the proposition you want checked**, not by asking a question. `? animal(Adam).` reads *"is `Adam is an animal` entailed?"* — and the verdict *is* the answer. The engine has no interrogative form: state `animal(Adam).` ("Adam is an animal"), never "Is Adam an animal?". The `?` prefix marks the line as a query; it is not a question mark on the claim.
 
+Within one connected statement, a repeated named variable is one witness for both
+assertion and query: `bite($x, Bel) & bite($x, Dana).` requires the same biter in
+both clauses. Use different names for independent witnesses. Reusing one free name
+across a negative, modal, quantified, anonymous-witness, or abstraction boundary is
+rejected as scope-ambiguous; separate period-terminated statements are independent.
+
 ### REPL Commands
 
 | Command | Description |

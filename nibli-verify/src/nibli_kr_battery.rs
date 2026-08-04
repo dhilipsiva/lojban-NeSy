@@ -33,9 +33,8 @@ pub fn kompile(text: &str) -> Result<LogicBuffer, String> {
         .map_err(|e| format!("nibli-kr/nibli-semantics '{text}': {e}"))
 }
 
-/// Compile nibli KR through the shared QUERY chain. Unlike [`kompile`], this
-/// includes §6's connected-clause factoring for repeated textual `$name`
-/// variables.
+/// Compile nibli KR through the query-intent alias. The accepted claim IR is
+/// identical to [`kompile`], including §6 connected-clause co-reference.
 pub fn kompile_query(text: &str) -> Result<LogicBuffer, String> {
     nibli_session::compile_query_text(text, &nibli_reason::default_compute_predicates())
         .map_err(|e| format!("nibli-kr/query-semantics '{text}': {e}"))

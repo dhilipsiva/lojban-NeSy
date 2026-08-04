@@ -126,11 +126,6 @@ pub struct SemanticCompiler {
     /// lowering, so `compile_proposition` must NOT existentially close them the way it
     /// closes free `da`/`de`/`di`.
     prenex_vars: std::collections::HashSet<lasso::Spur>,
-    /// Query-only lowering mode for nibli KR's connected-clause `$name`
-    /// co-reference rule. Proposition-local closure remains unchanged; when
-    /// two connected operands expose the same textual existential binder,
-    /// `compile_sentence` factors it once around the connective.
-    query_connected_coreference: bool,
 }
 
 impl SemanticCompiler {
@@ -148,16 +143,6 @@ impl SemanticCompiler {
             pending_matrix_conjuncts: Vec::new(),
             pending_clause_subject: None,
             prenex_vars: std::collections::HashSet::new(),
-            query_connected_coreference: false,
-        }
-    }
-
-    /// Creates the query-side compiler. Proposition scope is unchanged; only
-    /// repeated free names across connected operands are correlated.
-    pub(crate) fn new_query() -> Self {
-        Self {
-            query_connected_coreference: true,
-            ..Self::new()
         }
     }
 }

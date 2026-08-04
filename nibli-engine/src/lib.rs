@@ -388,8 +388,9 @@ impl NibliEngine {
         self.compile_text(text)
     }
 
-    /// Compile KR query text to the exact typed FOL `LogicBuffer` consumed by
-    /// the query APIs, including connected-clause `$name` co-reference.
+    /// Query-intent alias for [`Self::compile_debug`]. Assertions and queries
+    /// consume the same canonical typed FOL `LogicBuffer`, including
+    /// connected-clause `$name` co-reference.
     pub fn compile_query_debug(&self, text: &str) -> Result<EngineLogicBuffer, EngineError> {
         self.compile_query_text(text)
     }

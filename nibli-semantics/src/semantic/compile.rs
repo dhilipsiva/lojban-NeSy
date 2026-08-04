@@ -562,14 +562,10 @@ impl SemanticCompiler {
 
     /// After connected-region factoring, a repeated textual binder can remain
     /// only when the occurrences were separated by a real lexical scope
-    /// boundary. Validate each query root as a whole so the same rule also
+    /// boundary. Validate each claim root as a whole so the same rule also
     /// covers a boundary nested inside one proposition (not just two sentence
     /// operands).
-    pub(crate) fn validate_query_coreference(&mut self, form: &IrForm) {
-        if !self.query_connected_coreference {
-            return;
-        }
-
+    pub(crate) fn validate_named_coreference(&mut self, form: &IrForm) {
         let mut counts = std::collections::HashMap::new();
         let mut order = Vec::new();
         self.collect_named_exists_occurrences(form, &mut counts, &mut order);
@@ -580,7 +576,7 @@ impl SemanticCompiler {
             .collect::<Vec<_>>();
         if !ambiguous.is_empty() {
             self.errors.push(format!(
-                "Query co-reference for {} crosses a negative, modal, quantified, \
+                "Textual co-reference for {} crosses a negative, modal, quantified, \
                  anonymous-witness, or abstraction scope. That de-re/de-dicto reading is \
                  not specified; use distinct names or an explicit binder.",
                 ambiguous.join(", ")
@@ -759,11 +755,8 @@ impl SemanticCompiler {
                 let left_form = self.compile_sentence(*left_id, predicates, arguments, sentences);
                 let right_form = self.compile_sentence(*right_id, predicates, arguments, sentences);
 
-                let (hoisted, left_form, right_form) = if self.query_connected_coreference {
-                    self.factor_connected_named_exists(left_form, right_form)
-                } else {
-                    (Vec::new(), left_form, right_form)
-                };
+                let (hoisted, left_form, right_form) =
+                    self.factor_connected_named_exists(left_form, right_form);
 
                 let mut form = match connective {
                     SentenceConnective::Implies => IrForm::Or(

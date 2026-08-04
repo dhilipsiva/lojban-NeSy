@@ -35,6 +35,13 @@ pub(super) fn collect_exists_for_skolem(
     };
     match node {
         LogicNode::ExistsNode((v, body)) => {
+            // Canonical KR text compilation emits one binder for a repeated
+            // free `$name` in a safe connected region and rejects lexical-scope
+            // crossings before this pass. The name-keyed guard remains for
+            // compatibility with pre-canonical serialized LogicBuffers and
+            // programmatic callers; it is not the language-level co-reference
+            // mechanism. New text semantics must never depend on traversal order
+            // here to choose ground versus universal-dependent Skolem scope.
             if !subs.contains_key(v.as_str()) {
                 if enclosing_universals.is_empty() {
                     let sk = format!("sk_{}", *counter);

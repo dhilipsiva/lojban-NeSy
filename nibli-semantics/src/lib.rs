@@ -192,16 +192,9 @@ fn validate_ast_buffer(ast: &flat_ast::AstBuffer) -> Result<(), NibliError> {
 
 /// Core compilation: nibli-kr AST buffer → FOL logic buffer.
 /// Used by both the native API and the WIT export path.
-fn compile_ast(
-    ast: &flat_ast::AstBuffer,
-    query_connected_coreference: bool,
-) -> Result<LogicBuffer, NibliError> {
+fn compile_ast(ast: &flat_ast::AstBuffer) -> Result<LogicBuffer, NibliError> {
     validate_ast_buffer(ast)?;
-    let mut compiler = if query_connected_coreference {
-        SemanticCompiler::new_query()
-    } else {
-        SemanticCompiler::new()
-    };
+    let mut compiler = SemanticCompiler::new();
     let mut logic_forms = Vec::with_capacity(ast.roots.len());
 
     // Only compile top-level (root) sentences.
@@ -210,9 +203,7 @@ fn compile_ast(
     for &root_idx in ast.roots.iter() {
         let form =
             compiler.compile_sentence(root_idx, &ast.predicates, &ast.arguments, &ast.sentences);
-        if query_connected_coreference {
-            compiler.validate_query_coreference(&form);
-        }
+        compiler.validate_named_coreference(&form);
         logic_forms.push(form);
     }
 
@@ -374,15 +365,17 @@ fn flatten_form(form: &IrForm, nodes: &mut Vec<LogicNode>, interner: &lasso::Rod
 /// Compile a nibli-kr-produced AST buffer into a logic buffer.
 /// Primary API for all callers (nibli-pipeline, nibli-engine).
 pub fn compile_from_ast(ast: flat_ast::AstBuffer) -> Result<LogicBuffer, NibliError> {
-    compile_ast(&ast, false)
+    compile_ast(&ast)
 }
 
-/// Compile a nibli-KR query AST with repeated, safely exposed textual `$name`
-/// binders factored across connected clauses. Proposition-local scope remains
-/// unchanged; ambiguous repeated names under negative/modal/quantified scope
-/// fail closed rather than receiving an invented de-re/de-dicto reading.
+/// Compatibility/intent alias for compiling a nibli-KR query AST.
+///
+/// Assertions and queries share one canonical claim lowering: repeated, safely
+/// exposed textual `$name` binders are factored across connected clauses, while
+/// ambiguous negative/modal/quantified scope crossings fail closed rather than
+/// receiving an invented de-re/de-dicto reading.
 pub fn compile_query_from_ast(ast: flat_ast::AstBuffer) -> Result<LogicBuffer, NibliError> {
-    compile_ast(&ast, true)
+    compile_from_ast(ast)
 }
 
 /// Compile a directly-injected ground fact `(relation, args)` into the SAME
