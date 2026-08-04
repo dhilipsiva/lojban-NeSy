@@ -930,13 +930,29 @@ impl Repl {
             None => return Ok(()),
         };
         println!("[Store] Replaying {} persisted facts...", facts.len());
+        // Startup aborts on the failures below, before the REPL exists, so
+        // `:reset` is not an executable recovery instruction. Name the actual
+        // database-level recovery path instead.
+        let recovery = self.db_path.as_deref().map_or_else(
+            || {
+                "back up and move/delete the persisted database (or set NIBLI_DB_PATH to a \
+                 fresh path), restart, then re-import the original KR"
+                    .to_string()
+            },
+            |path| {
+                format!(
+                    "back up and move/delete `{path}` (or set NIBLI_DB_PATH to a fresh path), \
+                     restart, then re-import the original KR"
+                )
+            },
+        );
         let mut replayed = 0u32;
         for fact in &facts {
             let assertion: StoredAssertion = postcard::from_bytes(&fact.payload).map_err(|e| {
                 anyhow::anyhow!(
                     "[Store] fact #{} payload is corrupt ({e}) — the store cannot be faithfully \
-                     rebuilt; recover with :reset or restore a backup",
-                    fact.id
+                     rebuilt; {recovery}",
+                    fact.id,
                 )
             })?;
             self.prepare_session();
@@ -945,8 +961,8 @@ impl Repl {
                 StoredAssertion::Text(_) => {
                     return Err(anyhow::anyhow!(
                         "[Store] fact #{} is a legacy text row that survived the v3 migration \
-                         (internal bug) — recover with :reset",
-                        fact.id
+                         (internal bug) — {recovery}",
+                        fact.id,
                     ));
                 }
                 StoredAssertion::Buffer(ref inner) => {
@@ -954,8 +970,8 @@ impl Repl {
                     let buffer: NibliBuffer = postcard::from_bytes(inner).map_err(|e| {
                         anyhow::anyhow!(
                             "[Store] fact #{} buffer is corrupt ({e}) — the store cannot be \
-                             faithfully rebuilt; recover with :reset",
-                            fact.id
+                             faithfully rebuilt; {recovery}",
+                            fact.id,
                         )
                     })?;
                     let wit_buf = types_logic_buffer_to_wit(&buffer);
@@ -977,9 +993,9 @@ impl Repl {
                         Ok(Err(e)) => {
                             return Err(anyhow::anyhow!(
                                 "[Store] fact #{} failed to replay: {} — the store cannot be \
-                                 faithfully rebuilt; recover with :reset",
+                                 faithfully rebuilt; {recovery}",
                                 fact.id,
-                                format_nibli_error(&e)
+                                format_nibli_error(&e),
                             ));
                         }
                         Err(e) => {
@@ -1017,9 +1033,9 @@ impl Repl {
                         Ok(Err(e)) => {
                             return Err(anyhow::anyhow!(
                                 "[Store] fact #{} failed to replay: {} — the store cannot be \
-                                 faithfully rebuilt; recover with :reset",
+                                 faithfully rebuilt; {recovery}",
                                 fact.id,
-                                format_nibli_error(&e)
+                                format_nibli_error(&e),
                             ));
                         }
                         Err(e) => {

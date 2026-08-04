@@ -140,7 +140,7 @@ pub const NAF_CASES: &[Case] = &[
     },
     // ── The REAL GDPR erasure rule (deontic head + `lo nu` abstraction): a person who has not
     // consented is obligated to be erased. `se bilga` is a plain gismu; the `lo nu se vimcu`
-    // abstraction is modeled as an opaque constant keyed by its content hash, so the head +
+    // abstraction is modeled as an opaque constant keyed by its lossless identity, so the head +
     // query resolve to the same obligation atom. This is `gdpr.nibli:101`. ──
     Case {
         name: "gdpr_erasure_no_consent",

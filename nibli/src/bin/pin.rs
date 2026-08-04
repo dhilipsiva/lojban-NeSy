@@ -621,7 +621,7 @@ fn strata_dump(kbs: &[KbFile]) -> (String, Vec<String>) {
     out.push_str("# edges:   comma-separated, `+name` positive, `-name` negative (NAF);\n");
     out.push_str("#          empty field = no outgoing edges. An edge means \"reads\".\n");
     out.push_str("# names:   SURFACE relations — event-decomposed role predicates (`p_x1`)\n");
-    out.push_str("#          are collapsed onto their anchor (`p`). `event` and `__abs_<hash>`\n");
+    out.push_str("#          are collapsed onto their anchor (`p`). `event` and `__abs_<id>`\n");
     out.push_str("#          are compiler artifacts of `event { }` abstractions, and `equals`\n");
     out.push_str("#          is the `=` identity builtin — a disequality guard `~($a = $b)`\n");
     out.push_str("#          is a NEGATIVE edge to it and does raise the reader's stratum.\n");

@@ -1,14 +1,4 @@
 use super::*;
-use std::hash::{Hash, Hasher};
-
-/// Compute a structural hash for rule dedup. `tag` distinguishes rule kinds.
-fn rule_dedup_hash(tag: u8, conditions: &[StoredFact], conclusions: &[StoredFact]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    tag.hash(&mut hasher);
-    conditions.hash(&mut hasher);
-    conclusions.hash(&mut hasher);
-    hasher.finish()
-}
 
 /// Check if a GroundTerm represents a dependent Skolem placeholder.
 pub(super) fn is_skdep(gt: &GroundTerm) -> bool {
@@ -528,16 +518,24 @@ pub(super) fn collect_and_note_constants(
     }
 }
 
+pub(super) struct RuleRegistration {
+    pub(super) rule_registered: bool,
+    pub(super) existential_import_required: bool,
+}
+
 pub(super) fn register_rule(
     inner: &mut KnowledgeBaseInner,
+    kind: RuleKind,
     label: String,
     pattern_var_names: Vec<String>,
     typed_conditions: Vec<StoredFact>,
     typed_conclusions: Vec<StoredFact>,
     negated_condition_indices: Vec<usize>,
     negated_exists_groups: Vec<NegatedExistsGroup>,
+    requests_existential_import: bool,
     forward: bool,
-) -> Result<(), String> {
+    generated_ground_skolems: &HashSet<String>,
+) -> Result<RuleRegistration, String> {
     // FAIL CLOSED: a rule with no extractable conclusions can never fire
     // (backward chaining indexes rules by conclusion relation). Such a rule
     // used to be parked in an unindexed `__fallback__` bucket that only
@@ -547,6 +545,25 @@ pub(super) fn register_rule(
             "rule with no extractable conclusions — refusing to register an unfireable rule"
                 .to_string(),
         );
+    }
+
+    let identity = RuleIdentity::new(
+        kind,
+        &pattern_var_names,
+        &typed_conditions,
+        &typed_conclusions,
+        &negated_condition_indices,
+        &negated_exists_groups,
+        forward,
+        generated_ground_skolems,
+    );
+    if inner.known_rules.contains(&identity) {
+        let existential_import_required =
+            requests_existential_import && inner.known_rules.claim_existential_import(&identity);
+        return Ok(RuleRegistration {
+            rule_registered: false,
+            existential_import_required,
+        });
     }
 
     // Each negated-exists group contributes one negative edge per inner condition
@@ -641,6 +658,17 @@ pub(super) fn register_rule(
             .extend(pred_keys);
     }
 
+    // The digest is only a bucket selector. Full canonical equality above is
+    // the duplicate decision, and insertion happens only after every fallible
+    // registration step has succeeded.
+    let inserted = inner
+        .known_rules
+        .insert(identity, requests_existential_import);
+    debug_assert!(
+        inserted,
+        "a pre-checked rule identity must insert exactly once"
+    );
+
     // A new rule changes `pred_dep_graph`, and therefore BOTH the stratification
     // (`materialize::compute_strata`) and the eligibility closure
     // (`materialize::eligible_relations`) — so it can invalidate a COMPLETENESS claim,
@@ -650,7 +678,57 @@ pub(super) fn register_rule(
     // caller's discipline (the same reason `assert_typed_fact` carries its own).
     invalidate_materialization(inner);
 
-    Ok(())
+    Ok(RuleRegistration {
+        rule_registered: true,
+        existential_import_required: requests_existential_import,
+    })
+}
+
+fn register_dependent_skolem_functions(
+    inner: &mut KnowledgeBaseInner,
+    dependent_skolems: &HashMap<String, (String, Vec<String>)>,
+) {
+    for (base, pvars) in dependent_skolems.values() {
+        if !inner
+            .skolem_fn_registry
+            .iter()
+            .any(|entry| entry.base_name == *base)
+        {
+            inner.skolem_fn_registry.push(SkolemFnEntry {
+                base_name: base.clone(),
+                dep_count: pvars.len(),
+            });
+        }
+    }
+}
+
+/// Generated ground Skolem names that are safe to alpha-normalize in a rule
+/// identity. A user can legally supply a constant such as `sk_0`; if the
+/// counter mints that same spelling in this buffer, the runtime `GroundTerm`
+/// no longer carries enough provenance to distinguish the two occurrences.
+/// Leave that name literal rather than risk conflating it with user data.
+fn identity_ground_skolem_names(
+    buffer: &LogicBuffer,
+    ground_skolems: &HashMap<String, String>,
+) -> HashSet<String> {
+    let literal_constants: HashSet<&str> = buffer
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            LogicNode::Predicate((_, args)) | LogicNode::ComputeNode((_, args)) => Some(args),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|term| match term {
+            LogicalTerm::Constant(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    ground_skolems
+        .values()
+        .filter(|name| !literal_constants.contains(name.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Compute the strongly-connected components of the predicate dependency graph.
@@ -1125,8 +1203,9 @@ fn atom_var_args(buffer: &LogicBuffer, node_id: u32) -> Vec<String> {
 /// disjunctive) rule antecedent. The clause-independent work (consequent templates
 /// `typed_concls`, universals, pattern vars, and the precise `dependent_skolems`)
 /// is computed once by the caller and passed in; this builds the clause's condition
-/// templates, dedups, registers, and (for `branch_idx == 0`) asserts the existential-import
-/// presupposition. Returns `Err` (fail-closed, aborting the whole assertion) on any
+/// templates, dedups the executable rule, and independently claims/asserts the
+/// existential-import presupposition for branch zero. Returns `Err` (fail-closed,
+/// aborting the whole assertion) on any
 /// untemplatable condition atom or stratification violation.
 #[allow(clippy::too_many_arguments)]
 fn register_clause_rule(
@@ -1139,10 +1218,11 @@ fn register_clause_rule(
     pattern_var_names: &[String],
     ground_skolems: &HashMap<String, String>,
     dependent_skolems: &HashMap<String, (String, Vec<String>)>,
+    generated_ground_skolems: &HashSet<String>,
     typed_concls: &[StoredFact],
     rule_desc: &str,
     inner: &mut KnowledgeBaseInner,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     // This clause's own condition ∃ vars (sorted → deterministic pattern-var order),
     // a subset of the caller's union. Drives which `Exists` flatten descends and the
     // clause's event pattern-var list.
@@ -1255,20 +1335,6 @@ fn register_clause_rule(
         }
     }
 
-    let dedup_key = rule_dedup_hash(0, &typed_conds, typed_concls);
-    if !inner.known_rules.insert(dedup_key) {
-        if inner.diag_enabled() {
-            println!("[Rule] ∀{} already present, skipping", universals.join(","));
-        }
-        return Ok(());
-    }
-    if inner.diag_enabled() {
-        println!(
-            "[Rule] Compiled ∀{} to backward-chaining rule",
-            universals.join(",")
-        );
-    }
-
     let base_label = build_typed_rule_label(&typed_conds, typed_concls);
     let label = if clause_count > 1 {
         format!(
@@ -1280,18 +1346,42 @@ fn register_clause_rule(
     } else {
         base_label
     };
-    if let Err(e) = register_rule(
+    // Existential import is an assertion-side effect, not part of the executable
+    // rule identity. Claim it independently so an alpha-equivalent prenex rule
+    // cannot suppress a later description universal, while repeated description
+    // assertions still mint only one witness per canonical rule identity.
+    let is_description_universal =
+        !universals.is_empty() && universals.iter().all(|v| v.starts_with("_v"));
+    let requests_existential_import =
+        branch_idx == 0 && is_description_universal && inner.existential_import;
+    let registration = match register_rule(
         inner,
+        RuleKind::Conditional,
         label,
         all_pattern_var_names,
         typed_conds,
         typed_concls.to_vec(),
         negated_condition_indices,
         negated_exists_groups,
+        requests_existential_import,
         false, // forward chaining disabled by default
+        generated_ground_skolems,
     ) {
-        eprintln!("[Stratification Error] {}", e);
-        return Err(e);
+        Ok(registration) => registration,
+        Err(e) => {
+            eprintln!("[Stratification Error] {}", e);
+            return Err(e);
+        }
+    };
+    if !registration.rule_registered {
+        if inner.diag_enabled() {
+            println!("[Rule] ∀{} already present, skipping", universals.join(","));
+        }
+    } else if inner.diag_enabled() {
+        println!(
+            "[Rule] Compiled ∀{} to backward-chaining rule",
+            universals.join(",")
+        );
     }
 
     // existential-import presupposition applies ONLY to DESCRIPTION universals (`ro lo` / `ro le`),
@@ -1303,13 +1393,11 @@ fn register_clause_rule(
     // stated). It must NOT fire for a ground material conditional (zero universals) or
     // a PRENEX universal (`ro da zo'u …`, no existential import). nibli-semantics names
     // description universals `_v{n}` and prenex universals `da`/`de`/`di`.
-    let is_description_universal =
-        !universals.is_empty() && universals.iter().all(|v| v.starts_with("_v"));
     // Gated by the existential-import flag (default ON — the v0.1 xorlo
     // behavior). Under clean-core (flag OFF) a description universal is a plain
     // `∀x. R(x) → C(x)` with no phantom witness, so `∃x. R(x)` is not made true
     // by the rule alone (NIBLI_KR §14.4 item 3).
-    if branch_idx == 0 && is_description_universal && inner.existential_import {
+    if registration.existential_import_required {
         // One FRESH witness PER universal. `ro lo gerku cu pendo ro lo mlatu`
         // presupposes ≥1 dog AND ≥1 cat as DISTINCT entities; a single shared
         // witness would assert `gerku(xp) ∧ mlatu(xp)` — a phantom dog-cat (an
@@ -1347,7 +1435,7 @@ fn register_clause_rule(
         }
     }
 
-    Ok(())
+    Ok(registration.rule_registered)
 }
 
 pub(super) fn compile_forall_to_rule(
@@ -1647,21 +1735,6 @@ pub(super) fn compile_forall_to_rule(
                 val.1 = precise;
             }
 
-            if !dependent_skolems.is_empty() {
-                for (_, (base, pvars)) in &dependent_skolems {
-                    if !inner
-                        .skolem_fn_registry
-                        .iter()
-                        .any(|e| e.base_name == *base)
-                    {
-                        inner.skolem_fn_registry.push(SkolemFnEntry {
-                            base_name: base.clone(),
-                            dep_count: pvars.len(),
-                        });
-                    }
-                }
-            }
-
             // Conclusion templates are clause-independent — build + validate once.
             // Each leaf carries its own tense (threaded by `flatten_consequent`), so a
             // tensed conclusion (`ganai A gi pu B` → `Past(B)`) becomes a `Past` template.
@@ -1689,8 +1762,10 @@ pub(super) fn compile_forall_to_rule(
             // One rule per DNF clause; all clauses share the consequent + universals
             // + dependent-Skolem analysis, only the conditions differ.
             let clause_count = clauses.len();
+            let generated_ground_skolems = identity_ground_skolem_names(buffer, &ground_skolems);
+            let mut registered_any = false;
             for (branch_idx, clause) in clauses.iter().enumerate() {
-                register_clause_rule(
+                registered_any |= register_clause_rule(
                     buffer,
                     clause,
                     branch_idx,
@@ -1700,10 +1775,16 @@ pub(super) fn compile_forall_to_rule(
                     &pattern_var_names,
                     &ground_skolems,
                     &dependent_skolems,
+                    &generated_ground_skolems,
                     &typed_concls,
                     &rule_desc,
                     inner,
                 )?;
+            }
+            // A duplicate rule keeps the already-registered Skolem family. Do
+            // not leak the fresh, unused base minted while compiling its copy.
+            if registered_any {
+                register_dependent_skolem_functions(inner, &dependent_skolems);
             }
         }
         None => {
@@ -1716,21 +1797,6 @@ pub(super) fn compile_forall_to_rule(
             // nibli-semantics-named `_v{n}`) ALWAYS compile to `∀x. R(x) → C(x)` and route
             // through `register_clause_rule`, whose `is_description_universal` guard
             // asserts the witness. So a description universal never reaches here.
-            if !dependent_skolems.is_empty() {
-                for (_, (base, pvars)) in &dependent_skolems {
-                    if !inner
-                        .skolem_fn_registry
-                        .iter()
-                        .any(|e| e.base_name == *base)
-                    {
-                        inner.skolem_fn_registry.push(SkolemFnEntry {
-                            base_name: base.clone(),
-                            dep_count: pvars.len(),
-                        });
-                    }
-                }
-            }
-
             let typed_concls: Vec<StoredFact> = match build_rule_template_fact(
                 buffer,
                 pf_consequent,
@@ -1750,36 +1816,40 @@ pub(super) fn compile_forall_to_rule(
                 }
             };
 
-            let dedup_key = rule_dedup_hash(1, &[], &typed_concls);
-            if !inner.known_rules.insert(dedup_key) {
-                if inner.diag_enabled() {
-                    println!(
-                        "[Rule] bare ∀{} already present, skipping",
-                        universals.join(",")
-                    );
+            let label = build_typed_rule_label(&[], &typed_concls);
+            let generated_ground_skolems = identity_ground_skolem_names(buffer, &ground_skolems);
+            let registration = match register_rule(
+                inner,
+                RuleKind::BareUniversal,
+                label,
+                pattern_var_names.clone(),
+                vec![],
+                typed_concls,
+                vec![], // bare universal — no conditions, no negation
+                vec![], // bare universal — no negated-exists groups
+                false,  // prenex universal — no existential import
+                false,  // forward chaining disabled by default
+                &generated_ground_skolems,
+            ) {
+                Ok(registration) => registration,
+                Err(e) => {
+                    eprintln!("[Stratification Error] {}", e);
+                    return Err(e);
                 }
-            } else {
+            };
+            if registration.rule_registered {
+                register_dependent_skolem_functions(inner, &dependent_skolems);
                 if inner.diag_enabled() {
                     println!(
                         "[Rule] Compiled bare ∀{} backward-chaining rule",
                         universals.join(",")
                     );
                 }
-
-                let label = build_typed_rule_label(&[], &typed_concls);
-                if let Err(e) = register_rule(
-                    inner,
-                    label,
-                    pattern_var_names.clone(),
-                    vec![],
-                    typed_concls,
-                    vec![], // bare universal — no conditions, no negation
-                    vec![], // bare universal — no negated-exists groups
-                    false,  // forward chaining disabled by default
-                ) {
-                    eprintln!("[Stratification Error] {}", e);
-                    return Err(e);
-                }
+            } else if inner.diag_enabled() {
+                println!(
+                    "[Rule] bare ∀{} already present, skipping",
+                    universals.join(",")
+                );
             }
         }
     }
@@ -1950,7 +2020,7 @@ pub(super) fn collect_ground_facts(
     };
     match node {
         LogicNode::AndNode((l, r)) => {
-            // Abstraction opacity: `And(__abs_<hash>(referent), body)` — collect the
+            // Abstraction opacity: `And(__abs_<id>(referent), body)` — collect the
             // marker (its content identity matters) but SKIP the body so its inner
             // predicates never become free-standing ground facts.
             if is_abstraction_marker(buffer, *l) {

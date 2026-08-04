@@ -509,15 +509,15 @@ fn regroup_event(buf: &LogicBuffer, id: u32, vars: &mut VarMap) -> Result<Surfac
             rel: sanitize(rel),
             args: args.iter().map(|t| term(buf, t, vars)).collect(),
         }),
-        // An abstraction wrapper `∃absvar. (nu(absvar) ∧ __abs_<hash>(absvar) ∧ <content> ∧
+        // An abstraction wrapper `∃absvar. (nu(absvar) ∧ __abs_<id>(absvar) ∧ <content> ∧
         // <atom that USES absvar>)`. nibli treats `lo nu P` as an opaque referent (matched by the
-        // `__abs_<hash>` marker, never by its content), so keep only the atom that uses the referent
+        // `__abs_<id>` marker, never by its content), so keep only the atom that uses the referent
         // — the referent itself is the opaque constant (see `term`/`abs_const_of`) — and drop the
         // abstraction's inert typing markers and inner content.
         LogicNode::ExistsNode((ev, body)) if abs_const_of(buf, ev).is_some() => {
             let mut using: Vec<u32> = Vec::new();
             for c in flatten_and(buf, *body)? {
-                // Skip a bare abstraction-typing marker (`nu(absvar)` / `__abs_<hash>(absvar)`).
+                // Skip a bare abstraction-typing marker (`nu(absvar)` / `__abs_<id>(absvar)`).
                 if let LogicNode::Predicate((_, cargs)) = node_at(buf, c)? {
                     if cargs.len() == 1 && is_var(&cargs[0], ev) {
                         continue;
@@ -639,8 +639,8 @@ fn check_safety(head: &SurfaceAtom, body: &[BodyLit]) -> Result<(), String> {
 
 fn term(buf: &LogicBuffer, t: &LogicalTerm, vars: &mut VarMap) -> AspTerm {
     match t {
-        // An abstraction referent (`lo nu P`) is an OPAQUE individual named by its content hash —
-        // nibli matches abstractions by the `__abs_<hash>` marker, never by re-deriving content, so
+        // An abstraction referent (`event { P }`) is an OPAQUE individual named by its lossless marker —
+        // nibli matches abstractions by the complete `__abs_<id>` marker, never by re-deriving content, so
         // both the rule head and the query resolve the same `lo nu` to the same constant. Map the
         // variable to that constant (a stable opaque id) rather than a fresh clingo variable.
         LogicalTerm::Variable(v) => match abs_const_of(buf, v) {
@@ -662,9 +662,10 @@ fn term(buf: &LogicBuffer, t: &LogicalTerm, vars: &mut VarMap) -> AspTerm {
     }
 }
 
-/// If `var` is an abstraction referent (some `__abs_<hash>(var)` marker exists in the buffer),
-/// return the opaque constant naming it (the sanitized `__abs_<hash>`). Both the rule head and the
-/// query share the SAME hash for the same `lo nu` content, so this constant matches across them.
+/// If `var` is an abstraction referent (some `__abs_<id>(var)` marker exists in the buffer),
+/// return the opaque constant naming it (the sanitized `__abs_<id>`). Both the rule head and the
+/// query share the same complete lossless marker for the same abstraction kind + body, so this
+/// constant matches across them.
 fn abs_const_of(buf: &LogicBuffer, var: &str) -> Option<String> {
     for node in &buf.nodes {
         if let LogicNode::Predicate((rel, args)) = node {
@@ -778,6 +779,13 @@ impl VarMap {
 mod tests {
     use super::*;
 
+    fn valid_abstraction_marker() -> String {
+        let mut key = vec![0xa0, 0x10];
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        nibli_types::abstraction::encode_v1(&key)
+    }
+
     // ── Flat buffer builders (mirror nibli-reason's test helpers) ──
     fn pred(nodes: &mut Vec<LogicNode>, rel: &str, args: Vec<LogicalTerm>) -> u32 {
         nodes.push(LogicNode::Predicate((rel.to_string(), args)));
@@ -834,17 +842,21 @@ mod tests {
 
     #[test]
     fn abstraction_referent_is_opaque_constant() {
-        // ∃absv. ( __abs_H(absv) ∧ ∃ev. bilga(ev) ∧ bilga_x1(ev, absv) )  →  bilga(c___abs_H).
-        // The `lo nu` abstraction referent is modeled as an opaque constant keyed by its content
-        // hash; the typing marker + inert content are dropped, keeping only the atom that uses it.
+        // The abstraction referent is modeled as an opaque constant keyed by its complete
+        // versioned marker; the typing marker + inert content are dropped, keeping only the atom
+        // that uses it.
         let mut n = Vec::new();
-        let marker = pred(&mut n, "__abs_H", vec![var("_absv")]);
+        let marker_relation = valid_abstraction_marker();
+        let marker = pred(&mut n, &marker_relation, vec![var("_absv")]);
         let ev = event1(&mut n, "_ev", "bilga", var("_absv"));
         let body = and(&mut n, marker, ev);
         let root = exists(&mut n, "_absv", body);
         let q = buf(n, vec![root]);
         let out = render_program(&[], &q).unwrap();
-        assert!(out.contains("goal :- bilga(c___abs_H)."), "{out}");
+        assert!(
+            out.contains(&format!("goal :- bilga({}).", sanitize(&marker_relation))),
+            "{out}"
+        );
     }
 
     #[test]

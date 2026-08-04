@@ -57,7 +57,8 @@ fn strict_mode_rejects_constraint_violation_atomically() {
         "mlatu",
         vec![GroundTerm::Constant("alis".to_string())],
     ));
-    kb.register_constraint("not-both".to_string(), vec![c1, c2]);
+    kb.register_constraint("not-both".to_string(), vec![c1, c2])
+        .unwrap();
 
     let flat = |rel: &str| {
         let mut nodes = Vec::new();
@@ -103,10 +104,56 @@ fn strict_mode_rejects_constraint_violation_atomically() {
                 vec![GroundTerm::Constant("alis".to_string())],
             )),
         ],
-    );
+    )
+    .unwrap();
     assert_buf(&kb2, flat("gerku"));
     assert_buf(&kb2, flat("mlatu")); // warns, does not error
     assert!(query(&kb2, flat("mlatu")), "permissive mode still inserts");
+}
+
+#[test]
+fn constraint_abstraction_identity_is_canonicalized_or_rejected() {
+    fn valid_marker_with_digest(digest: &str) -> String {
+        let mut key = vec![0xa0, 0x10];
+        key.extend_from_slice(&1_u64.to_be_bytes());
+        key.push(b'p');
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        let key_hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("__abs_v1_{digest}_{key_hex}")
+    }
+
+    let kb = new_kb();
+    kb.set_strict(true);
+    let forged = valid_marker_with_digest("0000000000000000");
+    let term = GroundTerm::Constant("abstract".to_string());
+    let mut canonical_fact = StoredFact::Bare(GroundFact::new(&forged, vec![term.clone()]));
+    canonicalize_stored_fact_abstraction_marker(&mut canonical_fact).unwrap();
+    let canonical = canonical_fact.relation().to_string();
+    assert_ne!(forged, canonical, "the test digest must be non-canonical");
+
+    kb.register_constraint("no-abstract-p".to_string(), vec![canonical_fact])
+        .unwrap();
+    let logic = LogicBuffer {
+        nodes: vec![LogicNode::Predicate((
+            forged,
+            vec![LogicalTerm::Constant("abstract".to_string())],
+        ))],
+        roots: vec![0],
+    };
+    let err = kb
+        .assert_fact(logic, "forged-digest assertion".to_string())
+        .expect_err("canonical-equivalent constraint must reject the assertion");
+    assert!(
+        err.to_string().contains("integrity constraint"),
+        "unexpected error: {err}"
+    );
+
+    let legacy = StoredFact::Bare(GroundFact::new("__abs_0123456789abcdef", vec![term]));
+    assert!(
+        kb.register_constraint("legacy".to_string(), vec![legacy])
+            .is_err(),
+        "legacy hash-only constraint markers must fail closed"
+    );
 }
 
 /// Strict mode is inert during retraction-replay rebuilds: facts accepted
@@ -204,7 +251,8 @@ fn strict_mid_query_constraint_rejection_scrubs_store_and_index() {
             ],
         ))
     };
-    kb.register_constraint("no-zzoracle-8-2-3".to_string(), vec![stored(3.0)]);
+    kb.register_constraint("no-zzoracle-8-2-3".to_string(), vec![stored(3.0)])
+        .unwrap();
 
     // The query dispatches zzoracle(8,2,3) to the always-true backend, which
     // auto-asserts it mid-query; the constraint then rejects it and strict

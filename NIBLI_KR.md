@@ -243,8 +243,8 @@ rain().                                # observative — all places Unspecified
   `reason↦krinu(ki'u)`, `uses↦pilno(pi'o)`, `replace↦basti(ba'i)`; any predicate name
   works (`via uses(some car)`). Arity<2 modals fail closed at compile, as today.
 
-**Abstractions** are brace-delimited opaque terms (implicit-`some` descriptions over the
-content-hash-marked body, exactly the engine's encoding):
+**Abstractions** are brace-delimited opaque terms (implicit-`some` descriptions over a
+lossless alpha-canonical kind+body marker, exactly the engine's encoding):
 
 | nibli KR | Lojban |
 |---|---|
@@ -635,7 +635,7 @@ These *look* Lojban-flavored but are load-bearing engine semantics, and v2 keeps
 - **`=` (du) union-find equality**; **stratified NAF + CWA** (with assert-time
   stratification rejection); **`exactly N`/`no` CountNode counting** — now *without* the
   witness-exclusion clause, since xorlo witnesses no longer exist; **abstraction opacity
-  markers** (`__abs_` content hash); **tense + deontic wrappers**; the **`via` modal
+  markers** (`__abs_` versioned lossless identity); **tense + deontic wrappers**; the **`via` modal
   conjunct shape**; fail-closed validation everywhere.
 - **Compute predicates** stay, under canonical names `product`/`sum`/`quotient`
   (the English rename LANDED at the predicate-name flip; the remaining engine item

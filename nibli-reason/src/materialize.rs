@@ -175,7 +175,7 @@ pub enum Ineligible {
     /// Stored facts of this relation disagree on how many role places they carry, so
     /// there is no single surface arity to probe against.
     ArityClash,
-    /// An abstraction TYPING relation (`__abs_<hash>` or the `event(·)` anchor beside it).
+    /// An abstraction TYPING relation (`__abs_<id>` or the `event(·)` anchor beside it).
     /// The projection eliminates the referent, so these carry no surface extension —
     /// refused rather than omitted so they cannot be mistaken for pure EDB.
     AbstractionTyping,
@@ -329,15 +329,15 @@ fn project_atoms_inner(
     // ── ABSTRACTION PRE-PASS ──
     //
     // `entitled(every person, event { P() }).` compiles to a head carrying an abstraction
-    // referent: `event(sk_1(x))` and `__abs_<hash>(sk_1(x))` — TWO arity-1 atoms on one
+    // referent: `event(sk_1(x))` and `__abs_<id>(sk_1(x))` — TWO arity-1 atoms on one
     // event term — plus `entitled_x2(sk_3(x), sk_1(x))`, the referent in a role VALUE.
     // Untreated those are `AmbiguousAnchor` and `SkolemInValue`, which is why every
     // abstraction-bearing rule was outside the saturation.
     //
     // The identity that crosses compiles is the marker RELATION NAME, not any term: it is
-    // `__abs_{fnv1a(canonical body):016x}`, byte-identical wherever the same body appears,
-    // and the engine matches abstractions by that marker rather than by re-deriving
-    // content. So the referent projects to the marker name as an opaque CONSTANT — the
+    // `__abs_v1_<digest>_<lossless-key>`, byte-identical wherever the same kind+body
+    // appears. The digest is non-semantic; the engine matches the complete marker rather
+    // than re-deriving content. So the referent projects to the marker name as an opaque CONSTANT — the
     // same move `nibli-verify/src/asp.rs`'s `abs_const_of` makes for clingo, reimplemented
     // here rather than shared so the oracle stays independent.
     //
@@ -397,7 +397,7 @@ fn project_atoms_inner(
 
     for a in atoms {
         let gf = a.inner();
-        // Suppress the whole marker bucket — both `__abs_<hash>(ref)` and the `event(ref)`
+        // Suppress the whole marker bucket — both `__abs_<id>(ref)` and the `event(ref)`
         // typing anchor. It is abstraction TYPING, not a surface atom.
         if gf.args.len() == 1 && abs_const.contains_key(&gf.args[0]) {
             continue;
@@ -506,7 +506,7 @@ pub(super) struct ProjectedRule {
     pub(super) builtins: Vec<(StoredFact, bool)>,
     /// Head atoms — one per conclusion group. A rule may conclude several relations.
     pub(super) head: Vec<Atom>,
-    /// Abstraction TYPING relations the projection suppressed — the `__abs_<hash>` marker
+    /// Abstraction TYPING relations the projection suppressed — the `__abs_<id>` marker
     /// and the `event(·)` anchor riding in its bucket.
     ///
     /// These MUST be refused explicitly by the caller, never merely omitted. `is_edb` is

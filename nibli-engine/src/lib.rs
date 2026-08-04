@@ -186,25 +186,20 @@ impl NibliEngine {
 
         // Open persistent typed fact store alongside the legacy store.
         let typed_db_path = db_path.with_extension("typed.redb");
-        let mut typed_store = nibli_store::typed_store::RedbFactStore::open(&typed_db_path)
-            .map_err(|e| format!("TypedStore error: {e}"))?;
-
         // The fact REGISTRY (the store opened above) is the durable source of
         // truth: retraction tombstones live there, and remote merges land
         // there. The typed store is only the KB's write-through mirror — a
-        // store-level retraction never touches its rows, so an eagerly loaded
-        // mirror resurrects retracted facts (query-visible even though
-        // list-facts is empty). Clear the mirror and let the registry replay
-        // below rebuild it from the active records.
-        {
-            use nibli_reason::fact_store::FactStore as _;
-            typed_store.clear();
-        }
+        // store-level retraction never touches its rows. Discard it WITHOUT
+        // decoding first: old hash-only/corrupt mirror rows are recoverable
+        // because the canonical LogicBuffer registry below rebuilds the mirror.
+        // Direct RedbFactStore::open callers retain the strict validation path.
+        let typed_store = nibli_store::typed_store::RedbFactStore::open_for_rebuild(&typed_db_path)
+            .map_err(|e| format!("TypedStore error: {e}"))?;
 
+        let kb = nibli_reason::KnowledgeBase::with_store(Box::new(typed_store))
+            .map_err(|e| format!("TypedStore compatibility error: {e}"))?;
         let engine = NibliEngine {
-            core: nibli_session::CoreSession::with_kb(nibli_reason::KnowledgeBase::with_store(
-                Box::new(typed_store),
-            )),
+            core: nibli_session::CoreSession::with_kb(kb),
             store: RefCell::new(Some(store)),
         };
         engine.replay_from_store()?;

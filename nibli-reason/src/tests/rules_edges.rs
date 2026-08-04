@@ -442,6 +442,7 @@ fn stratification_rollback_pops_flat_plus_group_edges() {
         // negative self-loop → rejected as unstratifiable → rollback.
         let result = crate::rules::register_rule(
             &mut inner,
+            crate::kb::RuleKind::Conditional,
             "dog <- ~dog + ~exists-person-group".to_string(),
             vec!["x__v0".to_string()],
             vec![StoredFact::Bare(GroundFact::new("dog", vec![pv()]))],
@@ -455,6 +456,8 @@ fn stratification_rollback_pops_flat_plus_group_edges() {
                 event_var: "ev__g0".to_string(),
             }],
             false,
+            false,
+            &HashSet::new(),
         );
         assert!(
             result.is_err(),
@@ -589,6 +592,7 @@ fn flat_naf_group_skipped_when_positive_condition_definitively_fails() {
         // a one-condition negated-exists group.
         crate::rules::register_rule(
             &mut inner,
+            crate::kb::RuleKind::Conditional,
             "beautiful <- dog + ~exists-cat".to_string(),
             vec!["x__v0".to_string()],
             vec![StoredFact::Bare(GroundFact::new(
@@ -608,6 +612,8 @@ fn flat_naf_group_skipped_when_positive_condition_definitively_fails() {
                 event_var: "ev__g0".to_string(),
             }],
             false,
+            false,
+            &HashSet::new(),
         )
         .expect("the flat NAF-group rule must register (stratifiable)");
     }
@@ -616,5 +622,313 @@ fn flat_naf_group_skipped_when_positive_condition_definitively_fails() {
     assert!(
         query_false(&kb, make_query("bel", "beautiful")),
         "a definitively failed flat condition must yield definitive FALSE, not Unknown"
+    );
+}
+
+fn forced_rule_digest(_: &crate::kb::RuleIdentity) -> u64 {
+    0
+}
+
+#[test]
+fn forced_rule_digest_collision_survives_rebuild_and_retraction() {
+    let kb = new_kb();
+    kb.inner
+        .borrow_mut()
+        .known_rules
+        .force_digest_for_test(forced_rule_digest);
+
+    let first_rule = assert_id(
+        &kb,
+        compile_surface("all $x: dog($x) -> animal($x)."),
+        "dog -> animal",
+    );
+    let _second_rule = assert_id(
+        &kb,
+        compile_surface("all $x: cat($x) -> beautiful($x)."),
+        "cat -> beautiful",
+    );
+    let spacer = assert_id(&kb, compile_surface("big(Spacer)."), "spacer");
+    assert_buf(&kb, compile_surface("dog(Adam)."));
+    assert_buf(&kb, compile_surface("cat(Bel)."));
+
+    assert!(query(&kb, compile_surface("animal(Adam).")));
+    assert!(query(&kb, compile_surface("beautiful(Bel).")));
+    assert_eq!(kb.inner.borrow().known_rules.identity_count(), 2);
+
+    kb.retract_fact_inner(spacer)
+        .expect("unrelated retraction must rebuild under the forced collision");
+    assert!(query(&kb, compile_surface("animal(Adam).")));
+    assert!(query(&kb, compile_surface("beautiful(Bel).")));
+    assert_eq!(kb.inner.borrow().known_rules.identity_count(), 2);
+
+    kb.retract_fact_inner(first_rule)
+        .expect("retracting one colliding rule must preserve the other");
+    assert!(query_false(&kb, compile_surface("animal(Adam).")));
+    assert!(query(&kb, compile_surface("beautiful(Bel).")));
+    assert_eq!(kb.inner.borrow().known_rules.identity_count(), 1);
+}
+
+#[test]
+fn alpha_equivalent_surface_rules_deduplicate_without_orphan_skolems() {
+    let kb = new_kb();
+    let first = assert_id(
+        &kb,
+        compile_surface("all $x: dog($x) -> animal($x)."),
+        "first spelling",
+    );
+    let registry_after_first = kb.inner.borrow().skolem_fn_registry.len();
+    let _renamed = assert_id(
+        &kb,
+        compile_surface("all $renamed: dog($renamed) -> animal($renamed)."),
+        "alpha-renamed spelling",
+    );
+
+    assert_eq!(
+        kb.inner.borrow().known_rules.identity_count(),
+        1,
+        "binder and generated-Skolem names are not semantic identity"
+    );
+    assert_eq!(
+        kb.inner.borrow().skolem_fn_registry.len(),
+        registry_after_first,
+        "a skipped duplicate must not leave an unused Skolem family"
+    );
+
+    assert_buf(&kb, compile_surface("dog(Adam)."));
+    assert!(query(&kb, compile_surface("animal(Adam).")));
+    kb.retract_fact_inner(first)
+        .expect("the surviving duplicate buffer must take over during replay");
+    assert!(query(&kb, compile_surface("animal(Adam).")));
+    assert_eq!(kb.inner.borrow().known_rules.identity_count(), 1);
+}
+
+#[test]
+fn description_import_is_independent_of_alpha_equivalent_rule_dedup() {
+    let prenex = "all $x: dog($x) -> animal($x).";
+    let description = "animal(every dog).";
+
+    // Either assertion order must retain the description's xorlo
+    // presupposition. The executable rule remains one canonical identity.
+    for description_first in [false, true] {
+        let kb = new_kb();
+        if description_first {
+            assert_buf(&kb, compile_surface(description));
+            assert_buf(&kb, compile_surface(prenex));
+        } else {
+            assert_buf(&kb, compile_surface(prenex));
+            assert_buf(&kb, compile_surface(description));
+        }
+        assert!(
+            query(&kb, compile_surface("dog(some dog).")),
+            "description import was lost with description_first={description_first}"
+        );
+        assert_eq!(
+            kb.inner.borrow().known_rules.identity_count(),
+            1,
+            "assertion-side import must not duplicate the executable rule"
+        );
+    }
+
+    // With existential import disabled, both spellings are genuinely the same
+    // plain universal and no phantom witness is introduced.
+    let clean_core = new_kb();
+    clean_core.set_existential_import(false);
+    assert_buf(&clean_core, compile_surface(prenex));
+    assert_buf(&clean_core, compile_surface(description));
+    assert!(query_false(&clean_core, compile_surface("dog(some dog).")));
+    assert_eq!(clean_core.inner.borrow().known_rules.identity_count(), 1);
+
+    // The mode is mutable session configuration. Enabling it and replaying the
+    // same description claims the previously-unclaimed side effect without
+    // duplicating the executable rule.
+    clean_core.set_existential_import(true);
+    assert_buf(&clean_core, compile_surface(description));
+    assert!(query(&clean_core, compile_surface("dog(some dog).")));
+    assert_eq!(clean_core.inner.borrow().known_rules.identity_count(), 1);
+}
+
+#[test]
+fn description_import_survives_a_duplicate_first_dnf_branch() {
+    let kb = new_kb();
+    assert_buf(
+        &kb,
+        compile_surface("all $x: dog($x) & loves($x) -> animal($x)."),
+    );
+    assert_buf(
+        &kb,
+        compile_surface("animal(every dog where loves(it) | friend(it))."),
+    );
+
+    assert!(
+        query(&kb, compile_surface("dog(some dog).")),
+        "a duplicate branch-zero rule must not suppress the description import"
+    );
+    assert!(
+        query(&kb, compile_surface("loves(some dog).")),
+        "the imported witness must satisfy the first DNF restrictor branch"
+    );
+}
+
+#[test]
+fn retracting_a_description_clears_presupposition_exclusion_state() {
+    let kb = new_kb();
+    let description_id = assert_id(&kb, compile_surface("animal(every dog)."), "description");
+    let old_witness = kb
+        .inner
+        .borrow()
+        .presupposition_witnesses
+        .iter()
+        .next()
+        .expect("description must mint a presupposition witness")
+        .clone();
+
+    kb.retract_fact_inner(description_id)
+        .expect("description should retract by rebuilding");
+    assert!(
+        kb.inner.borrow().presupposition_witnesses.is_empty(),
+        "rebuild must remove exclusion metadata for retracted witnesses"
+    );
+
+    // Reuse the exact old internal spelling as an ordinary real entity. A
+    // stale exclusion entry would make the otherwise-correct find result empty.
+    assert_buf(&kb, make_assertion(&old_witness, "dog"));
+    let found = query_find(&kb, make_find_query("dog"));
+    assert!(
+        found.iter().flatten().any(
+            |binding| matches!(&binding.term, LogicalTerm::Constant(name) if name == &old_witness)
+        ),
+        "the reused real entity must remain enumerable: {found:?}"
+    );
+}
+
+#[test]
+fn retraction_rebuilds_description_import_claim_from_the_surviving_assertion() {
+    let prenex = "all $x: dog($x) -> animal($x).";
+    let description = "animal(every dog).";
+
+    let without_description = new_kb();
+    let _prenex_id = assert_id(&without_description, compile_surface(prenex), "prenex");
+    let description_id = assert_id(
+        &without_description,
+        compile_surface(description),
+        "description",
+    );
+    without_description
+        .retract_fact_inner(description_id)
+        .expect("description should retract");
+    assert!(
+        query_false(&without_description, compile_surface("dog(some dog).")),
+        "a surviving prenex rule must not retain the retracted description import"
+    );
+
+    let without_prenex = new_kb();
+    let prenex_id = assert_id(&without_prenex, compile_surface(prenex), "prenex");
+    let _description_id = assert_id(&without_prenex, compile_surface(description), "description");
+    without_prenex
+        .retract_fact_inner(prenex_id)
+        .expect("prenex should retract");
+    assert!(
+        query(&without_prenex, compile_surface("dog(some dog).")),
+        "a surviving description must reclaim its import during replay"
+    );
+}
+
+#[test]
+fn rule_identity_distinguishes_flat_naf_polarity_under_one_digest() {
+    let kb = new_kb();
+    {
+        let mut inner = kb.inner.borrow_mut();
+        inner.known_rules.force_digest_for_test(forced_rule_digest);
+        let variable = GroundTerm::PatternVar("source-name".to_string());
+        let condition = StoredFact::Bare(GroundFact::new(
+            "cat",
+            vec![variable.clone(), GroundTerm::Unspecified],
+        ));
+        let conclusion = StoredFact::Bare(GroundFact::new(
+            "animal",
+            vec![variable, GroundTerm::Unspecified],
+        ));
+        let generated = HashSet::new();
+        assert!(
+            crate::rules::register_rule(
+                &mut inner,
+                crate::kb::RuleKind::Conditional,
+                "positive".to_string(),
+                vec!["source-name".to_string()],
+                vec![condition.clone()],
+                vec![conclusion.clone()],
+                vec![],
+                vec![],
+                false,
+                false,
+                &generated,
+            )
+            .unwrap()
+            .rule_registered
+        );
+        assert!(
+            crate::rules::register_rule(
+                &mut inner,
+                crate::kb::RuleKind::Conditional,
+                "negative".to_string(),
+                vec!["renamed".to_string()],
+                vec![StoredFact::Bare(GroundFact::new(
+                    "cat",
+                    vec![
+                        GroundTerm::PatternVar("renamed".to_string()),
+                        GroundTerm::Unspecified,
+                    ],
+                ))],
+                vec![StoredFact::Bare(GroundFact::new(
+                    "animal",
+                    vec![
+                        GroundTerm::PatternVar("renamed".to_string()),
+                        GroundTerm::Unspecified,
+                    ],
+                ))],
+                vec![0],
+                vec![],
+                false,
+                false,
+                &generated,
+            )
+            .unwrap()
+            .rule_registered
+        );
+        assert_eq!(inner.known_rules.identity_count(), 2);
+    }
+
+    assert_buf(&kb, make_assertion("rex", "cat"));
+    assert_buf(&kb, make_assertion("bel", "person"));
+    assert!(query(&kb, make_query("rex", "animal")));
+    assert!(query(&kb, make_query("bel", "animal")));
+}
+
+#[test]
+fn rule_identity_distinguishes_negated_exists_groups_under_one_digest() {
+    let kb = new_kb();
+    kb.inner
+        .borrow_mut()
+        .known_rules
+        .force_digest_for_test(forced_rule_digest);
+
+    // The first rule is blocked by cat(Bel); the second must survive dedup and
+    // fire because no dog(Bel) exists. Before the full identity, both NAF groups
+    // were omitted from the key and the second rule was silently skipped.
+    assert_buf(
+        &kb,
+        compile_surface("all $x: person($x) & ~cat($x) -> animal($x)."),
+    );
+    assert_buf(
+        &kb,
+        compile_surface("all $x: person($x) & ~dog($x) -> animal($x)."),
+    );
+    assert_buf(&kb, compile_surface("person(Bel)."));
+    assert_buf(&kb, compile_surface("cat(Bel)."));
+
+    assert_eq!(kb.inner.borrow().known_rules.identity_count(), 2);
+    assert!(
+        query(&kb, compile_surface("animal(Bel).")),
+        "the distinct ~dog group must remain executable"
     );
 }

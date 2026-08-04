@@ -106,9 +106,13 @@ These shapes are contract, not accident — pinned by the seam-conformance gate
   shape); `via` modal tags, the `the_domain_<name>` restrictors, and the
   abstraction type predicates are also flat.
 - **Abstraction opacity.** `event { P() }` bodies compile behind a
-  content-hashed `__abs_<hash>` marker: the reasoner matches the marker but
-  skips the body, so asserting `believe(me, fact { P })` never makes bare `P`
-  true.
+  versioned `__abs_v1_<digest>_<key>` marker. The tagged, length-delimited,
+  alpha-canonical key contains abstraction kind + body and is the lossless
+  identity; the digest is a non-semantic readable prefix recomputed from the key
+  at every assert/query ingress. Malformed/unknown marker versions fail closed,
+  and exact goldens freeze the v1 byte layout. The reasoner matches the complete
+  marker but skips the body, so asserting
+  `believe(me, fact { P })` never makes bare `P` true.
 - **Compute transform.** The front-end never emits `ComputeNode`;
   `nibli_reason::transform_compute_nodes` rewrites marked `Predicate`s after
   compilation. BYO-buffer users must run it themselves — a compute relation
@@ -134,7 +138,7 @@ the two-field buffer; post-order layout; root granularity + `split_roots`;
 the emitted-shape invariants; the `ProofRule`/`ProofStep`/`ProofTrace` JSON
 contract; the `NibliError` display prefixes; the WIT `logic-types` interface.
 
-**Internal:** variable/Skolem naming (`_v0`, `sk_N`), `__abs_` hash digits,
+**Internal:** variable/Skolem naming (`_v0`, `sk_N`), the exact versioned `__abs_` payload,
 concrete index values, the compiler's tree IR (`IrForm`), stored-fact forms,
 on-disk mirrors.
 

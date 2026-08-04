@@ -123,11 +123,11 @@ impl KnowledgeBase {
 
     /// Assert FOL facts from a logic buffer into the knowledge base.
     /// Stores the buffer in the fact registry and returns a unique fact ID.
-    fn assert_fact_inner(&self, logic: LogicBuffer, label: String) -> Result<u64, String> {
+    fn assert_fact_inner(&self, mut logic: LogicBuffer, label: String) -> Result<u64, String> {
         let mut inner = self.inner.borrow_mut();
         let id = inner.fresh_fact_id();
         inner.current_assertion_id = Some(id);
-        let result = process_assertion(&mut inner, &logic);
+        let result = process_assertion(&mut inner, &mut logic);
         // ALWAYS clear: a stale id would mis-attribute the NEXT assertion's rules
         // in rule_source_map (register_rule reads current_assertion_id).
         inner.current_assertion_id = None;
@@ -162,7 +162,7 @@ impl KnowledgeBase {
     /// Advances the internal counter past the given ID.
     pub fn assert_fact_with_id(
         &self,
-        logic: LogicBuffer,
+        mut logic: LogicBuffer,
         label: String,
         id: u64,
     ) -> Result<(), String> {
@@ -174,7 +174,7 @@ impl KnowledgeBase {
         // rule_source_map (otherwise a later retract of a replayed rule-producing
         // fact leaves a stale rule behind).
         inner.current_assertion_id = Some(id);
-        let result = process_assertion(&mut inner, &logic);
+        let result = process_assertion(&mut inner, &mut logic);
         inner.current_assertion_id = None;
         if let Err(e) = result {
             let rb = Self::rebuild_inner(&mut inner);
@@ -254,6 +254,11 @@ impl KnowledgeBase {
         inner.known_event_entities.clear();
         inner.known_descriptions.clear();
         inner.known_numbers.clear();
+        // Derived exclusion metadata must be replayed with its witnesses. If a
+        // retracted description's old name survives here while the Skolem
+        // counter resets, a later real entity reusing that name is wrongly
+        // hidden from find/count/aggregate.
+        inner.presupposition_witnesses.clear();
         // The member CACHES must go with the sets they were built from, and the
         // dirty flag must be raised HERE rather than left to replay re-noting:
         // `note_entity`/`note_number` set it only on fresh insertion, so a
@@ -292,7 +297,7 @@ impl KnowledgeBase {
             .collect();
         entries.sort_by_key(|(id, _)| **id);
         let ids: Vec<u64> = entries.iter().map(|(id, _)| **id).collect();
-        let buffers: Vec<LogicBuffer> = entries.iter().map(|(_, r)| r.buffer.clone()).collect();
+        let mut buffers: Vec<LogicBuffer> = entries.iter().map(|(_, r)| r.buffer.clone()).collect();
 
         // Replay with diagnostic output + stratification checks suppressed
         // (inner.rebuilding == true). Collect-and-continue: replay EVERY surviving
@@ -300,7 +305,7 @@ impl KnowledgeBase {
         // than silently dropping a fact that fails to replay.
         inner.rebuilding = true;
         let mut replay_errors: Vec<(u64, String)> = Vec::new();
-        for (buf, &fid) in buffers.iter().zip(ids.iter()) {
+        for (buf, &fid) in buffers.iter_mut().zip(ids.iter()) {
             if let Err(e) = process_assertion(inner, buf) {
                 replay_errors.push((fid, e));
             }
@@ -441,7 +446,8 @@ impl KnowledgeBase {
     /// Check whether all root formulas in the logic buffer are entailed by the KB.
     /// Uses iterative deepening: tries depth 1, 2, ..., max_chain_depth.
     /// Guarantees finding the shallowest proof.
-    fn query_entailment_inner(&self, logic: LogicBuffer) -> Result<QueryResult, String> {
+    fn query_entailment_inner(&self, mut logic: LogicBuffer) -> Result<QueryResult, String> {
+        canonicalize_abstraction_markers(&mut logic)?;
         // Tabling: clear once, persist across depth iterations.
         self.ensure_materialized(&logic);
         let configured_max = {
@@ -472,7 +478,8 @@ impl KnowledgeBase {
 
     /// Find all satisfying binding sets for existential variables in the query formula.
     /// Returns one `Vec<WitnessBinding>` per satisfying assignment.
-    fn query_find_inner(&self, logic: LogicBuffer) -> Result<Vec<Vec<WitnessBinding>>, String> {
+    fn query_find_inner(&self, mut logic: LogicBuffer) -> Result<Vec<Vec<WitnessBinding>>, String> {
+        canonicalize_abstraction_markers(&mut logic)?;
         // Surfaced (as an Err) when witness enumeration is CUT at the depth/cycle
         // horizon: find/count/aggregate must refuse a definitive (under)count rather
         // than silently report a wrong quantity. See `find_witnesses` /
@@ -676,8 +683,9 @@ impl KnowledgeBase {
     /// Check entailment with proof trace using iterative deepening.
     fn query_entailment_with_proof_inner(
         &self,
-        logic: LogicBuffer,
+        mut logic: LogicBuffer,
     ) -> Result<(QueryResult, ProofTrace), String> {
+        canonicalize_abstraction_markers(&mut logic)?;
         // Same saturation the untraced path uses — the NAF probe stays on, and its trace
         // shape is unaffected (`emit_derived` records a `Negation` leaf per group without
         // re-evaluating it, so `naf_dependent` still computes correctly).
@@ -767,12 +775,27 @@ impl KnowledgeBase {
     }
 
     /// Create a KB with a custom fact store backend (e.g., persistent redb).
-    pub fn with_store(store: Box<dyn fact_store::FactStore>) -> Self {
+    ///
+    /// Preloaded facts are an untrusted persistence boundary. The backend must
+    /// expose only canonical v1 opaque-abstraction relations: this constructor
+    /// cannot safely rewrite an arbitrary store's private predicate index, so
+    /// non-canonical, legacy, malformed, and unknown marker rows are rejected.
+    pub fn with_store(store: Box<dyn fact_store::FactStore>) -> Result<Self, String> {
+        for fact in store.all_facts() {
+            let mut canonical = fact.clone();
+            kb::canonicalize_stored_fact_abstraction_marker(&mut canonical)?;
+            if canonical != *fact {
+                return Err(format!(
+                    "custom fact store contains non-canonical opaque-abstraction relation `{}`; normalize persisted rows before installing the store",
+                    fact.relation()
+                ));
+            }
+        }
         let mut inner = KnowledgeBaseInner::new();
         inner.fact_store = store;
-        KnowledgeBase {
+        Ok(KnowledgeBase {
             inner: RefCell::new(inner),
-        }
+        })
     }
 
     /// Install a cooperative cancellation flag. When the flag is set to `true`,
@@ -1099,7 +1122,15 @@ impl KnowledgeBase {
 
     /// Register an integrity constraint: a set of facts that must NOT all hold simultaneously.
     /// Checked after every fact insertion (permissive mode: warns on violation).
-    pub fn register_constraint(&self, label: String, conjuncts: Vec<kb::StoredFact>) {
+    pub fn register_constraint(
+        &self,
+        label: String,
+        mut conjuncts: Vec<kb::StoredFact>,
+    ) -> Result<(), NibliError> {
+        for conjunct in &mut conjuncts {
+            kb::canonicalize_stored_fact_abstraction_marker(conjunct)
+                .map_err(NibliError::Reasoning)?;
+        }
         let predicates: Vec<String> = conjuncts.iter().map(|c| c.relation().to_string()).collect();
         let mut inner = self.inner.borrow_mut();
         inner.integrity_constraints.push(kb::IntegrityConstraint {
@@ -1107,6 +1138,7 @@ impl KnowledgeBase {
             conjuncts,
             predicates,
         });
+        Ok(())
     }
 
     /// Check whether a formula is entailed by the knowledge base (four-valued result).

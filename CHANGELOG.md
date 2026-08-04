@@ -15,6 +15,17 @@ here first.
 
 ### Fixed
 
+- **Sound semantic identity:** rule deduplication now buckets by digest but compares a
+  full alpha-canonical identity, including flat/grouped NAF metadata, instead of treating
+  one 64-bit hash as equality. Opaque abstractions now emit a versioned
+  `__abs_v1_<digest>_<lossless-key>` marker whose tagged, length-delimited key includes
+  abstraction kind and the complete alpha-canonical body. Ingress recomputes the digest
+  from that key, so the digest is non-semantic; malformed/unknown marker versions and exact
+  legacy `__abs_<16hex>` persisted buffers fail closed with an actionable database/re-import
+  recovery path rather than silently returning a false verdict against newly compiled queries.
+  Programmatic constraints, custom fact stores, and authoritative typed-store rows now share
+  the same validation; the engine's disposable typed mirror is erased before decoding and
+  rebuilt from the canonical LogicBuffer registry, so an obsolete mirror cannot block recovery.
 - **`nibli-formalize`:** the shipped LLM system prompt demonstrated
   `every dog $d: animal($d) & barks($d).` — `barks` is not a corpus name, so
   that statement is a compile error, in a prompt whose own text warns that the

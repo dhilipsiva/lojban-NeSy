@@ -245,7 +245,7 @@ fn kr_semantics_seam_conformance() {
         structural += 1;
     }
 
-    // Abstractions are opaque: `event { … }` compiles to a content-hash
+    // Abstractions are opaque: `event { … }` compiles to a lossless-identity
     // marker, never an inlined sub-proof obligation.
     {
         let b = kompile("desires(me, event { goes(you) }).").unwrap();

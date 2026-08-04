@@ -13,7 +13,7 @@ use nibli_types::logic::{LogicBuffer, LogicNode, LogicalTerm};
 /// Canonicalize a buffer for structural comparison: rewrite every distinct variable name to a
 /// positional `V<n>` in first-occurrence (node-array) order — deterministic, since the flattener
 /// emits children before parents. Two shape-identical buffers compiled at different fresh-variable-
-/// counter states therefore compare equal. Constants / `Unspecified` / `__abs_<hash>` markers are
+/// counter states therefore compare equal. Constants / `Unspecified` / `__abs_<id>` markers are
 /// content-stable and left untouched. (Not a full normal form: And/Or associativity+commutativity are
 /// NOT normalized, so this supports shape-identical metamorphic relations only.)
 pub fn canonicalize(buf: &LogicBuffer) -> LogicBuffer {

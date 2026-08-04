@@ -86,23 +86,6 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Language semantics
 
-- **Eliminate hash-only semantic identity (rules and opaque abstractions).** Two
-  correctness decisions currently depend on a 64-bit digest with no equality fallback:
-  `nibli-reason/src/rules.rs`:4-10 hashes a rule and `known_rules: HashSet<u64>` silently
-  skips any second rule with the same digest (:1251-1257, :1746-1754), while
-  `nibli-semantics/src/semantic/predicate.rs`:34-46,355-371 turns the canonical content
-  of an opaque abstraction into `__abs_<fnv64>`. The abstraction body is deliberately
-  ignored by reasoning, so a collision makes different quoted propositions identical;
-  a rule collision silently removes a premise-to-conclusion path. “Astronomically
-  unlikely” is not a soundness argument for adversarial input. Replace both hash-only
-  identities with lossless canonical keys or collision buckets that compare the full
-  canonical structure before dedup/match. Preserve stable rendering without making a
-  digest the source of truth. **Exit:** forced-collision tests prove distinct rules and
-  abstractions remain distinct, alpha-equivalent forms still deduplicate, assert/query
-  compiles agree across sessions, and `just test`, `just test-engine`,
-  `just verify-nibli-kr-seam`, and `just verify-soundness` pass. Ripple: Chapters 4, 7,
-  9, and Appendix H must stop claiming structural hashes establish semantic identity.
-
 - **Make temporal lifting a declared semantic choice, not an untyped global rule.**
   `try_backward_chain_typed` unconditionally gives every tensed goal a second pass over
   bare rules (`nibli-reason/src/reasoning.rs`:2548-2577), re-tensing every condition.

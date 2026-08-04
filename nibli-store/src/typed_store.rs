@@ -45,12 +45,7 @@ pub struct RedbFactStore {
 }
 
 impl RedbFactStore {
-    /// Open or create a persistent typed fact store at the given path.
-    ///
-    /// Fails CLOSED (`StoreError`) on a schema-version mismatch or an
-    /// undecodable persisted fact — a corrupt or incompatible store must never
-    /// silently load a subset of its rows.
-    pub fn open(path: &Path) -> Result<Self, StoreError> {
+    fn open_database(path: &Path) -> Result<Database, StoreError> {
         let db = Database::create(path)?;
 
         // Ensure tables exist and check the schema version (mirrors NibliStore).
@@ -84,10 +79,24 @@ impl RedbFactStore {
             txn.commit()?;
         }
 
+        Ok(db)
+    }
+
+    /// Open or create a persistent typed fact store at the given path.
+    ///
+    /// Fails CLOSED (`StoreError`) on a schema-version mismatch, an
+    /// undecodable persisted fact, or an unsound opaque-abstraction marker — a
+    /// corrupt or incompatible store must never silently load a subset of its
+    /// rows. Valid v1 rows with a non-canonical digest prefix are normalized
+    /// from their complete key and rewritten durably.
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let db = Self::open_database(path)?;
+
         // Eagerly load all facts into memory from disk.
         // (Lazy per-predicate loading reserved for WASI backend.)
         let mut cache: HashMap<String, HashSet<StoredFact>> = HashMap::new();
         let mut pred_index: HashMap<String, Vec<u64>> = HashMap::new();
+        let mut normalized_rows: Vec<(u64, StoredFact)> = Vec::new();
         let mut max_id: u64 = 0;
         {
             let rtxn = db.begin_read()?;
@@ -101,16 +110,40 @@ impl RedbFactStore {
                 // A row that no longer decodes is DATA LOSS, not noise: surface
                 // it (the pre-guard code silently skipped it, masked only by
                 // the caller's clear+rebuild).
-                let fact = postcard::from_bytes::<StoredFact>(val.value()).map_err(|e| {
+                let mut fact = postcard::from_bytes::<StoredFact>(val.value()).map_err(|e| {
                     StoreError::Serialization(format!(
                         "typed store fact {id} failed to decode ({e}) — refusing to load a \
                          partial store"
                     ))
                 })?;
+                let persisted = fact.clone();
+                nibli_reason::kb::canonicalize_stored_fact_abstraction_marker(&mut fact).map_err(
+                    |e| {
+                        StoreError::Serialization(format!(
+                            "typed store fact {id} has an invalid opaque-abstraction identity \
+                             ({e}) — refusing to load a partial store"
+                        ))
+                    },
+                )?;
+                if fact != persisted {
+                    normalized_rows.push((id, fact.clone()));
+                }
                 let relation = fact.relation().to_string();
                 pred_index.entry(relation.clone()).or_default().push(id);
                 cache.entry(relation).or_default().insert(fact);
             }
+        }
+
+        if !normalized_rows.is_empty() {
+            let txn = db.begin_write()?;
+            {
+                let mut table = txn.open_table(TYPED_FACTS_TABLE)?;
+                for (id, fact) in &normalized_rows {
+                    let bytes = postcard::to_allocvec(fact)?;
+                    table.insert(*id, bytes.as_slice())?;
+                }
+            }
+            txn.commit()?;
         }
 
         let count: usize = cache.values().map(HashSet::len).sum();
@@ -124,6 +157,25 @@ impl RedbFactStore {
             cache,
             next_id: max_id,
         })
+    }
+
+    /// Open the typed store as a disposable mirror and erase all existing rows
+    /// without decoding them.
+    ///
+    /// This is intentionally destructive and is only correct when another
+    /// durable registry is the source of truth and will immediately replay the
+    /// active records. It lets the engine recover from legacy/corrupt mirror
+    /// rows without weakening [`Self::open`]'s fail-closed contract for callers
+    /// that treat the typed store itself as authoritative.
+    pub fn open_for_rebuild(path: &Path) -> Result<Self, StoreError> {
+        let store = Self {
+            db: Self::open_database(path)?,
+            pred_index: HashMap::new(),
+            cache: HashMap::new(),
+            next_id: 0,
+        };
+        store.clear_disk()?;
+        Ok(store)
     }
 
     /// Persist the predicate index to disk.
@@ -202,7 +254,14 @@ impl FactStore for RedbFactStore {
         }
     }
 
-    fn insert(&mut self, fact: StoredFact) {
+    fn insert(&mut self, mut fact: StoredFact) {
+        if let Err(e) = nibli_reason::kb::canonicalize_stored_fact_abstraction_marker(&mut fact) {
+            eprintln!(
+                "[Persist Error] rejected typed fact with invalid opaque-abstraction identity: \
+                 {e}"
+            );
+            return;
+        }
         let id = self.next_id;
         self.next_id += 1;
 
@@ -314,6 +373,30 @@ mod schema_guard_tests {
         ))
     }
 
+    fn valid_marker_with_digest(digest: &str) -> String {
+        assert_eq!(digest.len(), 16);
+        // event-kind + Predicate("p", []). The key grammar is independently
+        // validated by nibli-types on open; this helper only supplies a valid
+        // row with a controllable non-semantic digest prefix.
+        let mut key = vec![0xa0, 0x10];
+        key.extend_from_slice(&1_u64.to_be_bytes());
+        key.push(b'p');
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        let key_hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("__abs_v1_{digest}_{key_hex}")
+    }
+
+    fn raw_insert(path: &Path, id: u64, fact: &StoredFact) {
+        let db = Database::create(path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut facts = txn.open_table(TYPED_FACTS_TABLE).unwrap();
+            let bytes = postcard::to_allocvec(fact).unwrap();
+            facts.insert(id, bytes.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
     #[test]
     fn fresh_store_is_stamped_and_reopens() {
         let path = temp_db_path("stamp_reopen");
@@ -394,6 +477,70 @@ mod schema_guard_tests {
             Err(other) => panic!("expected Serialization error, got {other}"),
             Ok(_) => panic!("expected Serialization error, got a loaded store"),
         }
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn abstraction_rows_fail_closed_or_normalize_durably() {
+        let path = temp_db_path("abstraction_identity");
+        cleanup(&path);
+        drop(RedbFactStore::open(&path).unwrap());
+
+        raw_insert(&path, 7, &fact("__abs_0123456789abcdef"));
+        match RedbFactStore::open(&path) {
+            Err(StoreError::Serialization(msg)) => assert!(
+                msg.contains("typed store fact 7")
+                    && msg.contains("legacy hash-only opaque-abstraction marker"),
+                "unexpected message: {msg}"
+            ),
+            Err(other) => panic!("expected Serialization error, got {other}"),
+            Ok(_) => panic!("legacy hash-only marker must fail closed"),
+        }
+
+        // The engine's typed store is a disposable mirror. Its explicit
+        // rebuild path must erase an invalid row without decoding it, after
+        // which the ordinary authoritative open is clean again.
+        let rebuilt = RedbFactStore::open_for_rebuild(&path).unwrap();
+        assert!(rebuilt.is_empty());
+        drop(rebuilt);
+        assert!(RedbFactStore::open(&path).unwrap().is_empty());
+
+        let forged = valid_marker_with_digest("0000000000000000");
+        let mut expected = fact(&forged);
+        nibli_reason::kb::canonicalize_stored_fact_abstraction_marker(&mut expected).unwrap();
+        let canonical = expected.relation().to_string();
+        assert_ne!(forged, canonical, "the test digest must be non-canonical");
+        raw_insert(&path, 9, &fact(&forged));
+
+        let normalized = RedbFactStore::open(&path).unwrap();
+        assert!(normalized.lookup_predicate(&canonical).is_some());
+        assert!(normalized.lookup_predicate(&forged).is_none());
+        drop(normalized);
+
+        // Reopen proves normalization was written back rather than existing
+        // only in the first process's cache.
+        let reopened = RedbFactStore::open(&path).unwrap();
+        assert!(reopened.lookup_predicate(&canonical).is_some());
+        assert!(reopened.lookup_predicate(&forged).is_none());
+        drop(reopened);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn direct_insert_rejects_legacy_abstraction_identity() {
+        let path = temp_db_path("reject_legacy_insert");
+        cleanup(&path);
+
+        let mut store = RedbFactStore::open(&path).unwrap();
+        store.insert(fact("__abs_0123456789abcdef"));
+        assert!(store.is_empty(), "invalid marker must not enter the cache");
+        drop(store);
+        assert!(
+            RedbFactStore::open(&path).unwrap().is_empty(),
+            "invalid marker must not enter the disk store"
+        );
 
         cleanup(&path);
     }

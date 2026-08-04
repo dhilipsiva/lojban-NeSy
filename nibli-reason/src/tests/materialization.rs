@@ -420,7 +420,7 @@ fn toggling_materialization_off_drops_the_saturation() {
 fn the_materialization_mode_survives_reset() {
     let kb = new_kb();
     kb.set_materialization(false);
-    kb.reset();
+    let _ = kb.reset();
     assert!(
         !kb.is_materialization(),
         "the mode is session configuration, not KB content"
@@ -487,7 +487,7 @@ fn a_relation_whose_negated_dependency_is_unseedable_is_refused_not_completed() 
 /// THE ABSTRACTION PROJECTION, and the firewall it must not break.
 ///
 /// `entitled(every person, event { P() }).` compiles to a head carrying an abstraction
-/// referent — `event(sk_1(x))` and `__abs_<hash>(sk_1(x))`, two arity-1 atoms on ONE event
+/// referent — `event(sk_1(x))` and `__abs_<id>(sk_1(x))`, two arity-1 atoms on ONE event
 /// term, plus `entitled_x2(sk_3(x), sk_1(x))`, the referent in a role VALUE. Untreated
 /// that is `AmbiguousAnchor` + `SkolemInValue`, and EVERY abstraction-bearing rule sits
 /// outside the saturation.
@@ -508,6 +508,7 @@ fn an_entitlement_is_materialised_without_fabricating_the_actuality() {
             "eats(Adam).",
             "eats(some person).",
             "entitled(Adam, event { choose() }).",
+            "entitled(Adam, fact { eats() }).",
         ],
     );
     assert_eq!(on, off, "the projection must not change any verdict");
@@ -521,7 +522,12 @@ fn an_entitlement_is_materialised_without_fabricating_the_actuality() {
     assert_eq!(
         on[3],
         QueryResult::False,
-        "a different body is a different content hash — no marker collision"
+        "a different body is a different lossless identity"
+    );
+    assert_eq!(
+        on[4],
+        QueryResult::False,
+        "abstraction kind survives projection into the marker identity"
     );
 
     // And it is genuinely materialised, not passing by falling back to the chainer.
@@ -546,6 +552,206 @@ fn an_entitlement_is_materialised_without_fabricating_the_actuality() {
     assert!(
         refused.iter().any(|(r, _)| r.starts_with("__abs_")),
         "the abstraction marker must be refused too: refused={refused:?}"
+    );
+}
+
+fn force_abstraction_digest(buffer: &mut LogicBuffer, digest: &str) {
+    assert_eq!(digest.len(), 16);
+    let digest = u64::from_str_radix(digest, 16).unwrap();
+    let mut rewritten = 0;
+    for node in &mut buffer.nodes {
+        if let LogicNode::Predicate((relation, _)) = node
+            && relation.starts_with("__abs_v1_")
+        {
+            let (_, key_hex) = relation
+                .strip_prefix("__abs_v1_")
+                .unwrap()
+                .split_once('_')
+                .unwrap();
+            let key: Vec<u8> = key_hex
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| {
+                    let pair = std::str::from_utf8(pair).unwrap();
+                    u8::from_str_radix(pair, 16).unwrap()
+                })
+                .collect();
+            *relation = nibli_types::abstraction::encode_v1_with_digest(&key, digest);
+            rewritten += 1;
+        }
+    }
+    assert_eq!(
+        rewritten, 1,
+        "collision seam must rewrite exactly one abstraction marker"
+    );
+}
+
+fn abstraction_marker_relation(buffer: &LogicBuffer) -> String {
+    let markers: Vec<String> = buffer
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            LogicNode::Predicate((relation, _)) if relation.starts_with("__abs_v1_") => {
+                Some(relation.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(markers.len(), 1);
+    markers.into_iter().next().unwrap()
+}
+
+#[test]
+fn abstraction_digest_prefix_is_canonicalized_from_the_full_key() {
+    let mut asserted = compile_surface("believe(me, fact { goes(Adam) }).");
+    let mut same_query = compile_surface("believe(me, fact { goes(Adam) }).");
+    let mut different_query = compile_surface("believe(me, fact { goes(Bel) }).");
+    force_abstraction_digest(&mut asserted, "0000000000000000");
+    force_abstraction_digest(&mut same_query, "ffffffffffffffff");
+    force_abstraction_digest(&mut different_query, "0000000000000000");
+
+    let kb = new_kb();
+    assert_buf(&kb, asserted);
+    assert!(
+        query(&kb, same_query),
+        "the same full key must match even when supplied digest prefixes differ"
+    );
+    assert!(
+        query_false(&kb, different_query),
+        "equal digest prefixes must not conflate different proposition bodies"
+    );
+}
+
+#[test]
+fn equal_abstraction_digest_prefixes_do_not_match_distinct_full_keys() {
+    let mut first = compile_surface("believe(me, fact { goes(Adam) }).");
+    let mut second = compile_surface("believe(me, fact { goes(Bel) }).");
+    force_abstraction_digest(&mut first, "0000000000000000");
+    force_abstraction_digest(&mut second, "0000000000000000");
+    let first_relation = abstraction_marker_relation(&first);
+    let second_relation = abstraction_marker_relation(&second);
+    assert_ne!(first_relation, second_relation);
+    assert_eq!(
+        &first_relation[.."__abs_v1_".len() + 16],
+        &second_relation[.."__abs_v1_".len() + 16],
+        "the seam must create a real digest-prefix collision"
+    );
+
+    let referent = GroundTerm::Constant("opaque".to_string());
+    let stored = StoredFact::Bare(GroundFact::new(first_relation, vec![referent.clone()]));
+    let colliding_query = StoredFact::Bare(GroundFact::new(second_relation, vec![referent]));
+    let kb = new_kb();
+    let mut inner = kb.inner.borrow_mut();
+    inner.fact_store.insert(stored.clone());
+    assert!(typed_fact_is_asserted(&stored, &inner));
+    assert!(
+        !typed_fact_is_asserted(&colliding_query, &inner),
+        "the core matcher must compare the complete key, not the equal digest prefix"
+    );
+}
+
+#[test]
+fn legacy_hash_only_abstraction_markers_fail_closed_on_every_buffer_path() {
+    let mut legacy = compile_surface("believe(me, fact { goes(Adam) }).");
+    for node in &mut legacy.nodes {
+        if let LogicNode::Predicate((relation, _)) = node
+            && relation.starts_with("__abs_v1_")
+        {
+            *relation = "__abs_0123456789abcdef".to_string();
+        }
+    }
+
+    let kb = new_kb();
+    let assertion_error = kb
+        .assert_fact_inner(legacy.clone(), "legacy persisted buffer".to_string())
+        .expect_err("hash-only assertion replay must be rejected");
+    assert!(assertion_error.contains("recompile/re-import"));
+    let query_error = kb
+        .query_entailment_inner(legacy.clone())
+        .expect_err("hash-only entailment queries must be rejected");
+    assert!(query_error.contains("legacy hash-only"));
+    let proof_error = kb
+        .query_entailment_with_proof_inner(legacy.clone())
+        .expect_err("hash-only proof queries must be rejected");
+    assert!(proof_error.contains("legacy hash-only"));
+    let find_error = kb
+        .query_find_inner(legacy)
+        .expect_err("hash-only find/count/aggregate queries must be rejected");
+    assert!(find_error.contains("legacy hash-only"));
+}
+
+#[test]
+fn malformed_and_unknown_abstraction_markers_fail_closed() {
+    for malformed_relation in [
+        "__abs_v2_0123456789abcdef_00",
+        "__abs_v1_short_00",
+        "__abs_v1_0123456789abcdef_0",
+        "__abs_v1_0123456789abcdef_FF",
+    ] {
+        let mut malformed = compile_surface("believe(me, fact { goes(Adam) }).");
+        for node in &mut malformed.nodes {
+            if let LogicNode::Predicate((relation, _)) = node
+                && relation.starts_with("__abs_v1_")
+            {
+                *relation = malformed_relation.to_string();
+            }
+        }
+        let error = new_kb()
+            .assert_fact_inner(malformed, "malformed marker".to_string())
+            .expect_err("unknown/malformed markers must never enter the fact store");
+        assert!(
+            error.contains("unsupported or malformed opaque-abstraction marker"),
+            "unexpected error for {malformed_relation}: {error}"
+        );
+    }
+
+    let mut wrong_arity = compile_surface("believe(me, fact { goes(Adam) }).");
+    for node in &mut wrong_arity.nodes {
+        if let LogicNode::Predicate((relation, args)) = node
+            && relation.starts_with("__abs_v1_")
+        {
+            args.push(LogicalTerm::Unspecified);
+        }
+    }
+    let arity_error = new_kb()
+        .assert_fact_inner(wrong_arity, "non-unary marker".to_string())
+        .expect_err("an internal marker must remain unary");
+    assert!(arity_error.contains("unary Predicate") && arity_error.contains("arity 2"));
+
+    let mut compute_marker = compile_surface("believe(me, fact { goes(Adam) }).");
+    let marker_index = compute_marker
+        .nodes
+        .iter()
+        .position(|node| {
+            matches!(node, LogicNode::Predicate((relation, _)) if relation.starts_with("__abs_v1_"))
+        })
+        .expect("fixture must contain a marker");
+    let (relation, args) = match compute_marker.nodes[marker_index].clone() {
+        LogicNode::Predicate(pair) => pair,
+        _ => unreachable!("selected a Predicate marker"),
+    };
+    compute_marker.nodes[marker_index] = LogicNode::ComputeNode((relation, args));
+    let compute_error = new_kb()
+        .assert_fact_inner(compute_marker, "compute marker".to_string())
+        .expect_err("an internal marker must never be a ComputeNode");
+    assert!(compute_error.contains("never ComputeNode"));
+}
+
+#[test]
+fn nested_abstraction_identity_keeps_the_complete_inner_proposition() {
+    let asserted = "believe(me, fact { believe(Bel, fact { goes(Adam) }) }).";
+    let same = asserted;
+    let different_body = "believe(me, fact { believe(Bel, fact { goes(Gia) }) }).";
+    let different_kind = "believe(me, fact { believe(Bel, event { goes(Adam) }) }).";
+
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface(asserted));
+    assert!(query(&kb, compile_surface(same)));
+    assert!(query_false(&kb, compile_surface(different_body)));
+    assert!(query_false(&kb, compile_surface(different_kind)));
+    assert!(
+        query_false(&kb, compile_surface("believe(Bel, fact { goes(Adam) }).")),
+        "the nested abstraction body must remain opaque"
     );
 }
 

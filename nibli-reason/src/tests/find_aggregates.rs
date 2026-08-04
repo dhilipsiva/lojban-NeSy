@@ -457,7 +457,8 @@ fn test_contradictions_integrity_violation() {
             constraint_fact("gerku", "adam"),
             constraint_fact("mlatu", "adam"),
         ],
-    );
+    )
+    .unwrap();
     assert_buf(&kb, make_assertion("adam", "gerku"));
     assert_buf(&kb, make_assertion("adam", "mlatu"));
     let violations = kb.check_contradictions();

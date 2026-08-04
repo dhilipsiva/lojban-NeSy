@@ -912,7 +912,8 @@ fn test_constraint_no_violation() {
             constraint_fact("gerku", "adam"),
             constraint_fact("mlatu", "adam"),
         ],
-    );
+    )
+    .unwrap();
     // Assert only gerku(adam) — no violation.
     assert_buf(&kb, make_assertion("adam", "gerku"));
     // Should still be queryable.
@@ -929,7 +930,8 @@ fn test_constraint_violation_detected() {
             constraint_fact("gerku", "adam"),
             constraint_fact("mlatu", "adam"),
         ],
-    );
+    )
+    .unwrap();
     // Assert both — violation warning printed (permissive mode).
     assert_buf(&kb, make_assertion("adam", "gerku"));
     assert_buf(&kb, make_assertion("adam", "mlatu"));
@@ -948,7 +950,8 @@ fn test_constraint_different_entities_no_violation() {
             constraint_fact("gerku", "adam"),
             constraint_fact("mlatu", "adam"),
         ],
-    );
+    )
+    .unwrap();
     // Assert gerku(adam) and mlatu(bob) — no violation (different entities).
     assert_buf(&kb, make_assertion("adam", "gerku"));
     assert_buf(&kb, make_assertion("bob", "mlatu"));
@@ -961,7 +964,8 @@ fn test_constraint_survives_reset() {
     kb.register_constraint(
         "test-constraint".into(),
         vec![constraint_fact("gerku", "adam")],
-    );
+    )
+    .unwrap();
     {
         let inner = kb.inner.borrow();
         assert_eq!(inner.integrity_constraints.len(), 1);

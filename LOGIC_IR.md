@@ -123,11 +123,16 @@ contract, not accident:
   `obligated_by`/`permitted` are plain predicates, not deontic nodes.)
 - **Abstractions are opaque.** `event { }`/`fact { }`/`property { }`/`amount { }`/
   `concept { }` bodies compile to
-  `And(type_pred, And(__abs_<hash>(referent), body))` where `__abs_<hash>` is a content-hashed
-  unary marker predicate. The reasoner *matches* the marker (same content unifies) but *skips*
-  the body behind it — asserting `believe(me, fact { P })` never makes a bare query `P` true.
-  Consumers should key on the `__abs_` prefix; the hash digits are an internal identity with
-  only intra-process stability.
+  `And(type_pred, And(__abs_v1_<digest>_<key>(referent), body))`. `<key>` is the hex encoding
+  of a tagged, length-delimited, alpha-canonical `(abstraction kind, body)` structure; it is
+  the lossless identity. `<digest>` is a stable FNV-1a prefix for readability/indexing only
+  and never decides equality: every assert/query ingress parses the full key and recomputes
+  the canonical digest. The reasoner *matches* the complete marker (same content and kind
+  unify) but *skips* the body behind it — asserting `believe(me, fact { P })` never makes a
+  bare query `P` true. Consumers should key on the `__abs_` prefix and treat the versioned
+  payload as internal. Exact legacy hash-only `__abs_<16hex>`, malformed v1, and unknown-version
+  buffers are rejected fail-closed because their identity cannot be upgraded safely during replay.
+  Exact codec/marker goldens freeze the v1 byte layout; changing it requires a new version.
 - **Not every atom is event-decomposed.** Four flat-atom families exist alongside the
   Neo-Davidsonian groups: `equals` (the `=` identity) stays a flat two-argument
   `equals(x1, x2)` atom because the reasoner's union-find ingestion matches exactly that
@@ -260,7 +265,7 @@ differentially tested), so a producer gets soundness checking for free.
 
 **Internal (may change without notice):**
 - Variable naming (`_v0…`, `_ev0…`), Skolem names (`sk_N` — minted by the reasoner, never in a
-  compiled buffer), the `__abs_` hash digits, `__neg_ev*` pattern variables (reasoner-internal),
+  compiled buffer), the exact versioned `__abs_` payload, `__neg_ev*` pattern variables (reasoner-internal),
   node ordering beyond the post-order guarantee, and concrete index values.
 - The compiler's internal tree IR (`nibli_semantics::ir::IrForm`, `Spur`-interned, with
   `Biconditional`/`Xor`), `nibli-reason`'s stored-fact forms, and the `nibli-store` on-disk mirrors.

@@ -65,7 +65,7 @@ pub fn buffer_non_classical(buf: &LogicBuffer) -> Option<&'static str> {
 /// closed-world) fragment. Two differences from `buffer_non_classical`: negation-as-failure
 /// (`NotNode`) is ACCEPTED (the whole point of the clingo oracle), and `__abs_` ABSTRACTIONS
 /// (`lo nu`/`lo du'u`/…) are ACCEPTED — the translator models an abstraction as an opaque constant
-/// keyed by its content hash (`asp::abs_const_of`), so a deontic-NAF rule like GDPR's
+/// keyed by its lossless marker identity (`asp::abs_const_of`), so a deontic-NAF rule like GDPR's
 /// `ro lo prenu poi na zanru cu se bilga lo nu se vimcu` maps. The other non-classical node kinds
 /// (compute / deontic modal / exact-count) are still rejected; tense nodes pass through to
 /// `tense::flavorize`, which rewrites the verified shapes (tense × restrictor-NAF now
@@ -176,6 +176,14 @@ pub fn count_case_guard(_kb: &[LogicBuffer], _query: &LogicBuffer) -> Option<&'s
 mod tests {
     use super::*;
 
+    fn valid_abstraction_marker() -> String {
+        // Event kind + Predicate("", []). Minimal but structurally complete v1 key.
+        let mut key = vec![0xa0, 0x10];
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        nibli_types::abstraction::encode_v1(&key)
+    }
+
     #[test]
     fn detects_negation_tokens() {
         assert!(source_has_negation(
@@ -197,7 +205,7 @@ mod tests {
 
         let abs = LogicBuffer {
             nodes: vec![LogicNode::Predicate((
-                "__abs_ab12".into(),
+                valid_abstraction_marker(),
                 vec![LogicalTerm::Constant("x".into())],
             ))],
             roots: vec![0],
@@ -324,7 +332,7 @@ mod tests {
         // constants) though still rejected by the classical one.
         let abs = LogicBuffer {
             nodes: vec![LogicNode::Predicate((
-                "__abs_ab12".into(),
+                valid_abstraction_marker(),
                 vec![LogicalTerm::Variable("v".into())],
             ))],
             roots: vec![0],

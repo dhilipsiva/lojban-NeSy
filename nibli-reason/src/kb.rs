@@ -1,5 +1,8 @@
 use super::*;
+pub(super) use nibli_types::abstraction::ABSTRACTION_MARKER_PREFIX;
+use nibli_types::abstraction::canonicalize_relation;
 use std::cell::{Cell, RefCell};
+use std::hash::{Hash, Hasher};
 
 // ═══════════════════════════════════════════════════════════════════
 // PREDICATE SIGNATURE VALIDATION
@@ -119,7 +122,8 @@ pub(super) fn get_node(buffer: &LogicBuffer, node_id: u32) -> Result<&LogicNode,
 }
 
 /// Relation-name prefix of the opaque abstraction marker emitted by nibli-semantics for
-/// `nu`/`du'u`/`ka`/`ni`/`si'o`. The marker is a content-hashed unary predicate
+/// `event`/`fact`/`property`/`amount`/`concept`. The marker is a versioned,
+/// lossless alpha-canonical unary predicate
 /// over the abstraction referent; in `And(marker, body)` the right sibling is the
 /// abstraction BODY, which reasoning treats as OPAQUE — never collected as ground
 /// facts, never checked — so asserting an abstraction (a belief, an obligation's
@@ -127,7 +131,44 @@ pub(super) fn get_node(buffer: &LogicBuffer, node_id: u32) -> Result<&LogicNode,
 /// itself IS reasoned over: same content → same marker (abstractions unify),
 /// different content → different marker (no spurious match). The body survives only
 /// for rendering. See nibli-semantics `apply_predicate` (Abstraction arm).
-pub(super) const ABSTRACTION_MARKER_PREFIX: &str = "__abs_";
+/// Parse every internal abstraction marker before it reaches storage/matching.
+/// The full v1 key is semantic identity; its digest prefix is recomputed here,
+/// so equal keys with different supplied digests canonicalize together and
+/// colliding digests with different keys remain distinct. Legacy hash-only,
+/// malformed, and unknown-version spellings fail closed.
+pub(super) fn canonicalize_abstraction_markers(buffer: &mut LogicBuffer) -> Result<(), String> {
+    for node in &mut buffer.nodes {
+        let relation = match node {
+            LogicNode::Predicate((relation, args))
+                if relation.starts_with(ABSTRACTION_MARKER_PREFIX) =>
+            {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "malformed opaque-abstraction marker `{relation}`: internal markers \
+                         must be unary Predicate nodes, got arity {}",
+                        args.len()
+                    ));
+                }
+                relation
+            }
+            LogicNode::ComputeNode((relation, _))
+                if relation.starts_with(ABSTRACTION_MARKER_PREFIX) =>
+            {
+                return Err(format!(
+                    "malformed opaque-abstraction marker `{relation}`: internal markers must \
+                     be unary Predicate nodes, never ComputeNode"
+                ));
+            }
+            _ => continue,
+        };
+        if let Some(canonical) =
+            canonicalize_relation(relation).map_err(|error| error.to_string())?
+        {
+            *relation = canonical;
+        }
+    }
+    Ok(())
+}
 
 /// True if `node_id` is the opaque abstraction marker predicate.
 pub(super) fn is_abstraction_marker(buffer: &LogicBuffer, node_id: u32) -> bool {
@@ -269,6 +310,18 @@ impl StoredFact {
         }
     }
 
+    /// Get a mutable reference to the inner GroundFact.
+    fn inner_mut(&mut self) -> &mut GroundFact {
+        match self {
+            StoredFact::Bare(f)
+            | StoredFact::Past(f)
+            | StoredFact::Present(f)
+            | StoredFact::Future(f)
+            | StoredFact::Obligatory(f)
+            | StoredFact::Permitted(f) => f,
+        }
+    }
+
     /// Wrap a GroundFact with the same tense/deontic context as another StoredFact.
     pub fn with_tense_from(fact: GroundFact, source: &StoredFact) -> Self {
         match source {
@@ -304,6 +357,35 @@ impl StoredFact {
             StoredFact::Permitted(f) => format!("Permitted({})", f.to_display_string()),
         }
     }
+}
+
+/// Validate and canonicalize an opaque-abstraction relation carried by a
+/// compiled fact. This is the storage/programmatic-ingress twin of
+/// [`canonicalize_abstraction_markers`]: persisted `StoredFact` rows and
+/// integrity constraints do not retain the originating `LogicBuffer`, so the
+/// relation itself is the only available identity boundary.
+///
+/// Non-marker facts are unchanged. A valid v1 marker has its non-semantic
+/// digest prefix recomputed from the full key. Legacy hash-only, malformed,
+/// unknown-version, and non-unary markers fail closed.
+pub fn canonicalize_stored_fact_abstraction_marker(fact: &mut StoredFact) -> Result<(), String> {
+    let inner = fact.inner_mut();
+    if !inner.relation.starts_with(ABSTRACTION_MARKER_PREFIX) {
+        return Ok(());
+    }
+    if inner.args.len() != 1 {
+        return Err(format!(
+            "malformed opaque-abstraction marker `{}`: internal markers must be unary stored facts, got arity {}",
+            inner.relation,
+            inner.args.len()
+        ));
+    }
+    if let Some(canonical) =
+        canonicalize_relation(&inner.relation).map_err(|error| error.to_string())?
+    {
+        inner.relation = canonical;
+    }
+    Ok(())
 }
 
 /// Structural unification: match a template (with PatternVars) against a concrete fact.
@@ -489,6 +571,280 @@ pub(super) struct NegatedExistsGroup {
     pub(super) event_var: String,
 }
 
+/// Which lowering path produced an executable rule. The distinction is retained
+/// in the identity because the old deduplication key deliberately separated a
+/// conditionless rule from a bare universal, even when their flat templates
+/// happened to be equal.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum RuleKind {
+    Conditional,
+    BareUniversal,
+}
+
+/// Alpha-normalized term used only for rule identity. Runtime templates keep
+/// their original names; this view replaces binder and generated-Skolem names
+/// with ordinals while preserving every equality/dependency relationship.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum RuleTermIdentity {
+    Constant(String),
+    GeneratedGroundSkolem(usize),
+    Number(u64),
+    Description(String),
+    Unspecified,
+    SkolemFn(usize, Box<RuleTermIdentity>),
+    DepPair(Box<RuleTermIdentity>, Box<RuleTermIdentity>),
+    PatternVar(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum RuleFactFlavor {
+    Bare,
+    Past,
+    Present,
+    Future,
+    Obligatory,
+    Permitted,
+}
+
+/// Lossless, immutable identity of one executable fact template.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct RuleFactIdentity {
+    flavor: RuleFactFlavor,
+    relation: String,
+    args: Vec<RuleTermIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct NegatedExistsGroupIdentity {
+    conditions: Vec<RuleFactIdentity>,
+    event_var: usize,
+}
+
+/// Full semantic identity of an executable rule. Human labels, mutable
+/// priorities, and source assertion ids are deliberately absent; every field
+/// that changes firing behavior is present.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) struct RuleIdentity {
+    kind: RuleKind,
+    pattern_var_names: Vec<usize>,
+    conditions: Vec<RuleFactIdentity>,
+    conclusions: Vec<RuleFactIdentity>,
+    negated_condition_indices: Vec<usize>,
+    negated_exists_groups: Vec<NegatedExistsGroupIdentity>,
+    forward: bool,
+}
+
+#[derive(Clone)]
+struct RuleIdentityEntry {
+    identity: RuleIdentity,
+    /// Assertion-side metadata, deliberately outside executable-rule identity.
+    /// A description universal may need to add its xorlo presupposition even
+    /// when an alpha-equivalent prenex rule already registered the executable
+    /// path. Once claimed, later duplicates do not mint another witness.
+    existential_imported: bool,
+}
+
+#[derive(Default)]
+struct RuleIdentityNormalizer {
+    pattern_vars: HashMap<String, usize>,
+    skolem_fns: HashMap<String, usize>,
+    generated_ground_skolems: HashSet<String>,
+    ground_skolems: HashMap<String, usize>,
+}
+
+impl RuleIdentityNormalizer {
+    fn new(generated_ground_skolems: &HashSet<String>) -> Self {
+        Self {
+            generated_ground_skolems: generated_ground_skolems.clone(),
+            ..Self::default()
+        }
+    }
+
+    fn pattern_var(&mut self, name: &str) -> usize {
+        let next = self.pattern_vars.len();
+        *self.pattern_vars.entry(name.to_string()).or_insert(next)
+    }
+
+    fn skolem_fn(&mut self, name: &str) -> usize {
+        let next = self.skolem_fns.len();
+        *self.skolem_fns.entry(name.to_string()).or_insert(next)
+    }
+
+    fn ground_skolem(&mut self, name: &str) -> usize {
+        let next = self.ground_skolems.len();
+        *self.ground_skolems.entry(name.to_string()).or_insert(next)
+    }
+
+    fn term(&mut self, term: &GroundTerm) -> RuleTermIdentity {
+        match term {
+            GroundTerm::Constant(name) if self.generated_ground_skolems.contains(name) => {
+                RuleTermIdentity::GeneratedGroundSkolem(self.ground_skolem(name))
+            }
+            GroundTerm::Constant(name) => RuleTermIdentity::Constant(name.clone()),
+            GroundTerm::Number(bits) => RuleTermIdentity::Number(*bits),
+            GroundTerm::Description(name) => RuleTermIdentity::Description(name.clone()),
+            GroundTerm::Unspecified => RuleTermIdentity::Unspecified,
+            GroundTerm::SkolemFn(name, dependency) => {
+                RuleTermIdentity::SkolemFn(self.skolem_fn(name), Box::new(self.term(dependency)))
+            }
+            GroundTerm::DepPair(left, right) => {
+                RuleTermIdentity::DepPair(Box::new(self.term(left)), Box::new(self.term(right)))
+            }
+            GroundTerm::PatternVar(name) => RuleTermIdentity::PatternVar(self.pattern_var(name)),
+        }
+    }
+
+    fn fact(&mut self, fact: &StoredFact) -> RuleFactIdentity {
+        let (flavor, inner) = match fact {
+            StoredFact::Bare(inner) => (RuleFactFlavor::Bare, inner),
+            StoredFact::Past(inner) => (RuleFactFlavor::Past, inner),
+            StoredFact::Present(inner) => (RuleFactFlavor::Present, inner),
+            StoredFact::Future(inner) => (RuleFactFlavor::Future, inner),
+            StoredFact::Obligatory(inner) => (RuleFactFlavor::Obligatory, inner),
+            StoredFact::Permitted(inner) => (RuleFactFlavor::Permitted, inner),
+        };
+        RuleFactIdentity {
+            flavor,
+            relation: inner.relation.clone(),
+            args: inner.args.iter().map(|term| self.term(term)).collect(),
+        }
+    }
+}
+
+impl RuleIdentity {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        kind: RuleKind,
+        pattern_var_names: &[String],
+        conditions: &[StoredFact],
+        conclusions: &[StoredFact],
+        negated_condition_indices: &[usize],
+        negated_exists_groups: &[NegatedExistsGroup],
+        forward: bool,
+        generated_ground_skolems: &HashSet<String>,
+    ) -> Self {
+        let mut normalizer = RuleIdentityNormalizer::new(generated_ground_skolems);
+        let pattern_var_names = pattern_var_names
+            .iter()
+            .map(|name| normalizer.pattern_var(name))
+            .collect();
+        let conditions = conditions
+            .iter()
+            .map(|fact| normalizer.fact(fact))
+            .collect();
+        let conclusions = conclusions
+            .iter()
+            .map(|fact| normalizer.fact(fact))
+            .collect();
+        let negated_exists_groups = negated_exists_groups
+            .iter()
+            .map(|group| NegatedExistsGroupIdentity {
+                conditions: group
+                    .conditions
+                    .iter()
+                    .map(|fact| normalizer.fact(fact))
+                    .collect(),
+                event_var: normalizer.pattern_var(&group.event_var),
+            })
+            .collect();
+        Self {
+            kind,
+            pattern_var_names,
+            conditions,
+            conclusions,
+            negated_condition_indices: negated_condition_indices.to_vec(),
+            negated_exists_groups,
+            forward,
+        }
+    }
+}
+
+type RuleDigest = fn(&RuleIdentity) -> u64;
+
+fn default_rule_digest(identity: &RuleIdentity) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    identity.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Collision-safe rule identity index. The digest selects a bucket only; a
+/// rule is a duplicate exactly when its full canonical identity compares equal.
+#[derive(Clone)]
+pub(super) struct RuleIdentityIndex {
+    buckets: HashMap<u64, Vec<RuleIdentityEntry>>,
+    digest: RuleDigest,
+}
+
+impl Default for RuleIdentityIndex {
+    fn default() -> Self {
+        Self {
+            buckets: HashMap::new(),
+            digest: default_rule_digest,
+        }
+    }
+}
+
+impl RuleIdentityIndex {
+    pub(super) fn contains(&self, identity: &RuleIdentity) -> bool {
+        let digest = (self.digest)(identity);
+        self.buckets
+            .get(&digest)
+            .is_some_and(|bucket| bucket.iter().any(|known| &known.identity == identity))
+    }
+
+    /// Claim the description-universal existential-import side effect for an
+    /// already-known executable rule. Returns true exactly once per canonical
+    /// identity between rebuilds.
+    pub(super) fn claim_existential_import(&mut self, identity: &RuleIdentity) -> bool {
+        let digest = (self.digest)(identity);
+        let Some(entry) = self
+            .buckets
+            .get_mut(&digest)
+            .and_then(|bucket| bucket.iter_mut().find(|known| &known.identity == identity))
+        else {
+            return false;
+        };
+        if entry.existential_imported {
+            false
+        } else {
+            entry.existential_imported = true;
+            true
+        }
+    }
+
+    pub(super) fn insert(&mut self, identity: RuleIdentity, existential_imported: bool) -> bool {
+        let digest = (self.digest)(&identity);
+        let bucket = self.buckets.entry(digest).or_default();
+        if bucket.iter().any(|known| known.identity == identity) {
+            false
+        } else {
+            bucket.push(RuleIdentityEntry {
+                identity,
+                existential_imported,
+            });
+            true
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.buckets.clear();
+    }
+
+    #[cfg(test)]
+    pub(super) fn force_digest_for_test(&mut self, digest: RuleDigest) {
+        assert!(
+            self.buckets.is_empty(),
+            "the collision-test digest must be installed before rules are registered"
+        );
+        self.digest = digest;
+    }
+
+    #[cfg(test)]
+    pub(super) fn identity_count(&self) -> usize {
+        self.buckets.values().map(Vec::len).sum()
+    }
+}
+
 /// Records the structure of a compiled universal rule for backward-chaining provenance.
 /// Templates use bare pattern variables (e.g., `x__v0`) instead of bound values.
 #[derive(Clone)]
@@ -542,7 +898,7 @@ pub(super) struct KnowledgeBaseInner {
     /// (the assertion path ONLY — mid-query compute auto-asserts deliberately
     /// do not note: query evaluation must not grow the quantifier domain).
     pub(super) known_numbers: HashSet<u64>,
-    pub(super) known_rules: HashSet<u64>,
+    pub(super) known_rules: RuleIdentityIndex,
     pub(super) skolem_fn_registry: Vec<SkolemFnEntry>,
     /// Pluggable fact store (in-memory or persistent).
     pub(super) fact_store: Box<dyn crate::fact_store::FactStore>,
@@ -844,7 +1200,7 @@ impl KnowledgeBaseInner {
             known_event_entities: HashSet::new(),
             known_descriptions: HashSet::new(),
             known_numbers: HashSet::new(),
-            known_rules: HashSet::new(),
+            known_rules: RuleIdentityIndex::default(),
             skolem_fn_registry: Vec::new(),
             fact_store: Box::new(crate::fact_store::InMemoryFactStore::new()),
             universal_rules: HashMap::new(),
@@ -1451,7 +1807,7 @@ fn root_reduces_to_negation(
 /// Such an assertion has representable content — each negated conjunct is
 /// recorded in the negative-fact registry exactly like a standalone `na`
 /// assertion — so the zero-ingest guard must not reject it. An abstraction
-/// group (`And(__abs_<hash>, body)`) is NOT a negative-only conjunction: its
+/// group (`And(__abs_<id>, body)`) is NOT a negative-only conjunction: its
 /// marker is a positive leaf.
 fn all_conjuncts_reduce_to_negation(
     buffer: &LogicBuffer,
@@ -1883,8 +2239,9 @@ fn tense_wraps_skolemized_exists_over_forall(
 
 pub(super) fn process_assertion(
     inner: &mut KnowledgeBaseInner,
-    logic: &LogicBuffer,
+    logic: &mut LogicBuffer,
 ) -> Result<(), String> {
+    canonicalize_abstraction_markers(logic)?;
     // Strict-mode violations from PREVIOUS work (e.g. a mid-query compute
     // auto-assert, which has no error channel) must not bleed into THIS
     // assertion's verdict.

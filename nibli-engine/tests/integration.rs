@@ -12,6 +12,7 @@ use nibli_render::{
     summarize_proof_with,
 };
 use nibli_store::NibliStore;
+use redb::{Database, TableDefinition};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -73,6 +74,7 @@ fn role_has_const(buf: &EngineLogicBuffer, role: &str, value: &str) -> bool {
 
 fn cleanup(path: &Path) {
     let _ = fs::remove_file(path);
+    let _ = fs::remove_file(path.with_extension("typed.redb"));
 }
 
 // ─── Basic assertion and query ──────────────────────────────────────
@@ -2856,6 +2858,212 @@ fn assertion_coreference_survives_rebuild_reopen_and_retraction() {
             "the retracted compound must not resurrect after reopen",
         );
     }
+
+    cleanup(&path);
+}
+
+#[test]
+fn opaque_abstraction_identity_survives_persistence_and_retraction() {
+    let path = temp_db_path("opaque_abstraction_identity");
+    cleanup(&path);
+
+    let belief_id = {
+        let engine = fresh_open(&path, "Persistent engine should open");
+        let belief_id = engine
+            .assert_text("believe(me, fact { goes(Adam) }).")
+            .expect("opaque proposition should persist")[0];
+        assert_true(
+            &engine
+                .query_holds("believe(me, fact { goes(Adam) }).")
+                .unwrap(),
+            "same-content assertion/query compiles must agree",
+        );
+        assert_false(
+            &engine
+                .query_holds("believe(me, fact { goes(Bel) }).")
+                .unwrap(),
+            "different bodies must remain distinct",
+        );
+        assert_false(
+            &engine
+                .query_holds("believe(me, event { goes(Adam) }).")
+                .unwrap(),
+            "different abstraction kinds must remain distinct",
+        );
+        assert_false(
+            &engine.query_holds("goes(Adam).").unwrap(),
+            "the abstraction body must remain opaque",
+        );
+        belief_id
+    };
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should replay the abstraction");
+        assert_true(
+            &reopened
+                .query_holds("believe(me, fact { goes(Adam) }).")
+                .unwrap(),
+            "a fresh compiler session must match the persisted full identity",
+        );
+        assert_false(
+            &reopened
+                .query_holds("believe(me, fact { goes(Bel) }).")
+                .unwrap(),
+            "reopen must not conflate a different full identity",
+        );
+        reopened
+            .retract_fact(belief_id)
+            .expect("the persisted abstraction should retract");
+    }
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should retain the tombstone");
+        assert_false(
+            &reopened
+                .query_holds("believe(me, fact { goes(Adam) }).")
+                .unwrap(),
+            "a retracted opaque proposition must not resurrect",
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn nested_opaque_abstraction_identity_survives_persistence() {
+    let path = temp_db_path("nested_opaque_abstraction_identity");
+    cleanup(&path);
+
+    let asserted = "believe(me, fact { believe(Bel, fact { goes(Adam) }) }).";
+    {
+        let engine = fresh_open(&path, "Persistent engine should open");
+        engine
+            .assert_text(asserted)
+            .expect("nested opaque proposition should persist");
+        assert_true(
+            &engine.query_holds(asserted).unwrap(),
+            "same nested proposition must match",
+        );
+        assert_false(
+            &engine
+                .query_holds("believe(me, fact { believe(Bel, fact { goes(Gia) }) }).")
+                .unwrap(),
+            "a changed nested body must remain distinct",
+        );
+        assert_false(
+            &engine
+                .query_holds("believe(me, fact { believe(Bel, event { goes(Adam) }) }).")
+                .unwrap(),
+            "a changed nested abstraction kind must remain distinct",
+        );
+        assert_false(
+            &engine
+                .query_holds("believe(Bel, fact { goes(Adam) }).")
+                .unwrap(),
+            "the nested proposition must not leak as an actual belief",
+        );
+    }
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should replay nested identity");
+        assert_true(
+            &reopened.query_holds(asserted).unwrap(),
+            "fresh-session compilation must match the persisted nested key",
+        );
+        assert_false(
+            &reopened
+                .query_holds("believe(me, fact { believe(Bel, fact { goes(Gia) }) }).")
+                .unwrap(),
+            "reopen must not conflate a changed nested body",
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn persistent_engine_rejects_legacy_hash_only_abstraction_rows() {
+    let path = temp_db_path("legacy_hash_only_abstraction");
+    cleanup(&path);
+
+    let compiler = fresh_engine();
+    let mut legacy = compiler
+        .compile_debug("believe(me, fact { goes(Adam) }).")
+        .expect("fixture should compile");
+    for node in &mut legacy.nodes {
+        if let EngineLogicNode::Predicate((relation, _)) = node
+            && relation.starts_with("__abs_v1_")
+        {
+            *relation = "__abs_0123456789abcdef".to_string();
+        }
+    }
+    let payload = postcard::to_allocvec(&legacy).expect("fixture should serialize");
+    {
+        let mut store = NibliStore::open(&path, "local".into()).expect("store should open");
+        let id = store.next_fact_id().expect("store should mint an id");
+        store
+            .insert_fact(id, "legacy opaque proposition".into(), payload)
+            .expect("legacy fixture should persist");
+    }
+
+    let error = match NibliEngine::open(&path) {
+        Ok(_) => panic!("a hash-only opaque identity must not replay silently"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("legacy hash-only opaque-abstraction marker")
+            && error.contains("recompile/re-import"),
+        "the migration failure must be explicit and actionable: {error}"
+    );
+
+    cleanup(&path);
+}
+
+#[test]
+fn persistent_engine_discards_legacy_typed_mirror_before_registry_replay() {
+    use nibli_reason::kb::{GroundFact, GroundTerm, StoredFact};
+
+    const TYPED_FACTS: TableDefinition<u64, &[u8]> = TableDefinition::new("typed_facts");
+
+    let path = temp_db_path("legacy_typed_mirror_abstraction");
+    cleanup(&path);
+    {
+        let engine = fresh_open(&path, "persistent engine should open");
+        engine
+            .assert_text("believe(me, fact { goes(Adam) }).")
+            .expect("canonical registry fact should persist");
+    }
+
+    // Inject an old hash-only row into the disposable compiled-fact mirror.
+    // Direct RedbFactStore::open correctly rejects this row; NibliEngine must
+    // instead discard the entire mirror without decoding it, then rebuild from
+    // the canonical LogicBuffer registry above.
+    let typed_path = path.with_extension("typed.redb");
+    {
+        let db = Database::create(&typed_path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut facts = txn.open_table(TYPED_FACTS).unwrap();
+            let legacy = StoredFact::Bare(GroundFact::new(
+                "__abs_0123456789abcdef",
+                vec![GroundTerm::Constant("opaque".to_string())],
+            ));
+            let bytes = postcard::to_allocvec(&legacy).unwrap();
+            facts.insert(9999, bytes.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
+    let reopened = fresh_open(
+        &path,
+        "legacy typed mirror must be recoverable from the authoritative registry",
+    );
+    assert_true(
+        &reopened
+            .query_holds("believe(me, fact { goes(Adam) }).")
+            .unwrap(),
+        "registry replay must restore the canonical abstraction fact",
+    );
 
     cleanup(&path);
 }

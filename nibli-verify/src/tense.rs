@@ -38,7 +38,7 @@
 //!   (every curated / generated query is positive), and a directly-negated query's tense
 //!   semantics were not part of the `NegatedExistsGroup` fix — skip rather than oracle it.
 //! - **tense × abstraction** (`__abs_` under any flavor): suffixing would break the
-//!   opaque content-hash identity between rule head and query.
+//!   opaque lossless marker identity between rule head and query.
 //! - **nested / exotic tense placements** (tense inside an event group, tensed
 //!   whole-rule spines, multi-wrapping): not shapes nibli-semantics emits today; fail closed.
 
@@ -311,6 +311,13 @@ mod tests {
     use super::*;
     use nibli_types::logic::LogicalTerm;
 
+    fn valid_abstraction_marker() -> String {
+        let mut key = vec![0xa0, 0x10];
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        nibli_types::abstraction::encode_v1(&key)
+    }
+
     fn pred(nodes: &mut Vec<LogicNode>, rel: &str, args: Vec<LogicalTerm>) -> u32 {
         nodes.push(LogicNode::Predicate((rel.to_string(), args)));
         (nodes.len() - 1) as u32
@@ -520,7 +527,7 @@ mod tests {
     #[test]
     fn tense_with_abstraction_is_skipped() {
         let mut n = Vec::new();
-        let m = pred(&mut n, "__abs_h", vec![var("_a")]);
+        let m = pred(&mut n, &valid_abstraction_marker(), vec![var("_a")]);
         let root = past(&mut n, m);
         let fact = buf(n, vec![root]);
         let mut qn = Vec::new();

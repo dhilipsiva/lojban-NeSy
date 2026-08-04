@@ -122,3 +122,58 @@ impl FactStore for InMemoryFactStore {
         Box::new(self.clone())
     }
 }
+
+#[cfg(test)]
+mod abstraction_store_boundary_tests {
+    use super::*;
+    use crate::KnowledgeBase;
+    use crate::kb::{GroundFact, GroundTerm, canonicalize_stored_fact_abstraction_marker};
+
+    fn valid_marker_with_digest(digest: &str) -> String {
+        let mut key = vec![0xa0, 0x10];
+        key.extend_from_slice(&1_u64.to_be_bytes());
+        key.push(b'p');
+        key.extend_from_slice(&0_u64.to_be_bytes());
+        let key_hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("__abs_v1_{digest}_{key_hex}")
+    }
+
+    fn marker_fact(relation: &str, arity: usize) -> StoredFact {
+        StoredFact::Bare(GroundFact::new(
+            relation,
+            (0..arity)
+                .map(|index| GroundTerm::Constant(format!("a{index}")))
+                .collect(),
+        ))
+    }
+
+    fn preloaded(fact: StoredFact) -> Box<dyn FactStore> {
+        let mut store = InMemoryFactStore::new();
+        store.insert(fact);
+        Box::new(store)
+    }
+
+    #[test]
+    fn with_store_validates_preloaded_abstraction_rows() {
+        let legacy = marker_fact("__abs_0123456789abcdef", 1);
+        assert!(KnowledgeBase::with_store(preloaded(legacy)).is_err());
+
+        let forged_relation = valid_marker_with_digest("0000000000000000");
+        let mut canonical = marker_fact(&forged_relation, 1);
+        canonicalize_stored_fact_abstraction_marker(&mut canonical).unwrap();
+        assert_ne!(forged_relation, canonical.relation());
+        assert!(
+            KnowledgeBase::with_store(preloaded(marker_fact(&forged_relation, 1))).is_err(),
+            "a custom store cannot be installed with a stale predicate index"
+        );
+
+        assert!(
+            KnowledgeBase::with_store(preloaded(marker_fact(canonical.relation(), 2))).is_err(),
+            "non-unary internal markers must fail closed"
+        );
+        assert!(
+            KnowledgeBase::with_store(preloaded(canonical)).is_ok(),
+            "canonical unary v1 rows remain installable"
+        );
+    }
+}

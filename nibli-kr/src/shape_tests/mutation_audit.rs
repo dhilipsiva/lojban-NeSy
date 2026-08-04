@@ -6,7 +6,7 @@
 
 use super::*;
 
-/// The (first) `__abs_<hash>` opacity-marker relation in the buffer — the
+/// The (first) `__abs_<id>` opacity-marker relation in the buffer — the
 /// content identity of an abstraction (predicate.rs `abstraction_content_key`).
 /// These single-abstraction compiles carry exactly one.
 fn abs_marker(b: &LogicBuffer) -> String {
@@ -35,6 +35,16 @@ fn mutation_audit_abs_marker_sees_constants() {
     // marker across independent compiles — assert/query matching depends on it.
     let adam_again = abs_marker(&lb("big(fact { goes(Adam) })."));
     assert_eq!(adam, adam_again, "same content must keep the same marker");
+}
+
+#[test]
+fn mutation_audit_abs_marker_sees_abstraction_kind() {
+    let event = abs_marker(&lb("big(event { goes(Adam) })."));
+    let fact = abs_marker(&lb("big(fact { goes(Adam) })."));
+    assert_ne!(
+        event, fact,
+        "same-body event and fact abstractions must remain distinct after type projection"
+    );
 }
 
 #[test]
@@ -68,6 +78,11 @@ fn mutation_audit_abs_marker_sees_variable_topology() {
     // independent compiles.
     let xyx_again = abs_marker(&lb("big(fact { gives($x, $y, $x) })."));
     assert_eq!(xyx, xyx_again);
+    let alpha_renamed = abs_marker(&lb("big(fact { gives($left, $right, $left) })."));
+    assert_eq!(
+        xyx, alpha_renamed,
+        "alpha-renaming bound variables must preserve abstraction identity"
+    );
 }
 
 #[test]
