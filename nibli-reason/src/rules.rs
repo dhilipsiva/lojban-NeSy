@@ -184,13 +184,12 @@ pub(super) fn collect_condition_exists(
 }
 
 /// Flatten an And-tree of condition atoms, descending condition-∃, tense wrappers,
-/// AND deontic wrappers. Each returned leaf carries the tense accumulated on the
+/// AND deontic wrappers. Each returned leaf carries the single flavor selected on the
 /// path to it (`Some("Past")` etc.), so a tensed antecedent atom (`poi pu broda` →
 /// `Past(Exists(ev, And(broda(ev), broda_x1(ev, x))))`) flattens to tensed leaf
 /// atoms instead of one opaque `Past(...)` node that would be rejected. Deontic
-/// `Obligatory/Permitted` are descended TRANSPARENTLY (tense unchanged) — a deontic
-/// antecedent compiles as its bare inner, matching the transparent-deontic
-/// semantics (asserting `ei P` stores bare `P`).
+/// `Obligatory/Permitted` wrappers likewise set an exact flavor on every leaf. The
+/// current slot is not a product: an inner nested wrapper overwrites an outer one.
 pub(super) fn flatten_conjuncts_through_exists(
     buffer: &LogicBuffer,
     node_id: u32,
@@ -363,10 +362,10 @@ fn flatten_group_leaves(buffer: &LogicBuffer, id: u32, ev: &str, out: &mut Vec<u
 /// Flatten the consequent to leaf atom node ids, descending skolemized `Exists` +
 /// `And`, threading tense through `Past`/`Present`/`Future` wrappers (so a tensed
 /// conclusion `→ pu Q` becomes a `StoredFact::Past` template via the same mechanism
-/// as a tensed antecedent), and descending deontic `Obligatory`/`Permitted`
-/// transparently (tense unchanged — this also flattens an event-decomposed deontic
-/// conclusion that `build_rule_template_fact`'s deontic arm alone cannot reach
-/// through the inner `And`). Each returned leaf carries the tense accumulated on the
+/// as a tensed antecedent), and threading deontic `Obligatory`/`Permitted` flavors
+/// through event-decomposed conclusions that `build_rule_template_fact`'s deontic arm
+/// alone cannot reach through the inner `And`). Each returned leaf carries one selected
+/// flavor; an inner nested wrapper overwrites an outer one (the current one-slot limit).
 /// path to it. A top-level `Or` is returned opaque (one leaf with its tense) — the
 /// caller detects it for the disjunctive-conclusion-constraint path.
 fn flatten_consequent(
@@ -1272,8 +1271,8 @@ fn register_clause_rule(
         // the negation — the one legal tense×NAF composition) is threaded onto the
         // group's inner templates, so the NAF check is FLAVOR-EXACT: `past ~P`
         // checks for Past-flavor witnesses, exactly like a positive `past P`
-        // restrictor. A bare `~P` builds bare templates (temporally lifted to the
-        // query flavor at firing, like a bare positive condition).
+        // restrictor. A bare `~P` builds Bare templates and checks only for Bare
+        // witnesses, exactly like a bare positive condition.
         if let Some((ev_var, leaf_ids)) = detect_negated_exists_group(buffer, cid) {
             let ev_pvar = format!("ev__{}", ev_var);
             let mut group_pattern_vars: HashMap<String, String> = pattern_vars.clone();
@@ -1458,8 +1457,8 @@ pub(super) fn compile_forall_to_rule(
             // FAIL CLOSED: a tense (past/now/future) or deontic (must/may)
             // wrapping a WHOLE universal/conditional rule (`past animal(every
             // dog).` → Past(ForAll(...))) cannot be soundly represented as a
-            // timeless backward-chaining rule. Stripping it (the old behavior)
-            // compiled the rule TIMELESS, so it fired on present/future/bare
+            // unqualified backward-chaining rule. Stripping it (the old behavior)
+            // compiled the rule as Bare, so it fired on present/future/bare
             // facts the tensed input never licensed — an over-claim. The engine
             // has no interval/modal temporal semantics to thread whole-rule tense
             // or modality, so reject rather than register an over-general rule.
@@ -1478,7 +1477,7 @@ pub(super) fn compile_forall_to_rule(
             | LogicNode::PermittedNode(_) => {
                 return Err(
                     "cannot compile a tense (past/now/future) or deontic (must/may) \
-                     wrapping a whole universal/conditional rule: a timeless \
+                     wrapping a whole universal/conditional rule: an unqualified \
                      backward-chaining rule cannot carry whole-rule tense or \
                      modality without over-claiming on untensed facts. Rejecting \
                      the assertion to preserve soundness; restate the \
@@ -1803,7 +1802,8 @@ pub(super) fn compile_forall_to_rule(
                 &pattern_vars,
                 &ground_skolems,
                 &dependent_skolems,
-                None, // conclusions stay bare (tensed conclusions out of scope)
+                None, // this conditionless bare-universal branch has only Bare conclusions;
+                      // wrappers on the rule spine were rejected above
             ) {
                 Some(fact) => vec![fact],
                 // FAIL CLOSED: a bare universal whose body is conjunctive/complex would

@@ -8,8 +8,8 @@ fn test_zoo_multi_hop_temporal_past() {
     // Query: ?! pu la .alis. jmive → TRUE
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
+    assert_buf(&kb, make_temporal_event_universal("danlu", "jmive", past));
     assert!(
         query(&kb, make_temporal_event_query("alis", "jmive", past)),
         "multi-hop temporal: Past(gerku→danlu→jmive) should derive Past(jmive(alis))"
@@ -22,8 +22,14 @@ fn test_zoo_multi_hop_temporal_present() {
     // Query: ?! ca la .bob. jmive → TRUE
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("bob", "mlatu", present));
-    assert_buf(&kb, make_event_universal("mlatu", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("mlatu", "danlu", present),
+    );
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("danlu", "jmive", present),
+    );
     assert!(
         query(&kb, make_temporal_event_query("bob", "jmive", present)),
         "multi-hop temporal: Present(mlatu→danlu→jmive) should derive Present(jmive(bob))"
@@ -36,8 +42,8 @@ fn test_zoo_tense_discrimination() {
     // Query Present(jmive(alis)) → FALSE (strict tense discrimination)
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
+    assert_buf(&kb, make_temporal_event_universal("danlu", "jmive", past));
 
     // Past query should succeed
     assert!(
@@ -58,9 +64,16 @@ fn test_zoo_mixed_tenses() {
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
     assert_buf(&kb, make_temporal_event_assertion("bob", "mlatu", present));
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
-    assert_buf(&kb, make_event_universal("mlatu", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("mlatu", "danlu", present),
+    );
+    assert_buf(&kb, make_temporal_event_universal("danlu", "jmive", past));
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("danlu", "jmive", present),
+    );
 
     // Each entity derivable only in its own tense
     assert!(query(&kb, make_temporal_event_query("alis", "jmive", past)));
@@ -148,9 +161,16 @@ fn test_zoo_witness_extraction_event_decomposed() {
 fn test_zoo_retraction_with_event_decomposition() {
     // REPL demo: retract alice's fact, bob should survive
     let kb = new_kb();
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
-    assert_buf(&kb, make_event_universal("mlatu", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("mlatu", "danlu", present),
+    );
+    assert_buf(&kb, make_temporal_event_universal("danlu", "jmive", past));
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("danlu", "jmive", present),
+    );
 
     let alis_id = kb
         .assert_fact_inner(
@@ -189,11 +209,11 @@ fn test_zoo_retraction_with_event_decomposition() {
 
 #[test]
 fn test_zoo_proof_trace_multi_hop_temporal() {
-    // REPL: ?! pu la .alis. jmive — proof trace for multi-hop temporal derivation
+    // Proof trace for a multi-hop, explicitly temporal derivation.
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
+    assert_buf(&kb, make_temporal_event_universal("danlu", "jmive", past));
 
     let (holds, trace) = kb
         .query_entailment_with_proof_inner(make_temporal_event_query("alis", "jmive", past))
@@ -227,34 +247,97 @@ fn test_zoo_proof_trace_multi_hop_temporal() {
 }
 
 #[test]
-fn backchain_temporal_trace_label_present() {
-    // A tensed goal proved via a bare (timeless) rule + temporal lifting must
-    // carry the tense in its Derived step's LABEL (the `[past]` suffix emitted by
-    // the merged core's temporal phase via `emit_derived`). This is distinct from
-    // the ModalPassthrough(past) wrapper step and pins that the merge kept the
-    // tense-label keying when folding the traced temporal block into the core.
+fn explicit_temporal_rule_trace_has_no_synthetic_lift_label() {
+    // The rule itself carries Past on both sides. Its ordinary rule label and
+    // ModalPassthrough step are sufficient; no synthetic `[past]` lift marker is
+    // permitted because no implicit lift occurred.
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
 
     let (holds, trace) = kb
         .query_entailment_with_proof_inner(make_temporal_event_query("alis", "danlu", past))
         .unwrap();
     assert!(holds.is_true(), "Past(danlu(alis)) should hold");
 
-    let has_tensed_derived = trace.steps.iter().any(
-        |step| matches!(&step.rule, ProofRule::Derived { label, .. } if label.contains("[past]")),
+    let derived_labels = trace
+        .steps
+        .iter()
+        .filter_map(|s| match &s.rule {
+            ProofRule::Derived { label, .. } => Some(label.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !derived_labels.is_empty(),
+        "the explicit temporal rule should emit a Derived step"
     );
     assert!(
-        has_tensed_derived,
-        "temporal-lifted derivation should carry a `[past]` tag in a Derived label; rules seen: {:?}",
+        derived_labels.iter().all(|label| !label.contains("[past]")),
+        "explicit temporal rules must not masquerade as implicit lifts: {derived_labels:?}"
+    );
+}
+
+#[test]
+fn cross_flavor_rule_trace_discloses_both_wrappers() {
+    let kb = new_kb();
+    assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
+    assert_buf(
+        &kb,
+        make_temporal_event_mapping("gerku", "danlu", past, present),
+    );
+
+    let (holds, trace) = kb
+        .query_entailment_with_proof_inner(make_temporal_event_query("alis", "danlu", present))
+        .unwrap();
+    assert!(holds.is_true(), "Past gerku must derive Present danlu");
+
+    assert!(
+        trace.steps.iter().any(
+            |step| matches!(&step.rule, ProofRule::Asserted { fact } if fact.starts_with("Past("))
+        ),
+        "the premise must remain visibly Past in the proof: {:?}",
+        trace.steps
+    );
+    assert!(
+        trace.steps.iter().any(
+            |step| matches!(&step.rule, ProofRule::ModalPassthrough { kind } if kind == "present")
+        ),
+        "the query must disclose its Present wrapper: {:?}",
+        trace.steps
+    );
+    let labels = trace
+        .steps
+        .iter()
+        .filter_map(|step| match &step.rule {
+            ProofRule::Derived { label, .. } => Some(label.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!labels.is_empty(), "the declared rule label must appear");
+    assert!(
+        labels.iter().all(|label| !label.contains('[')),
+        "cross-flavor rules use their ordinary labels, not synthetic lift labels: {labels:?}"
+    );
+}
+
+#[test]
+fn bare_rule_is_absent_from_a_tensed_failure_trace() {
+    let kb = new_kb();
+    kb.set_materialization(false);
+    assert_buf(&kb, make_event_universal("gerku", "danlu"));
+    assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
+
+    let (holds, trace) = kb
+        .query_entailment_with_proof_inner(make_temporal_event_query("alis", "danlu", past))
+        .unwrap();
+    assert_eq!(holds, QueryResult::False);
+    assert!(
         trace
             .steps
             .iter()
-            .filter_map(|s| match &s.rule {
-                ProofRule::Derived { label: l, .. } => Some(l.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
+            .all(|step| !matches!(step.rule, ProofRule::RuleAttemptFailed { .. })),
+        "a Bare rule is not a candidate for a Past goal: {:?}",
+        trace.steps
     );
 }

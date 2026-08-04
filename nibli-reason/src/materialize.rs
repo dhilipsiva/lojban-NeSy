@@ -155,8 +155,8 @@ pub enum Ineligible {
     /// A condition dispatches to the compute backend / arithmetic. Its domain is not
     /// enumerable, so its extension is not a finite set to saturate.
     ComputeCondition(String),
-    /// A RULE TEMPLATE carries a tense or deontic flavour. Rule firing is
-    /// flavour-polymorphic (`apply_tense_to_fact`); v1 does not reproduce that.
+    /// A RULE TEMPLATE carries a tense or deontic flavour. The v1 projection
+    /// has no flavor dimension and would erase that distinction.
     Flavoured(String),
     /// A STORED FACT of this relation carries a flavour. Distinct from `Flavoured` so the
     /// report cannot tell a reader to go looking for a `past` in a rule when it is in the
@@ -266,8 +266,7 @@ pub(super) enum ProjectErr {
     EventEscapes,
     /// Two anchors share one event term (`R(ev) ∧ S(ev)`) — same objection.
     AmbiguousAnchor,
-    /// A tense/deontic flavour: rule firing is flavour-polymorphic and v1 does not
-    /// reproduce that.
+    /// A tense/deontic flavour that the v1 projection cannot represent.
     Flavoured,
     /// A `SkolemFn`/`DepPair` survives in a role value (not just the event slot).
     SkolemInValue,
@@ -317,8 +316,8 @@ fn project_atoms(atoms: &[StoredFact]) -> Result<(Vec<Atom>, Vec<StoredFact>), P
 fn project_atoms_inner(
     atoms: &[StoredFact],
 ) -> Result<(Vec<Atom>, Vec<StoredFact>, Vec<String>), ProjectErr> {
-    // Every atom must be Bare: a Past/Obligatory template fires flavour-polymorphically
-    // and v1 does not model that. (This is also what keeps the GDPR-style
+    // Every atom must be Bare: v1 does not encode Past/Present/Future or deontic
+    // wrappers, and dropping one would change the rule. (This is also what keeps the GDPR-style
     // `obligated_by(every X, event { … })` / `permitted(…)` rules out — they compile to
     // Obligatory/Permitted stored facts, so only the plain `entitled` shape reaches the
     // abstraction handling below.)

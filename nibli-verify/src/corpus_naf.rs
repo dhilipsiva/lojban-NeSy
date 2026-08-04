@@ -226,8 +226,8 @@ pub const NAF_CASES: &[Case] = &[
         query: "Adam = Bel.",
         expect: Expect::False,
     },
-    // ── Tense flavors through the ASP translator. Positive programs exercise the
-    // flavor-exact facts (diagonal) + polymorphic/explicit rules; the tense×NAF cases
+    // ── Tense flavors through the ASP translator. Positive programs exercise
+    // flavor-exact facts plus Bare-only and explicitly flavored rules; the tense×NAF cases
     // below exercise the flavor-aware NegatedExistsGroup — all now flavorized by
     // `tense::flavorize` (the inner NAF predicate gains the restrictor's suffix). ──
     Case {
@@ -243,9 +243,45 @@ pub const NAF_CASES: &[Case] = &[
         expect: Expect::False,
     },
     Case {
-        name: "tense_asp_polymorphic_rule_true",
+        name: "tense_asp_bare_taxonomy_rule_past_false",
         kb: &["animal(every dog).", "past dog(Kim)."],
         query: "past animal(Kim).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "tense_asp_explicit_taxonomy_rule_past_true",
+        kb: &["all $x: past dog($x) -> past animal($x).", "past dog(Kim)."],
+        query: "past animal(Kim).",
+        expect: Expect::True,
+    },
+    Case {
+        name: "tense_asp_bare_taxonomy_rule_future_false",
+        kb: &["animal(every dog).", "future dog(Kim)."],
+        query: "future animal(Kim).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "tense_asp_explicit_taxonomy_rule_future_true",
+        kb: &[
+            "all $x: future dog($x) -> future animal($x).",
+            "future dog(Kim).",
+        ],
+        query: "future animal(Kim).",
+        expect: Expect::True,
+    },
+    Case {
+        name: "tense_asp_bare_causal_rule_past_false",
+        kb: &["all $x: eats($x) -> be_hungry($x).", "past eats(Kim)."],
+        query: "past be_hungry(Kim).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "tense_asp_explicit_causal_cross_flavor_true",
+        kb: &[
+            "all $x: past eats($x) -> now be_hungry($x).",
+            "past eats(Kim).",
+        ],
+        query: "now be_hungry(Kim).",
         expect: Expect::True,
     },
     Case {
@@ -292,6 +328,26 @@ pub const NAF_CASES: &[Case] = &[
             "dead(every person where past ~dog(it)).",
             "person(Adam).",
             "future dog(Adam).",
+        ],
+        query: "dead(Adam).",
+        expect: Expect::True,
+    },
+    Case {
+        name: "tense_naf_bare_rule_does_not_lift_to_past",
+        kb: &[
+            "dead(every person where ~dog).",
+            "past person(Adam).",
+            "dog(Adam).",
+        ],
+        query: "past dead(Adam).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "tense_naf_bare_rule_ignores_past_witness",
+        kb: &[
+            "dead(every person where ~dog).",
+            "person(Adam).",
+            "past dog(Adam).",
         ],
         query: "dead(Adam).",
         expect: Expect::True,

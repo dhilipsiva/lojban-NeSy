@@ -113,6 +113,7 @@ pub const CONSTRUCT_INVENTORY: &[ConstructCase] = &[
     case("§6", "dog(Rex) -> animal(Rex)."),
     case("§6", "(goes(me) | eats(you)) -> big(this)."),
     case("§6", "all $x: dog($x) -> animal($x)."),
+    case("§6", "all $x: past dog($x) -> now animal($x)."),
     case("§6", "every dog $d: animal($d)."),
     case("§6", "some dog $d: big($d) & goes($d)."),
     case("§6", "exactly 2 dog $d: goes($d)."),

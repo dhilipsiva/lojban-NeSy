@@ -9,29 +9,28 @@
 //!
 //!   1. **Facts are flavor-exact.** `pu P` / `ca P` / `ba P` / bare `P` are four
 //!      disjoint atoms; no wrapper ever satisfies another (the audit's P9 diagonal).
-//!   2. **Unmarked rules are flavor-polymorphic.** `ro lo gerku cu danlu` derives a
-//!      flavor-f conclusion from flavor-f conditions, for every flavor f — a bare
-//!      rule + `pu gerku(rex)` yields `pu danlu(rex)`, chains included.
+//!   2. **Unmarked rules are Bare-only.** A bare rule plus `past dog(Rex)` does not
+//!      derive `past animal(Rex)`; the author's temporal mapping must be written on
+//!      the rule literals.
 //!   3. **Explicitly-tensed literals are flavor constants.** A `poi pu citka`
-//!      antecedent requires a `Past` witness in EVERY flavor instantiation of the
-//!      rule; an explicitly-tensed CONSEQUENT (`ganai … gi pu …`) pins the rule to
-//!      that conclusion flavor and evaluates its unmarked conditions at BARE.
+//!      antecedent requires a `Past` witness; an explicitly-tensed CONSEQUENT
+//!      (`ganai … gi pu …`) derives only that flavor. Every unmarked literal in
+//!      the same rule remains Bare.
 //!
 //! The rewrite makes this syntactic: predicate names gain a flavor suffix (`gerku`
 //! → `gerku__pu`; role predicates keep their `_xN` tail parseable: `gerku__pu_x1`),
-//! tense nodes are consumed, and each unmarked rule is emitted once per flavor in
-//! the program's flavor set (always including bare — a no-suffix copy). A program
-//! with no tense nodes passes through untouched (identity fast-path), so the
-//! pre-du/NAF pipelines are byte-identical to before when tense is absent.
+//! tense nodes are consumed, and every rule is emitted once: unmarked literals use
+//! unsuffixed predicates while explicitly tensed literals use their suffix. A
+//! program with no tense nodes passes through untouched (identity fast-path), so
+//! the pre-du/NAF pipelines are byte-identical when tense is absent.
 //!
 //! **Tense × restrictor-NAF is flavorized** (since the flavor-aware `NegatedExistsGroup`):
 //! a `past ~P` restrictor compiles to `Not(Past(Not(∃P)))`; the rewrite consumes the tense
 //! wrapper and suffixes the inner NAF predicate, yielding `Not(Not(∃P__pu))` — which the ASP
 //! translator maps to `not P__pu` = "no Past-flavor P witness", exactly the engine's
-//! flavor-exact NAF (a Past witness blocks; a bare/future one does not). A bare `~P` in a
-//! tensed program is lifted with the rule copy's flavor (each unmarked rule is emitted once
-//! per flavor), mirroring the engine's temporal lifting. This leg is differentially oracled
-//! by the tense×NAF cases in `corpus_naf.rs` and `generator::random_tense_naf_case`.
+//! flavor-exact NAF (a Past witness blocks; a bare/future one does not). A bare `~P`
+//! remains bare. This leg is differentially oracled by the tense×NAF cases in
+//! `corpus_naf.rs` and `generator::random_tense_naf_case`.
 //!
 //! **Conservative skips** (returned as `Err`, surfaced as a skip — never mis-judged):
 //! - **top-level negated (`na`) query** in a tensed program: not a shape the gate poses
@@ -40,9 +39,9 @@
 //! - **tense × abstraction** (`__abs_` under any flavor): suffixing would break the
 //!   opaque lossless marker identity between rule head and query.
 //! - **nested / exotic tense placements** (tense inside an event group, tensed
-//!   whole-rule spines, multi-wrapping): not shapes nibli-semantics emits today; fail closed.
-
-use std::collections::BTreeSet;
+//!   whole-rule spines, stacked tense×deontic wrappers): outside this verifier's
+//!   single-temporal-wrapper fragment, so they fail closed rather than acquire an
+//!   invented suffix product.
 
 use nibli_types::logic::{LogicBuffer, LogicNode};
 
@@ -95,25 +94,20 @@ fn node_at(buf: &LogicBuffer, id: u32) -> Result<&LogicNode, String> {
         .ok_or_else(|| format!("node index {id} out of range"))
 }
 
-/// Flavorize a whole `(KB, query)` case. Returns rewritten, tense-free buffers (an
-/// unmarked rule becomes one buffer per occurring flavor). Identity when no tense
-/// node occurs anywhere. `Err` = outside the verified tense fragment → the caller
-/// skips the case.
+/// Flavorize a whole `(KB, query)` case. Returns rewritten, tense-free buffers;
+/// every input buffer produces one output buffer. Identity when no tense node
+/// occurs anywhere. `Err` = outside the verified tense fragment → the caller skips
+/// the case.
 pub fn flavorize(
     kb: &[LogicBuffer],
     query: &LogicBuffer,
 ) -> Result<(Vec<LogicBuffer>, LogicBuffer), String> {
-    // 1. The occurring flavor set (bare always; deterministic order via BTreeSet).
-    let mut flavors: BTreeSet<Flavor> = BTreeSet::new();
-    flavors.insert(Flavor::Bare);
-    for buf in kb.iter().chain(std::iter::once(query)) {
-        for node in &buf.nodes {
-            if let Some((f, _)) = tense_of(node) {
-                flavors.insert(f);
-            }
-        }
-    }
-    if flavors.len() == 1 {
+    let has_tense = kb
+        .iter()
+        .chain(std::iter::once(query))
+        .flat_map(|buf| &buf.nodes)
+        .any(|node| tense_of(node).is_some());
+    if !has_tense {
         // No tense anywhere — identity fast-path (pre-tense pipelines unchanged).
         return Ok((kb.to_vec(), query.clone()));
     }
@@ -149,9 +143,9 @@ pub fn flavorize(
     // 3. Rewrite.
     let mut out_kb: Vec<LogicBuffer> = Vec::new();
     for buf in kb {
-        out_kb.extend(rewrite_buffer(buf, &flavors)?);
+        out_kb.extend(rewrite_buffer(buf)?);
     }
-    let mut out_query = rewrite_buffer(query, &flavors)?;
+    let mut out_query = rewrite_buffer(query)?;
     if out_query.len() != 1 {
         // A query buffer is a fact-shape (possibly tensed) — never a rule, so the
         // rewrite yields exactly one buffer. More than one means a ForAll query
@@ -161,16 +155,12 @@ pub fn flavorize(
     Ok((out_kb, out_query.remove(0)))
 }
 
-/// Rewrite one buffer: a fact/query (per-root, single output buffer) or a rule
-/// (one output buffer per flavor if its conclusion is unmarked).
-fn rewrite_buffer(
-    buf: &LogicBuffer,
-    flavors: &BTreeSet<Flavor>,
-) -> Result<Vec<LogicBuffer>, String> {
+/// Rewrite one buffer: a fact/query or a rule, always as one output buffer.
+fn rewrite_buffer(buf: &LogicBuffer) -> Result<Vec<LogicBuffer>, String> {
     // Rule shape: sole root ForAll.
     if let [r] = buf.roots.as_slice() {
         if matches!(node_at(buf, *r)?, LogicNode::ForAllNode(_)) {
-            return rewrite_rule(buf, *r, flavors);
+            return rewrite_rule(buf, *r);
         }
     }
     // Fact/query shape: each root is a (possibly tensed) event group / atom.
@@ -186,44 +176,18 @@ fn rewrite_buffer(
     Ok(vec![LogicBuffer { nodes, roots }])
 }
 
-/// Rewrite a `ForAll` rule. If the matrix (consequent) is explicitly tensed, emit ONE
-/// copy: consequent at its explicit flavor, unmarked literals at BARE. Otherwise emit
-/// one copy per occurring flavor, with unmarked literals at that flavor. Explicitly-
-/// tensed antecedent literals keep their own flavor in every copy.
-fn rewrite_rule(
-    buf: &LogicBuffer,
-    root: u32,
-    flavors: &BTreeSet<Flavor>,
-) -> Result<Vec<LogicBuffer>, String> {
-    // Find the matrix: walk nested ForAlls, then the Or-spine to its terminal.
-    let mut cur = root;
-    while let LogicNode::ForAllNode((_, b)) = node_at(buf, cur)? {
-        cur = *b;
-    }
-    while let LogicNode::OrNode((_, rest)) = node_at(buf, cur)? {
-        cur = *rest;
-    }
-    let matrix_explicit = tense_of(node_at(buf, cur)?).is_some();
-
-    let unmarked_flavors: Vec<Flavor> = if matrix_explicit {
-        vec![Flavor::Bare]
-    } else {
-        flavors.iter().copied().collect()
-    };
-
-    let mut out = Vec::new();
-    for &f in &unmarked_flavors {
-        let mut nodes: Vec<LogicNode> = Vec::new();
-        let new_root = copy_rule_node(buf, root, f, &mut nodes)?;
-        out.push(LogicBuffer {
-            nodes,
-            roots: vec![new_root],
-        });
-    }
-    Ok(out)
+/// Rewrite a `ForAll` rule once. Unmarked literals remain Bare; each explicit
+/// tense wrapper selects that literal's flavor.
+fn rewrite_rule(buf: &LogicBuffer, root: u32) -> Result<Vec<LogicBuffer>, String> {
+    let mut nodes: Vec<LogicNode> = Vec::new();
+    let new_root = copy_rule_node(buf, root, Flavor::Bare, &mut nodes)?;
+    Ok(vec![LogicBuffer {
+        nodes,
+        roots: vec![new_root],
+    }])
 }
 
-/// Copy a rule-spine node into `out`, applying flavor `f` to unmarked literals and
+/// Copy a rule-spine node into `out`, applying Bare to unmarked literals and
 /// consuming explicit tense wrappers (their subtree gets the wrapper's flavor).
 fn copy_rule_node(
     buf: &LogicBuffer,
@@ -233,8 +197,8 @@ fn copy_rule_node(
 ) -> Result<u32, String> {
     let node = node_at(buf, id)?;
     if let Some((g, c)) = tense_of(node) {
-        // An explicitly-tensed literal (antecedent group or the consequent matrix):
-        // a flavor CONSTANT — same in every copy.
+        // An explicitly-tensed literal (antecedent group or consequent matrix)
+        // keeps its declared flavor.
         return copy_suffixed(buf, c, g, out);
     }
     let new = match node {
@@ -346,6 +310,10 @@ mod tests {
         nodes.push(LogicNode::PastNode(c));
         (nodes.len() - 1) as u32
     }
+    fn present(nodes: &mut Vec<LogicNode>, c: u32) -> u32 {
+        nodes.push(LogicNode::PresentNode(c));
+        (nodes.len() - 1) as u32
+    }
     fn var(s: &str) -> LogicalTerm {
         LogicalTerm::Variable(s.to_string())
     }
@@ -422,10 +390,9 @@ mod tests {
     }
 
     #[test]
-    fn unmarked_rule_gets_one_copy_per_flavor() {
-        // Program flavor set = {bare, past} (from the tensed fact) → the unmarked
-        // rule is emitted twice: a bare copy and a __pu copy (polymorphism, pinned
-        // by the engine-probe matrix: bare rule + pu fact derives pu conclusion).
+    fn unmarked_rule_remains_bare_in_a_tensed_program() {
+        // The tensed fact/query trigger flavorization, but they do not clone or
+        // re-flavor the bare rule.
         let mut fn_ = Vec::new();
         let g = group1(&mut fn_, "_ev0", "gerku", con("rex"));
         let froot = past(&mut fn_, g);
@@ -437,8 +404,7 @@ mod tests {
         let query = buf(qn, vec![qroot]);
 
         let (kb2, q2) = flavorize(&[bare_rule(), fact], &query).unwrap();
-        // rule×2 + fact×1.
-        assert_eq!(kb2.len(), 3);
+        assert_eq!(kb2.len(), 2, "one rule + one fact");
         let all: Vec<Vec<String>> = kb2.iter().map(rels).collect();
         assert!(all.contains(&vec![
             "gerku".to_string(),
@@ -446,12 +412,9 @@ mod tests {
             "danlu".to_string(),
             "danlu_x1".to_string()
         ]));
-        assert!(all.contains(&vec![
-            "gerku__pu".to_string(),
-            "gerku__pu_x1".to_string(),
-            "danlu__pu".to_string(),
-            "danlu__pu_x1".to_string()
-        ]));
+        assert!(all.iter().all(|rels| {
+            !(rels.contains(&"gerku__pu".to_string()) && rels.contains(&"danlu__pu".to_string()))
+        }));
         assert_eq!(rels(&q2), vec!["danlu__pu", "danlu__pu_x1"]);
     }
 
@@ -483,10 +446,37 @@ mod tests {
     }
 
     #[test]
+    fn explicit_rule_literals_keep_their_declared_flavors() {
+        // Past(gerku(v)) -> Present(danlu(v)): a cross-flavor mapping is
+        // represented directly, with no generated Bare or same-flavor copy.
+        let mut n = Vec::new();
+        let ante = group1(&mut n, "_e0", "gerku", var("_v0"));
+        let pante = past(&mut n, ante);
+        let na = not(&mut n, pante);
+        let cons = group1(&mut n, "_e1", "danlu", var("_v0"));
+        let ccons = present(&mut n, cons);
+        let o = or(&mut n, na, ccons);
+        let root = forall(&mut n, "_v0", o);
+        let rule = buf(n, vec![root]);
+
+        let mut qn = Vec::new();
+        let qg = group1(&mut qn, "_ev0", "danlu", con("rex"));
+        let qroot = present(&mut qn, qg);
+        let query = buf(qn, vec![qroot]);
+
+        let (kb2, _q2) = flavorize(&[rule], &query).unwrap();
+        assert_eq!(kb2.len(), 1);
+        assert_eq!(
+            rels(&kb2[0]),
+            vec!["gerku__pu", "gerku__pu_x1", "danlu__ca", "danlu__ca_x1"]
+        );
+    }
+
+    #[test]
     fn tense_with_naf_restrictor_is_flavorized() {
         // A `past ~gerku` restrictor compiles to `Not(Past(Not(∃gerku)))`. With the
         // flavor-aware NegatedExistsGroup this is no longer skipped: the rewrite consumes
-        // the Past wrapper and suffixes the inner NAF predicate, so every rule copy carries
+        // the Past wrapper and suffixes the inner NAF predicate, so the rule carries
         // `gerku__pu` (= clingo `not gerku__pu` = "no Past-flavor gerku") and NO bare gerku
         // NAF (the restrictor is an explicit flavor constant).
         let mut n = Vec::new();
@@ -502,7 +492,7 @@ mod tests {
         let root = forall(&mut n, "_v0", o1);
         let rule = buf(n, vec![root]);
 
-        // A tensed fact forces the flavor set past {Bare} so the rewrite runs.
+        // A tensed fact ensures the flavorization pass runs.
         let mut fn_ = Vec::new();
         let g = group1(&mut fn_, "_ev0", "prenu", con("adam"));
         let froot = past(&mut fn_, g);
@@ -521,6 +511,42 @@ mod tests {
         assert!(
             all.iter().all(|r| !r.contains(&"gerku".to_string())),
             "explicit `past ~gerku` must not leave a bare gerku NAF: {all:?}"
+        );
+    }
+
+    #[test]
+    fn bare_naf_restrictor_remains_unsuffixed() {
+        // ∀v. prenu(v) ∧ ~gerku(v) -> morsi(v), with no temporal wrapper on
+        // the NAF literal. An unrelated Past fact forces the pre-pass to run.
+        let mut n = Vec::new();
+        let dom = group1(&mut n, "_e0", "prenu", var("_v0"));
+        let ndom = not(&mut n, dom);
+        let r = group1(&mut n, "_e1", "gerku", var("_v0"));
+        let nr = not(&mut n, r);
+        let nnr = not(&mut n, nr);
+        let cons = group1(&mut n, "_e2", "morsi", var("_v0"));
+        let o2 = or(&mut n, nnr, cons);
+        let o1 = or(&mut n, ndom, o2);
+        let root = forall(&mut n, "_v0", o1);
+        let rule = buf(n, vec![root]);
+
+        let mut fn_ = Vec::new();
+        let g = group1(&mut fn_, "_ev0", "prenu", con("adam"));
+        let froot = past(&mut fn_, g);
+        let fact = buf(fn_, vec![froot]);
+
+        let mut qn = Vec::new();
+        let qroot = group1(&mut qn, "_ev0", "morsi", con("adam"));
+        let query = buf(qn, vec![qroot]);
+
+        let (kb2, _q2) = flavorize(&[rule, fact], &query).unwrap();
+        let rule_relations = rels(&kb2[0]);
+        assert!(rule_relations.contains(&"gerku".to_string()));
+        assert!(
+            rule_relations
+                .iter()
+                .all(|relation| !relation.starts_with("gerku__")),
+            "bare NAF must remain unsuffixed: {rule_relations:?}"
         );
     }
 

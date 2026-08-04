@@ -12,6 +12,17 @@ The engine never returns **TRUE** for a formula that does not follow from the as
 
 This is **not** omniscience: change the premises and the verdict can change.
 
+Ordinary-predicate temporal rule literals are **flavor-exact**. Bare rules are
+unqualified and do not silently lift into `past`, `now`, or `future`; authors
+declare same- or cross-flavor mappings explicitly. Negation-as-failure follows the same rule:
+bare `~P` checks bare `P`, while `past ~P` checks only for a Past witness.
+Stratification remains conservatively keyed by surface relation, so temporal
+flavors cannot be used to evade a negative-cycle rejection. Identity and
+query-time compute built-ins retain their separately documented semantics.
+Stacked tense×deontic syntax preserves its compiler order, but the current
+fact/rule store has one flavor slot, so compositional inference over both
+modifiers is not guaranteed.
+
 ## Closed world and closed domain
 
 Inference assumes:

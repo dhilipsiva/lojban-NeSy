@@ -197,8 +197,8 @@ fn a_bare_rebuild_drops_the_saturation() {
     );
 }
 
-/// Tense makes rule firing flavour-polymorphic and the projection does not model that,
-/// so a flavoured relation must be REFUSED rather than saturated with the flavour
+/// The projection does not model tense, so a flavoured relation must be REFUSED
+/// rather than saturated with the flavour
 /// silently dropped (which would merge `past P(x)` and `P(x)` into one tuple).
 #[test]
 fn a_flavoured_relation_is_refused_and_still_answers_correctly() {
@@ -221,6 +221,58 @@ fn a_flavoured_relation_is_refused_and_still_answers_correctly() {
     assert!(
         !complete.iter().any(|r| r == "rotten"),
         "a relation with a Past fact must not be reported complete: {complete:?}"
+    );
+}
+
+#[test]
+fn bare_temporal_non_lifting_is_identical_with_materialization_on_or_off() {
+    let kb_lines = ["all $x: dog($x) -> animal($x).", "past dog(Ara)."];
+    let (on, off) = both_ways(&kb_lines, &["past animal(Ara)."][..]);
+    assert_eq!(on, vec![QueryResult::False]);
+    assert_eq!(on, off, "materialization must not invent temporal lifting");
+}
+
+#[test]
+fn explicit_temporal_rule_falls_back_without_changing_the_verdict() {
+    let kb_lines = ["all $x: past dog($x) -> past animal($x).", "past dog(Ara)."];
+    let (on, off) = both_ways(&kb_lines, &["past animal(Ara)."][..]);
+    assert_eq!(on, vec![QueryResult::True]);
+    assert_eq!(on, off, "the exact backward-chain fallback must agree");
+
+    let kb = new_kb();
+    for line in kb_lines {
+        assert_buf(&kb, compile_surface(line));
+    }
+    let _ = query_result(&kb, compile_surface("past animal(Ara)."));
+    let (complete, refused) = kb.materialization_report();
+    assert!(
+        !complete.iter().any(|relation| relation == "animal"),
+        "a flavored rule head must not be reported complete: {complete:?}"
+    );
+    assert!(
+        refused.iter().any(|(relation, why)| {
+            relation == "animal" && why.contains("tense/deontic flavour")
+        }),
+        "the report must disclose the flavored-rule refusal: {refused:?}"
+    );
+}
+
+#[test]
+fn explicit_temporal_naf_never_uses_the_bare_materialized_extension() {
+    let kb_lines = [
+        "fit(every person where past ~rotten(it)).",
+        "person(Ara).",
+        "rotten(Ara).",
+    ];
+    let (on, off) = both_ways(&kb_lines, &["fit(Ara)."][..]);
+    assert_eq!(
+        off,
+        vec![QueryResult::True],
+        "a bare rotten witness must not block `past ~rotten`"
+    );
+    assert_eq!(
+        on, off,
+        "materialization must refuse the flavored NAF group and fall back"
     );
 }
 
@@ -444,8 +496,8 @@ fn a_relation_whose_negated_dependency_is_unseedable_is_refused_not_completed() 
     let kb_lines = [
         "person(Ara).",
         "rotten(Ara).",
-        // Makes `rotten` unprojectable: rule firing is flavour-polymorphic and the
-        // projection drops flavours, so the relation is refused wholesale.
+        // Makes `rotten` unprojectable: the projection detects the flavor and
+        // refuses the relation wholesale rather than dropping it.
         "past rotten(Ara).",
         "all $x: person($x) & ~rotten($x) -> fit($x).",
     ];

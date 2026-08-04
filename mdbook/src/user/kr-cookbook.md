@@ -43,6 +43,19 @@ Description-style universals (`every dog`) compile to rules. Explicit prenex:
 all $x: dog($x) -> animal($x).
 ```
 
+For ordinary predicates, temporal wrappers are part of each rule literal's
+meaning. A bare rule is unqualified; it is not automatically projected into the
+past, present, or future. Declare same-flavor taxonomy or cross-flavor causation
+explicitly:
+
+```nibli-kr
+all $x: past dog($x) -> past animal($x).
+all $x: past eats($x) -> now be_hungry($x).
+```
+
+With only `all $x: dog($x) -> animal($x).`, a `past dog(Adam).` fact does not
+derive `past animal(Adam).`
+
 ## Negation-as-failure
 
 ```nibli-kr

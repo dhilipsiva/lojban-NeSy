@@ -438,7 +438,7 @@ fn test_event_decomposed_temporal_rule() {
         },
     );
 
-    // Add timeless rule: ro lo gerku ku danlu (event-decomposed)
+    // A bare event-decomposed rule stays bare.
     assert_buf(&kb, make_event_universal("gerku", "danlu"));
 
     // Query: Past(Exists(_ev0, And(danlu(_ev0), danlu_x1(_ev0, alis))))
@@ -460,6 +460,18 @@ fn test_event_decomposed_temporal_rule() {
     let q_exists = exists(&mut q_nodes, "_ev0", q_and);
     let q_root = past(&mut q_nodes, q_exists);
     assert!(
+        query_false(
+            &kb,
+            LogicBuffer {
+                nodes: q_nodes.clone(),
+                roots: vec![q_root],
+            }
+        ),
+        "a bare rule must not derive Past(danlu(alis)) from Past(gerku(alis))"
+    );
+
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
+    assert!(
         query(
             &kb,
             LogicBuffer {
@@ -467,7 +479,7 @@ fn test_event_decomposed_temporal_rule() {
                 roots: vec![q_root],
             }
         ),
-        "temporal lifting should derive Past(danlu(alis)) from Past(gerku(alis)) and timeless rule"
+        "an explicitly Past-to-Past rule should derive Past(danlu(alis))"
     );
 }
 

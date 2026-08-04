@@ -290,6 +290,42 @@ Consequences the grammar enforces fail-closed (2026-07-12 design-review errata):
 Tensed rule *conclusions* work (`all $x: dies($x) -> past lives($x)`); whole-rule tense
 remains an assert-time reject, as today.
 
+**Ordinary-predicate rule flavors are exact (2026-08-04).** Bare means
+*unqualified*, not "timeless", "rigid", or "safe to project through time". An
+unprefixed condition matches only Bare facts, and an unprefixed conclusion
+derives only Bare facts. Nibli does not automatically copy an unmarked rule into
+`past`, `now`, or `future`: there is no sound syntactic test that can distinguish
+a taxonomy such as `dog -> animal` from an episodic, causal, or normative rule
+with the same FOL shape.
+
+State each intended temporal mapping on the rule literals:
+
+```nibli-kr
+all $x: past dog($x) -> past animal($x).       # explicit same-flavor taxonomy
+all $x: past eats($x) -> now be_hungry($x).   # explicit cross-flavor causation
+```
+
+Within the engine's single-temporal-wrapper reasoning fragment, every ordinary
+predicate literal keeps its written temporal flavor; an unprefixed literal in
+either rule position remains bare. This applies equally to NAF restrictors:
+bare `~P` asks only about bare `P`, while `past ~P` asks only about Past witnesses. Explicit
+flavored rules use ordinary proof labels (there is no synthetic `[past]` lift
+step); the flavored fact and `ModalPassthrough` proof node disclose the mapping.
+Materialisation remains conservative: flavored facts/rules fall back to exact
+backward chaining rather than having their wrappers erased.
+
+Two existing built-ins are outside that promise: `=` uses the engine's untensed
+identity index, and query-time compute predicates use their backend contract.
+Neither acquires temporal meaning merely by appearing under a wrapper. NAF
+stratification is also deliberately conservative at the surface-relation level:
+different flavors of the same relation do not bypass a negative-cycle rejection.
+
+The compiler's nested ordering for `must past P` remains a structural seam
+contract, not a promise of compositional tense×deontic reasoning: the current
+fact/rule store has one mutually exclusive flavor slot and cannot represent the
+product. Do not rely on stacked modifiers for inference until that separate
+language decision is resolved.
+
 **The two universal forms compile to different shapes and look different:**
 
 ```nibli-kr

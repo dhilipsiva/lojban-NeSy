@@ -121,6 +121,14 @@ contract, not accident:
 - **Tense and deontics** wrap the whole predication: `PastNode`/`PresentNode`/`FutureNode` and
   `ObligatoryNode`/`PermittedNode` around the compiled form. (The converted aliases
   `obligated_by`/`permitted` are plain predicates, not deontic nodes.)
+  For stored ordinary-predicate rule templates, the wrapper is part of the
+  literal's identity at evaluation time: Bare, Past, Present, and Future match
+  only the same flavor. There is no reasoner-global temporal lift hidden outside
+  this IR; a same- or
+  cross-flavor rule has wrappers on its antecedent/conclusion literals.
+  Built-in identity and query-time compute dispatch retain their own semantics.
+  Although the IR can nest tense and deontic nodes, the current fact/rule store
+  has one flavor slot; nested modifier composition is not implied by this rule.
 - **Abstractions are opaque.** `event { }`/`fact { }`/`property { }`/`amount { }`/
   `concept { }` bodies compile to
   `And(type_pred, And(__abs_v1_<digest>_<key>(referent), body))`. `<key>` is the hex encoding

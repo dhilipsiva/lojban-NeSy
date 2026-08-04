@@ -13,6 +13,21 @@ here first.
 
 ## [Unreleased]
 
+### Changed
+
+- **Ordinary-predicate temporal rules are now explicit and flavor-exact:** bare
+  rules no longer get
+  an implicit second firing pass for `past`/`now`/`future` queries. Bare means
+  unqualified, not rigid or timeless; authors declare the intended mapping on
+  each rule literal (for example, `all $x: past dog($x) -> past animal($x).`).
+  Bare NAF stays bare, explicit tensed NAF keeps its flavor, flavored rules keep
+  ordinary proof labels, and materialisation continues to fall back rather than
+  erase wrappers. The Vampire/clingo flavorizer now emits each rule once and
+  differentially checks bare taxonomy/causal/NAF non-lifting alongside explicit
+  same- and cross-flavor controls; every curated temporal case must reach its
+  oracle rather than silently skip. Stacked tense×deontic composition remains a
+  separately tracked one-slot limitation.
+
 ### Fixed
 
 - **Sound semantic identity:** rule deduplication now buckets by digest but compares a

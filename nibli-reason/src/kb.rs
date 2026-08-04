@@ -1678,8 +1678,8 @@ pub(super) fn register_ground_material_conditional(
         // future) and deontics (must/may) are proposition-level, never wrapping a sentence
         // connective — a tensed conditional does not parse — so nibli-semantics never produces
         // `Past(Or(Not(P), Q))`. A RAW-FOL injector can, though, and the old transparent
-        // strip silently compiled it to a BARE (flavor-polymorphic) rule — MORE permissive
-        // than the tensed conditional licenses. FAIL CLOSED on that shape instead
+        // strip silently compiled it to an unqualified Bare rule, which can fire on
+        // facts the tensed conditional never licensed. FAIL CLOSED on that shape instead
         // (mirroring `compile_forall_to_rule`'s whole-rule-tense rejection); plain tensed/
         // deontic facts still recurse harmlessly to `false` as before.
         LogicNode::PastNode(n)
@@ -1690,7 +1690,7 @@ pub(super) fn register_ground_material_conditional(
             if tensed_body_hides_conditional(buffer, *n) {
                 return Err(
                     "cannot register a tense (past/now/future) or deontic (must/may) \
-                     wrapping a ground material conditional: a timeless backward-chaining \
+                     wrapping a ground material conditional: an unqualified backward-chaining \
                      rule cannot carry whole-rule tense or modality without over-claiming \
                      on untensed facts. Rejecting the assertion to preserve soundness; \
                      restate the temporal/deontic scope on the relevant predicate instead."
@@ -2208,7 +2208,7 @@ fn leading_skolemized_exists_over_forall(
 
 /// True if a tense (`pu`/`ca`/`ba`) or deontic (`ei`/`e'e`) wrapper sits over a
 /// leading-∃-over-∀ rule (`pu da citka ro lo gerku` → `Past(Exists(da, ForAll))`).
-/// Such a whole-rule tense cannot be soundly carried by a timeless
+/// Such a whole-rule tense cannot be soundly carried by an unqualified
 /// backward-chaining rule (mirrors `compile_forall_to_rule`'s spine rejection),
 /// so the caller rejects it with the clear whole-rule-tense message instead of
 /// letting the ground path misreport it as a "bare disjunction".
@@ -2330,7 +2330,7 @@ pub(super) fn process_assertion(
             // rather than the ground path's misleading "bare disjunction" error.
             return Err(
                 "cannot compile a tense (past/now/future) or deontic (must/may) \
-                 wrapping a whole universal/conditional rule: a timeless \
+                 wrapping a whole universal/conditional rule: an unqualified \
                  backward-chaining rule cannot carry whole-rule tense or \
                  modality without over-claiming on untensed facts. Rejecting \
                  the assertion to preserve soundness; restate the \

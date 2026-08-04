@@ -365,7 +365,7 @@ fn tensed_restrictor_wrong_tense_control() {
 
 #[test]
 fn tensed_restrictor_bare_premise_control() {
-    // rex eats (bare/timeless) — must not satisfy a PAST antecedent.
+    // rex eats (bare/unqualified) — must not satisfy a PAST antecedent.
     let engine = engine_with_facts(&[
         "be_hungry(every dog where past eats(it)).",
         "dog(Rex).",
@@ -441,12 +441,9 @@ fn tensed_negated_restrictor_future_witness_does_not_block() {
 }
 
 #[test]
-fn bare_negated_restrictor_is_temporally_lifted_by_the_query() {
-    // A BARE `~eats(it)` restrictor under a bare-headed rule, queried at PAST: the NAF
-    // is temporally LIFTED to the query flavor (like a bare positive condition), so it
-    // checks "no PAST eats". rex past-ate → the lifted `~eats` is FALSE → the rule does
-    // NOT fire at Past → `past be_hungry(rex)` is FALSE. (Pre-fix, the tenseless NAF
-    // checked bare `eats` — none stored — and the rule wrongly fired.)
+fn bare_negated_restrictor_rule_does_not_answer_tensed_goal() {
+    // The head and both restrictors are bare. A Past query cannot activate the
+    // rule, regardless of whether a same-flavor NAF witness exists.
     let engine = engine_with_facts(&[
         "be_hungry(every dog where ~eats(it)).",
         "past dog(Rex).",
@@ -455,17 +452,13 @@ fn bare_negated_restrictor_is_temporally_lifted_by_the_query() {
     let (holds, _t, _j) = engine
         .query_text_with_proof("past be_hungry(Rex).")
         .unwrap();
-    assert_false(
-        &holds,
-        "a bare NAF restrictor lifts to the query flavor: a Past witness blocks a Past query",
-    );
+    assert_false(&holds, "a bare NAF rule must not answer a Past query");
 }
 
 #[test]
-fn bare_negated_restrictor_lifted_query_fires_without_matching_witness() {
-    // Same bare rule, queried at PAST, but rex has only a BARE eating (no PAST one):
-    // the lifted `~eats` checks "no PAST eats" → holds → the rule fires at Past →
-    // `past be_hungry(rex)` is TRUE. Pins that the lift is flavor-exact, not blanket.
+fn bare_negated_restrictor_stays_bare_under_tensed_query() {
+    // A bare witness would block this rule for a bare query. It does not matter
+    // here because the bare rule head cannot unify with the Past goal.
     let engine = engine_with_facts(&[
         "be_hungry(every dog where ~eats(it)).",
         "past dog(Rex).",
@@ -474,10 +467,7 @@ fn bare_negated_restrictor_lifted_query_fires_without_matching_witness() {
     let (holds, _t, _j) = engine
         .query_text_with_proof("past be_hungry(Rex).")
         .unwrap();
-    assert_true(
-        &holds,
-        "a bare eating must not block the Past-lifted NAF restrictor",
-    );
+    assert_false(&holds, "a tensed goal must not re-flavor a bare NAF rule");
 }
 
 // ── Disjunctive rule antecedents (DNF rule-splitting) ──
@@ -993,7 +983,7 @@ fn implication_tensed_antecedent_fires_with_premise() {
 }
 
 // A tense (pu/ca/ba) or deontic (ei/e'e) scoping a WHOLE universal rule cannot
-// be soundly compiled to a timeless backward-chaining rule, so it is rejected.
+// be soundly compiled to an unqualified backward-chaining rule, so it is rejected.
 
 #[test]
 fn whole_rule_tense_universal_rejected() {
@@ -1047,7 +1037,7 @@ fn ground_obligation_does_not_imply_actuality() {
 #[test]
 fn prenex_tensed_body_universal_rejected() {
     // `ro da zo'u pu da prami` → ForAll(Past(...)): a tense on the rule spine,
-    // INSIDE the universal. Pre-fix it was silently stripped to a timeless rule.
+    // INSIDE the universal. Pre-fix it was silently stripped to a Bare rule.
     let engine = fresh_engine();
     let err = engine
         .assert_text("all $da: past loves($da).")
@@ -1523,20 +1513,67 @@ fn obligatory_rule_consequent_derives_obligatory_fact() {
 }
 
 #[test]
-fn flavor_polymorphic_rule_firing_is_flavor_exact() {
-    // An UNMARKED rule fires flavor-polymorphically: a `ba` goal pins the rule's
-    // conditions to `ba` (apply_tense_to_fact). Both directions matter:
-    // a ba fact supports the ba goal; a BARE fact must NOT.
-    let engine = engine_with_facts(&["animal(every dog).", "future dog(Rex)."]);
+fn taxonomy_temporal_propagation_must_be_declared_per_rule() {
+    for tense in ["past", "now", "future"] {
+        let bare = engine_with_facts(&["animal(every dog).", &format!("{tense} dog(Rex).")]);
+        assert_false(
+            &bare.query_holds(&format!("{tense} animal(Rex).")).unwrap(),
+            "a bare taxonomy rule must not inherit the query flavor",
+        );
+
+        let declared = engine_with_facts(&[
+            &format!("all $x: {tense} dog($x) -> {tense} animal($x)."),
+            &format!("{tense} dog(Rex)."),
+        ]);
+        assert_true(
+            &declared
+                .query_holds(&format!("{tense} animal(Rex)."))
+                .unwrap(),
+            "an explicitly same-flavor taxonomy rule must fire",
+        );
+    }
+
+    let bare = engine_with_facts(&["animal(every dog).", "dog(Rex)."]);
     assert_true(
-        &engine.query_holds("future animal(Rex).").unwrap(),
-        "unmarked rule fires for a Future goal from a Future condition fact",
+        &bare.query_holds("animal(Rex).").unwrap(),
+        "removing temporal lifting must not change ordinary bare rule firing",
+    );
+}
+
+#[test]
+fn causal_temporal_mapping_must_be_declared_per_rule() {
+    // Eating at a past episode does not license projecting a bare causal rule
+    // into that same undifferentiated flavor.
+    let implicit = engine_with_facts(&["all $x: eats($x) -> be_hungry($x).", "past eats(Rex)."]);
+    assert_false(
+        &implicit.query_holds("past be_hungry(Rex).").unwrap(),
+        "a bare causal rule must not be projected into Past",
     );
 
-    let engine2 = engine_with_facts(&["animal(every dog).", "dog(Rex)."]);
+    let declared = engine_with_facts(&[
+        "all $x: past eats($x) -> now be_hungry($x).",
+        "past eats(Rex).",
+    ]);
+    assert_true(
+        &declared.query_holds("now be_hungry(Rex).").unwrap(),
+        "the author-declared Past-to-Present causal mapping must fire",
+    );
     assert_false(
-        &engine2.query_holds("future animal(Rex).").unwrap(),
-        "a Future goal must NOT fire the rule from a bare condition fact",
+        &declared.query_holds("past be_hungry(Rex).").unwrap(),
+        "a cross-flavor rule must derive only its declared conclusion flavor",
+    );
+}
+
+#[test]
+fn stratification_conservatively_collapses_temporal_flavors() {
+    let engine = fresh_engine();
+    let error = engine
+        .assert_text("all $x: person($x) & past ~dog($x) -> now dog($x).")
+        .expect_err("cross-flavor negative recursion remains conservatively rejected");
+    let message = error.to_string();
+    assert!(
+        message.contains("Unstratifiable") && message.contains("dog"),
+        "the surface-relation negative cycle must be explicit: {message}"
     );
 }
 

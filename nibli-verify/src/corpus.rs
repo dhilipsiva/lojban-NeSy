@@ -217,8 +217,8 @@ pub const CASES: &[Case] = &[
         query: "animal(Adam).",
         expect: Expect::True,
     },
-    // ── Tense flavors (pu/ca/ba): flavor-exact facts, flavor-polymorphic unmarked
-    // rules, flavor-constant explicit tenses — the engine-probed matrix that
+    // ── Tense flavors (pu/ca/ba): flavor-exact facts and rule literals. Bare
+    // rules are Bare-only; explicit tenses declare same- or cross-flavor mappings — the matrix that
     // `tense::flavorize` mirrors (every expect below is a verbatim engine probe). ──
     Case {
         name: "tense_diag_pu_true",
@@ -263,18 +263,18 @@ pub const CASES: &[Case] = &[
         expect: Expect::False,
     },
     Case {
-        name: "tense_rule_polymorphic_chain_past_true",
-        // Unmarked rules fire within the query's flavor: pu gerku → pu danlu → pu jmive.
+        name: "tense_bare_taxonomy_chain_past_false",
+        // Even a plausible taxonomy stays Bare unless its temporal mapping is declared.
         kb: &[
             "animal(every dog).",
             "alive(every animal).",
             "past dog(Kim).",
         ],
         query: "past alive(Kim).",
-        expect: Expect::True,
+        expect: Expect::False,
     },
     Case {
-        name: "tense_rule_polymorphic_bare_blocked_false",
+        name: "tense_past_fact_bare_query_false",
         // The past fact must not feed a BARE conclusion.
         kb: &[
             "animal(every dog).",
@@ -285,15 +285,55 @@ pub const CASES: &[Case] = &[
         expect: Expect::False,
     },
     Case {
-        name: "tense_rule_polymorphic_other_flavor_blocked_false",
+        name: "tense_other_flavor_blocked_false",
         kb: &["animal(every dog).", "past dog(Kim)."],
         query: "future animal(Kim).",
         expect: Expect::False,
     },
     Case {
-        name: "tense_rule_polymorphic_present_true",
+        name: "tense_bare_taxonomy_rule_present_false",
         kb: &["animal(every dog).", "now dog(Kim)."],
         query: "now animal(Kim).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "tense_explicit_taxonomy_chain_past_true",
+        kb: &[
+            "all $x: past dog($x) -> past animal($x).",
+            "all $x: past animal($x) -> past alive($x).",
+            "past dog(Kim).",
+        ],
+        query: "past alive(Kim).",
+        expect: Expect::True,
+    },
+    Case {
+        name: "tense_bare_taxonomy_rule_future_false",
+        kb: &["animal(every dog).", "future dog(Kim)."],
+        query: "future animal(Kim).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "tense_explicit_taxonomy_rule_future_true",
+        kb: &[
+            "all $x: future dog($x) -> future animal($x).",
+            "future dog(Kim).",
+        ],
+        query: "future animal(Kim).",
+        expect: Expect::True,
+    },
+    Case {
+        name: "tense_bare_causal_rule_past_false",
+        kb: &["all $x: eats($x) -> be_hungry($x).", "past eats(Kim)."],
+        query: "past be_hungry(Kim).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "tense_explicit_causal_cross_flavor_true",
+        kb: &[
+            "all $x: past eats($x) -> now be_hungry($x).",
+            "past eats(Kim).",
+        ],
+        query: "now be_hungry(Kim).",
         expect: Expect::True,
     },
     Case {
@@ -310,7 +350,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "tense_antecedent_explicit_query_flavor_blocked_false",
-        // Under a pu query the UNMARKED domain literal needs a pu witness — absent.
+        // The rule conclusion is Bare, so it cannot answer a Past query.
         kb: &[
             "be_hungry(every dog where past eats(it)).",
             "dog(Kim).",

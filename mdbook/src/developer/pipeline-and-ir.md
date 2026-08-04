@@ -101,6 +101,14 @@ These shapes are contract, not accident — pinned by the seam-conformance gate
   `every dog` → `ForAll(v, Or(Not(restrictor), body))` (the implication
   arrow); `exactly N` → `CountNode`. Prenex `all $x: …` wraps the body
   **directly** — no restrictor, no arrow.
+- **Flavor-exact ordinary-predicate rule literals.** `PastNode` / `PresentNode` / `FutureNode`
+  remain attached to the antecedent or conclusion they wrap. Bare rule
+  literals are Bare-only; the reasoner does not clone them into temporal
+  flavors. A temporal mapping such as Past→Present therefore exists only when
+  the KR rule declares both wrappers. Built-in identity and query-time compute
+  dispatch keep their separately documented semantics. Nested tense×deontic IR
+  is structurally preserved, but the current fact/rule store has only one flavor
+  slot and does not promise their compositional product.
 - **Flat-atom families.** Not everything is event-decomposed: `equals` (the
   identity) stays a flat 2-argument atom (the union-find ingests exactly that
   shape); `via` modal tags, the `the_domain_<name>` restrictors, and the

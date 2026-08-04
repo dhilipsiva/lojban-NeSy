@@ -5,7 +5,7 @@
 
 use nibli_verify::oracle_asp::AspConfig;
 use nibli_verify::{
-    corpora, corpus, corpus_naf, oracle::OracleConfig, run_corpus, run_corpus_slice,
+    Case, Report, corpora, corpus, corpus_naf, oracle::OracleConfig, run_corpus, run_corpus_slice,
     run_naf_corpus, run_predilex_taxonomy, run_random, run_random_count, run_random_naf,
     run_random_tense_naf,
 };
@@ -40,6 +40,38 @@ const DEFAULT_TENSE_NAF_RANDOM_COUNT: u64 = 100;
 /// `NIBLI_VERIFY_COUNT_RANDOM_COUNT`.
 const DEFAULT_COUNT_RANDOM_COUNT: u64 = 100;
 
+fn assert_curated_family_reaches_oracle(report: &Report, cases: &[Case], prefix: &str) {
+    let expected = cases
+        .iter()
+        .filter(|case| case.name.starts_with(prefix))
+        .count();
+    assert!(
+        expected > 0,
+        "no curated cases have the required '{prefix}' prefix"
+    );
+
+    let family = report
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.name().starts_with(prefix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        family.len(),
+        expected,
+        "the report omitted a curated '{prefix}' case"
+    );
+    let unchecked = family
+        .iter()
+        .filter(|outcome| !outcome.is_checked())
+        .map(|outcome| outcome.summary())
+        .collect::<Vec<_>>();
+    assert!(
+        unchecked.is_empty(),
+        "every curated '{prefix}' case must reach its oracle:\n{}",
+        unchecked.join("\n")
+    );
+}
+
 #[test]
 fn horn_fragment_agrees_with_vampire() {
     let cfg = OracleConfig::default();
@@ -72,6 +104,8 @@ fn horn_fragment_agrees_with_vampire() {
         "soundness divergences (nibli disagreed with Vampire):\n{}",
         divergences.join("\n")
     );
+
+    assert_curated_family_reaches_oracle(&report, corpus::CASES, "tense_");
 
     assert!(
         report.checked() >= MIN_CHECKED,
@@ -382,6 +416,8 @@ fn stratified_naf_agrees_with_clingo() {
         "soundness divergences (nibli disagreed with clingo on stratified NAF):\n{}",
         divergences.join("\n")
     );
+
+    assert_curated_family_reaches_oracle(&report, corpus_naf::NAF_CASES, "tense_");
 
     assert!(
         report.checked() >= MIN_CHECKED_NAF,

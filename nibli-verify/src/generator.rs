@@ -2,11 +2,11 @@
 //! gate. Each case is a random taxonomy program — `P(X).` facts, `X = Y.` identity links, and
 //! `Q(every P).` universal rules over a small fallback-dictionary vocabulary — plus a random
 //! atomic (or identity) query. Every case is in the mappable
-//! classical fragment **by construction** (no negation, no numbers, no tense/deontic/compute;
-//! ground `du` maps to native `=`), so it broadens differential soundness coverage without
-//! ever leaving the fragment the gate can judge. The filter in `run_lines` is still the final
-//! arbiter, so even a case that somehow compiled outside the fragment is skipped, never
-//! mis-judged.
+//! classical fragment **by construction** (no negation, numbers, deontic, or compute;
+//! explicit tense flavors are erased by `tense::flavorize`, and ground `du` maps to
+//! native `=`), so it broadens differential soundness coverage without leaving the
+//! fragment the gate can judge. The filter in `run_lines` is still the final arbiter,
+//! so even a case that somehow compiled outside the fragment is skipped, never mis-judged.
 
 /// One generated case: owned strings (unlike the curated `&'static` [`crate::Case`]).
 pub struct GeneratedCase {
@@ -38,10 +38,9 @@ const PREDS: &[&str] = &[
 /// KR rigid Names (Capitalized).
 const ENTITIES: &[&str] = &["Adam", "Bel", "Kim", "Dan", "Tam"];
 
-/// Tense prefixes for facts/queries: mostly bare, sometimes pu/ca/ba. Facts are
-/// flavor-exact and unmarked rules are flavor-polymorphic (see `tense::flavorize`),
-/// so mixing flavors into facts + query exercises the isolation diagonal AND the
-/// polymorphic rule firing against the oracles.
+/// Tense prefixes for facts/queries: mostly bare, sometimes pu/ca/ba. Facts and
+/// rules are flavor-exact (see `tense::flavorize`), so mixing flavors into facts
+/// and queries exercises both the isolation diagonal and the Bare-only rule boundary.
 const TENSES: &[&str] = &["", "past ", "now ", "future "];
 
 /// Small deterministic LCG so a seed reproduces a case exactly (no rng crate; CI must be
@@ -222,7 +221,7 @@ const NAF_TENSES: &[&str] = &["past ", "now ", "future "];
 /// R-witness carries a random flavor (bare or one of past/now/future). This exercises the
 /// flavor-aware `NegatedExistsGroup` at scale: only a witness whose flavor MATCHES the
 /// restrictor blocks the rule — a bare or different-flavor witness does not. The head and
-/// query stay bare, so the rule's bare copy fires with the explicit-flavor restrictor as a
+/// query stay bare, so the single Bare-headed rule fires with the explicit-flavor restrictor as a
 /// flavor constant (`not R__<suffix>` on the clingo side), and the engine's flavor-exact NAF
 /// is checked against clingo. Stratified by construction (R base; see [`NAF_BASE`]) and
 /// ASP-mappable (tense handled by `tense::flavorize` now that tense×NAF is flavorized); the

@@ -474,11 +474,6 @@ fn trace_soundness_conformance() {
             .flatten()
             .map(|r| r.label.as_str())
             .collect();
-        // A `Derived`/`RuleAttemptFailed` label may carry a `" [past]"`/`" [present]"` tense suffix.
-        fn base_label(l: &str) -> &str {
-            l.split(" [").next().unwrap_or(l)
-        }
-
         let holds = |c: u32| trace.steps[c as usize].holds;
         for (i, step) in trace.steps.iter().enumerate() {
             let all_hold = step.children.iter().all(|&c| holds(c));
@@ -504,10 +499,10 @@ fn trace_soundness_conformance() {
                             "step #{i} Derived holds=true but a condition child is missing or does not hold"
                         ));
                     }
-                    if !rule_labels.contains(base_label(label)) {
+                    if !rule_labels.contains(label.as_str()) {
                         return Err(format!(
                             "step #{i} Derived label '{}' is not a registered rule (candOk/ruleClosed bridge)",
-                            base_label(label)
+                            label
                         ));
                     }
                     ex.derived += 1;
@@ -533,13 +528,13 @@ fn trace_soundness_conformance() {
                     for &c in &step.children {
                         match &trace.steps[c as usize].rule {
                             ProofRule::RuleAttemptFailed { rule_label, .. } => {
-                                if !rule_labels.contains(base_label(rule_label)) {
+                                if !rule_labels.contains(rule_label.as_str()) {
                                     return Err(format!(
                                         "step #{i} PredicateNotFound records blocked rule '{}' that is not registered (supported bridge)",
-                                        base_label(rule_label)
+                                        rule_label
                                     ));
                                 }
-                                blocked_labels.push(base_label(rule_label));
+                                blocked_labels.push(rule_label.as_str());
                                 ex.ruleblocked += 1;
                             }
                             other => {
@@ -563,7 +558,7 @@ fn trace_soundness_conformance() {
                             }
                             // (a) Candidate-completeness: the Lean Neg constructor quantifies
                             // over ALL candidates — an unrecorded one is an incomplete cert.
-                            if !blocked_labels.contains(&base_label(&rule.label)) {
+                            if !blocked_labels.contains(&rule.label.as_str()) {
                                 return Err(format!(
                                     "step #{i} PredicateNotFound '{predicate}': candidate rule '{}' \
                                      unifies with the goal but is not recorded as blocked \

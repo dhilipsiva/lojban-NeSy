@@ -9,8 +9,14 @@ fn test_proof_memo_deduplication() {
     // With memoization: repeated facts get ProofRef nodes instead.
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("bob", "mlatu", present));
-    assert_buf(&kb, make_event_universal("mlatu", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("mlatu", "danlu", present),
+    );
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("danlu", "jmive", present),
+    );
 
     let (holds, trace) = kb
         .query_entailment_with_proof_inner(make_temporal_event_query("bob", "jmive", present))
@@ -55,8 +61,14 @@ fn proof_ref_children_are_holds_true() {
     {
         let kb = new_kb();
         assert_buf(&kb, make_temporal_event_assertion("bob", "mlatu", present));
-        assert_buf(&kb, make_event_universal("mlatu", "danlu"));
-        assert_buf(&kb, make_event_universal("danlu", "jmive"));
+        assert_buf(
+            &kb,
+            make_temporal_event_universal("mlatu", "danlu", present),
+        );
+        assert_buf(
+            &kb,
+            make_temporal_event_universal("danlu", "jmive", present),
+        );
         let (_holds, trace) = kb
             .query_entailment_with_proof_inner(make_temporal_event_query("bob", "jmive", present))
             .unwrap();
@@ -92,8 +104,14 @@ fn proof_trace_byte_deterministic_3x() {
     let render = || {
         let kb = new_kb();
         assert_buf(&kb, make_temporal_event_assertion("bob", "mlatu", present));
-        assert_buf(&kb, make_event_universal("mlatu", "danlu"));
-        assert_buf(&kb, make_event_universal("danlu", "jmive"));
+        assert_buf(
+            &kb,
+            make_temporal_event_universal("mlatu", "danlu", present),
+        );
+        assert_buf(
+            &kb,
+            make_temporal_event_universal("danlu", "jmive", present),
+        );
         let (_holds, trace) = kb
             .query_entailment_with_proof_inner(make_temporal_event_query("bob", "jmive", present))
             .unwrap();
@@ -178,7 +196,7 @@ fn test_proof_memo_correctness() {
     // Memoized trace still reports the correct result and contains proper Derived + Asserted steps.
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
 
     let (holds, trace) = kb
         .query_entailment_with_proof_inner(make_temporal_event_query("alis", "danlu", past))
@@ -214,7 +232,7 @@ fn test_proof_memo_single_hop_no_unnecessary_refs() {
     // so no ProofRef should be needed.
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
-    assert_buf(&kb, make_event_universal("gerku", "danlu"));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
 
     let (holds, trace) = kb
         .query_entailment_with_proof_inner(make_temporal_event_query("alis", "danlu", past))
@@ -526,8 +544,14 @@ fn test_proof_ref_carries_cached_index() {
     // Verify that ProofRef steps carry the original step index in children.
     let kb = new_kb();
     assert_buf(&kb, make_temporal_event_assertion("bob", "mlatu", present));
-    assert_buf(&kb, make_event_universal("mlatu", "danlu"));
-    assert_buf(&kb, make_event_universal("danlu", "jmive"));
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("mlatu", "danlu", present),
+    );
+    assert_buf(
+        &kb,
+        make_temporal_event_universal("danlu", "jmive", present),
+    );
 
     let (holds, trace) = kb
         .query_entailment_with_proof_inner(make_temporal_event_query("bob", "jmive", present))

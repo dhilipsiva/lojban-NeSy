@@ -300,8 +300,8 @@ fn make_deontic_event_assertion(entity: &str, predicate: &str, permitted: bool) 
 #[test]
 fn tensed_ground_conditional_fails_closed_plain_tensed_fact_still_asserts() {
     // RAW-FOL defense-in-depth (no KR surface: a tensed sentence connective does
-    // not parse): `Past(Or(Not P, Q))` used to be silently STRIPPED to a bare —
-    // flavor-polymorphic, MORE permissive — rule. It now fails closed, mirroring
+    // not parse): `Past(Or(Not P, Q))` used to be silently STRIPPED to an
+    // unqualified Bare rule. It now fails closed, mirroring
     // compile_forall_to_rule's whole-rule-tense rejection.
     let kb = new_kb();
     let mut nodes = Vec::new();

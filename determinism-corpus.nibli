@@ -23,7 +23,7 @@
 #
 # Coverage: ground facts, rule chains, closed-world FALSE, stratified NAF
 # (fires + blocked), du identity (substitutivity + NAF-through-equality), tense
-# (diagonal isolation + flavor-polymorphic rules), exact-count (incl. the
+# (diagonal isolation + explicitly flavored rules), exact-count (incl. the
 # du-merged-entity counting behavior, pinned as-is), tolerant/exact/guarded
 # arithmetic, assertion/query named-variable co-reference, and post-retraction
 # rebuild.
@@ -56,12 +56,16 @@ Kim = Adam.
 ? beautiful(Kim).
 # => TRUE
 
-# ── tense: flavor-exact facts, flavor-polymorphic rules ──
+# ── tense: flavor-exact facts and explicitly flavored rules ──
 past dog(Dan).
 ? past dog(Dan).
 # => TRUE
 ? dog(Dan).
 # => FALSE
+? past alive(Dan).
+# => FALSE
+all $x: past dog($x) -> past animal($x).
+all $x: past animal($x) -> past alive($x).
 ? past alive(Dan).
 # => TRUE
 
@@ -116,6 +120,6 @@ loves($left, Bel) & loves($right, Dana).
 # => FALSE
 ? loves($left, Bel) & loves($right, Dana).
 # => TRUE
-:retract 13
+:retract 15
 ? bite($who, Bel) & bite($who, Dana).
 # => FALSE

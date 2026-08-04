@@ -154,9 +154,8 @@ pub fn random_materialize_case(seed: u64) -> MatCase {
         kb.push(format!("{} = {}.", ENTS[0], ENTS[1]));
     }
 
-    // (6) A tense-flavoured fact. Rule firing is flavour-polymorphic; the projection
-    //     does not model that, so the relation must be refused rather than saturated
-    //     with the flavour dropped.
+    // (6) A tense-flavoured fact. The projection does not encode flavors, so the
+    //     relation must be refused rather than saturated with the flavor dropped.
     if rng.below(4) == 0 {
         kb.push(format!(
             "past {}({}).",

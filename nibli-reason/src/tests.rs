@@ -499,7 +499,69 @@ fn make_event_universal(restrictor: &str, consequent: &str) -> LogicBuffer {
     }
 }
 
-/// Helper: build ∃x. P(x, zo'e) — existential find query (unbound x).
+/// Build an event-decomposed universal rule whose antecedent and conclusion
+/// carry the same explicit tense. This is the declared temporal counterpart of
+/// [`make_event_universal`]; bare rules never inherit a query's flavor.
+fn make_temporal_event_universal(
+    restrictor: &str,
+    consequent: &str,
+    tense_fn: fn(&mut Vec<LogicNode>, u32) -> u32,
+) -> LogicBuffer {
+    make_temporal_event_mapping(restrictor, consequent, tense_fn, tense_fn)
+}
+
+/// Build an event-decomposed rule with independently declared antecedent and
+/// conclusion flavors.
+fn make_temporal_event_mapping(
+    restrictor: &str,
+    consequent: &str,
+    antecedent_flavor: fn(&mut Vec<LogicNode>, u32) -> u32,
+    consequent_flavor: fn(&mut Vec<LogicNode>, u32) -> u32,
+) -> LogicBuffer {
+    let mut nodes = Vec::new();
+    let p_type = pred(
+        &mut nodes,
+        restrictor,
+        vec![LogicalTerm::Variable("_ev0".to_string())],
+    );
+    let p_role = pred(
+        &mut nodes,
+        &format!("{}_x1", restrictor),
+        vec![
+            LogicalTerm::Variable("_ev0".to_string()),
+            LogicalTerm::Variable("_v0".to_string()),
+        ],
+    );
+    let p_and = and(&mut nodes, p_type, p_role);
+    let p_exists = exists(&mut nodes, "_ev0", p_and);
+    let p_tensed = antecedent_flavor(&mut nodes, p_exists);
+
+    let q_type = pred(
+        &mut nodes,
+        consequent,
+        vec![LogicalTerm::Variable("_ev1".to_string())],
+    );
+    let q_role = pred(
+        &mut nodes,
+        &format!("{}_x1", consequent),
+        vec![
+            LogicalTerm::Variable("_ev1".to_string()),
+            LogicalTerm::Variable("_v0".to_string()),
+        ],
+    );
+    let q_and = and(&mut nodes, q_type, q_role);
+    let q_exists = exists(&mut nodes, "_ev1", q_and);
+    let q_tensed = consequent_flavor(&mut nodes, q_exists);
+
+    let neg = not(&mut nodes, p_tensed);
+    let disj = or(&mut nodes, neg, q_tensed);
+    let root = forall(&mut nodes, "_v0", disj);
+    LogicBuffer {
+        nodes,
+        roots: vec![root],
+    }
+}
+
 fn make_find_query(predicate: &str) -> LogicBuffer {
     let mut nodes = Vec::new();
     let body = pred(

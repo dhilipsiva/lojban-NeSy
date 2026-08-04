@@ -52,7 +52,7 @@ fn test_past_tense_wrapper_assert_query() {
 #[test]
 fn test_tense_not_transparent() {
     // Assert Past(klama(alis)), query klama(alis) without tense → FALSE
-    // (tense is NOT transparent — tensed assertion ≠ timeless query)
+    // (tense is NOT transparent — tensed assertion ≠ bare query)
     let kb = new_kb();
     let mut a_nodes = Vec::new();
     let inner = pred(
@@ -159,7 +159,7 @@ fn test_tense_discrimination_present_vs_past() {
 
 #[test]
 fn test_untensed_assert_tensed_query() {
-    // Assert klama(alis) (bare/timeless), query Past(klama(alis)) → FALSE
+    // Assert klama(alis) (bare/unqualified), query Past(klama(alis)) → FALSE
     let kb = new_kb();
     assert_buf(&kb, make_assertion("alis", "klama"));
 
@@ -183,10 +183,10 @@ fn test_untensed_assert_tensed_query() {
 }
 
 #[test]
-fn test_temporal_rule_lifting() {
-    // Assert: ∀x. gerku(x) → danlu(x) (timeless rule)
+fn test_temporal_rules_require_explicit_flavors() {
+    // Assert a bare gerku-to-danlu rule and a Past gerku fact.
     // Assert: Past(gerku(alis))
-    // Query: Past(danlu(alis)) → TRUE (temporal lifting)
+    // The bare rule cannot answer a Past danlu query.
     let kb = new_kb();
 
     // Compile the universal rule: ForAll(x, Or(Not(gerku(x)), danlu(x)))
@@ -241,7 +241,7 @@ fn test_temporal_rule_lifting() {
         },
     );
 
-    // Query Past(danlu(alis)) → TRUE (lifted rule fires on Past premises)
+    // Query Past(danlu(alis)): FALSE until the relationship is declared below.
     let mut q_nodes = Vec::new();
     let danlu_alis = pred(
         &mut q_nodes,
@@ -252,6 +252,48 @@ fn test_temporal_rule_lifting() {
         ],
     );
     let past_danlu = past(&mut q_nodes, danlu_alis);
+    assert!(query_false(
+        &kb,
+        LogicBuffer {
+            nodes: q_nodes.clone(),
+            roots: vec![past_danlu]
+        }
+    ));
+
+    // Declare the temporal relationship on both rule literals.
+    let mut tr_nodes = Vec::new();
+    let dog = pred(
+        &mut tr_nodes,
+        "gerku",
+        vec![
+            LogicalTerm::Variable("_v0".into()),
+            LogicalTerm::Unspecified,
+        ],
+    );
+    let past_dog = past(&mut tr_nodes, dog);
+    let neg_past_dog = not(&mut tr_nodes, past_dog);
+    let animal = pred(
+        &mut tr_nodes,
+        "danlu",
+        vec![
+            LogicalTerm::Variable("_v0".into()),
+            LogicalTerm::Unspecified,
+        ],
+    );
+    let past_animal = past(&mut tr_nodes, animal);
+    let body = or(&mut tr_nodes, neg_past_dog, past_animal);
+    let explicit_rule = {
+        let id = tr_nodes.len() as u32;
+        tr_nodes.push(LogicNode::ForAllNode(("_v0".into(), body)));
+        id
+    };
+    assert_buf(
+        &kb,
+        LogicBuffer {
+            nodes: tr_nodes,
+            roots: vec![explicit_rule],
+        },
+    );
     assert!(query(
         &kb,
         LogicBuffer {
@@ -262,8 +304,53 @@ fn test_temporal_rule_lifting() {
 }
 
 #[test]
+fn bare_rule_is_not_a_tensed_candidate_at_the_depth_horizon() {
+    let kb = new_kb();
+    assert_buf(&kb, make_universal("gerku", "danlu"));
+    kb.set_max_chain_depth(0);
+
+    let mut nodes = Vec::new();
+    let animal = pred(
+        &mut nodes,
+        "danlu",
+        vec![
+            LogicalTerm::Constant("alis".into()),
+            LogicalTerm::Unspecified,
+        ],
+    );
+    let root = past(&mut nodes, animal);
+    assert_eq!(
+        query_result(
+            &kb,
+            LogicBuffer {
+                nodes,
+                roots: vec![root]
+            }
+        ),
+        QueryResult::False,
+        "a bare conclusion cannot make a Past goal look depth-limited",
+    );
+}
+
+#[test]
+fn exact_tensed_rule_remains_a_candidate_at_the_depth_horizon() {
+    let kb = new_kb();
+    kb.set_materialization(false);
+    assert_buf(&kb, make_temporal_event_assertion("alis", "gerku", past));
+    assert_buf(&kb, make_temporal_event_universal("gerku", "danlu", past));
+    assert_buf(&kb, make_temporal_event_universal("danlu", "jmive", past));
+    kb.set_max_chain_depth(1);
+
+    assert_eq!(
+        query_result(&kb, make_temporal_event_query("alis", "jmive", past)),
+        QueryResult::ResourceExceeded(ResourceKind::Depth),
+        "an exact Past conclusion is still a rule candidate at the depth horizon",
+    );
+}
+
+#[test]
 fn test_temporal_rule_no_cross_tense() {
-    // Assert: ∀x. gerku(x) → danlu(x) (timeless rule)
+    // Assert: ∀x. gerku(x) → danlu(x) (Bare rule)
     // Assert: Past(gerku(alis))
     // Query: Future(danlu(alis)) → FALSE (no cross-tense derivation)
     let kb = new_kb();
@@ -682,7 +769,7 @@ fn test_whole_rule_obligatory_universal_rejected() {
 #[test]
 fn test_tensed_body_universal_rejected() {
     // `ro da zo'u pu ...` → ForAll(Past(Or(...))) — a tense on the rule spine,
-    // INSIDE the universal. Rejected (pre-fix: silently stripped → timeless).
+    // INSIDE the universal. Rejected (pre-fix: silently stripped → Bare).
     let kb = new_kb();
     let err = kb
         .assert_fact_inner(
@@ -697,9 +784,9 @@ fn test_tensed_body_universal_rejected() {
 }
 
 #[test]
-fn test_tensed_body_universal_does_not_derive_timeless() {
+fn test_tensed_body_universal_does_not_leave_a_bare_rule() {
     // Soundness guard (the genuine RED→GREEN): the rejected ForAll(Past(gerku→
-    // danlu)) registers NO timeless rule, so bare `gerku(rex)` does NOT derive
+    // danlu)) registers NO Bare rule, so bare `gerku(rex)` does NOT derive
     // bare `danlu(rex)`. Pre-fix the stripped rule fires on the untensed fact
     // (wrongly TRUE).
     let kb = new_kb();
@@ -714,6 +801,6 @@ fn test_tensed_body_universal_does_not_derive_timeless() {
     assert_buf(&kb, make_assertion("rex", "gerku"));
     assert!(
         query_false(&kb, make_query("rex", "danlu")),
-        "a rejected tensed-body universal must not leave a timeless rule that fires on bare facts"
+        "a rejected tensed-body universal must not leave a Bare rule that fires on bare facts"
     );
 }

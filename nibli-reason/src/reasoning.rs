@@ -51,10 +51,10 @@ fn ensure_candidates<'a>(
 
 /// A condition relation is "index-decidable" when backward chaining can never
 /// prove it beyond a direct fact-store lookup: no rule concludes the relation
-/// (temporal lifting consults the same relation-keyed bucket, so this covers
-/// tensed goals too), it is not the special-cased `du` equality predicate, and
-/// no du-equivalence classes exist (equivalence substitution could otherwise
-/// rewrite the fact into an asserted variant via the recursive fallback).
+/// at all (a conservative relation-level check across every flavor), it is not
+/// the special-cased `du` equality predicate, and no du-equivalence classes exist
+/// (equivalence substitution could otherwise rewrite the fact into an asserted
+/// variant via the recursive fallback).
 ///
 /// For such relations `check_predicate_in_kb_typed` reduces to
 /// `typed_fact_is_asserted` at ANY depth, so the unbound-event-variable filter
@@ -124,6 +124,9 @@ fn bind_join_vars_from_index(
             let matching: Vec<&StoredFact> = facts
                 .iter()
                 .filter(|f| {
+                    if std::mem::discriminant(*f) != std::mem::discriminant(&cs) {
+                        return false;
+                    }
                     let fa = &f.inner().args;
                     fa.len() == gf.args.len()
                         && gf
@@ -263,7 +266,6 @@ fn eval_negated_exists_group(
     candidates_slot: &mut Option<Vec<GroundTerm>>,
     depth: usize,
     visited: &mut HashSet<StoredFact>,
-    tense_fact: Option<&StoredFact>,
 ) -> QueryResult {
     // MATERIALISED FAST PATH — the whole point of `crate::materialize`.
     //
@@ -274,14 +276,12 @@ fn eval_negated_exists_group(
     // a full re-derivation of the fifteen-conjunct void rule per candidate into a hash
     // lookup — measured 1037 ms → 11 ms on `utopia.nibli` (`just bench-naf`).
     //
-    // Guarded on `tense_fact.is_none()` and the UNLIFTED group: a temporal-lifting phase
-    // asks about a FLAVOURED witness, and the saturation only ever holds Bare tuples
-    // (eligibility refuses flavoured relations outright). `probe_negated_group` returns
-    // `None` for anything it cannot project or fully ground, and `is_complete_for` is
-    // false unless the extension is both complete and arity-matched — so every case the
-    // shortcut does not cover falls through to the search below, unchanged.
-    if tense_fact.is_none()
-        && inner.materialization
+    // Saturation only holds Bare tuples (eligibility refuses flavoured relations
+    // outright). `probe_negated_group` returns `None` for anything it cannot
+    // project or fully ground, and `is_complete_for` is false unless the extension
+    // is both complete and arity-matched — so every case the shortcut does not
+    // cover falls through to the search below, unchanged.
+    if inner.materialization
         && let Some(m) = inner.materialized.borrow().as_ref()
         && let Some((rel, tuple)) = crate::materialize::probe_negated_group(group, bindings)
         && m.is_complete_for(&rel, tuple.len())
@@ -293,31 +293,21 @@ fn eval_negated_exists_group(
         });
     }
 
-    // Flavor-exact NAF: the group's inner templates already carry any EXPLICIT
-    // restrictor flavor (`past ~P` → Past templates, built at construction). In
-    // the TEMPORAL-LIFTING phase (`tense_fact = Some(query)`), a BARE template is
-    // lifted to the query flavor exactly like a bare positive condition;
-    // `apply_tense_to_fact` leaves an already-flavored template unchanged, so an
-    // explicit `past ~P` is never re-lifted (explicit flavor wins). The lifted
-    // templates drive BOTH candidate narrowing and the witness check, so the two
-    // stay flavor-consistent (a Past query narrows to Past witnesses).
-    let effective: Vec<StoredFact> = match tense_fact {
-        Some(src) => group
-            .conditions
-            .iter()
-            .map(|c| apply_tense_to_fact(c, src))
-            .collect(),
-        None => group.conditions.clone(),
-    };
+    // Flavor-exact NAF: the group's inner templates carry exactly the flavor
+    // written on the restrictor (`past ~P` → Past templates, built at
+    // construction). A bare `~P` remains Bare. Both candidate narrowing and the
+    // witness check consume the same templates, so they cannot disagree about
+    // flavor.
     // Narrow the event candidates to those that could actually satisfy the inner
     // existential (asserted-fact index hits ∪ rule-derivable witnesses), falling
     // back to the full pool only when no condition cleanly anchors the event var.
     // Without this, the group enumerates the whole members^k pool per firing —
     // the GDPR full-corpus erasure rule blows past its time budget.
-    let candidates = match collect_group_event_candidates(&effective, &group.event_var, inner) {
-        Some(narrowed) => narrowed,
-        None => ensure_candidates(candidates_slot, inner).to_vec(),
-    };
+    let candidates =
+        match collect_group_event_candidates(&group.conditions, &group.event_var, inner) {
+            Some(narrowed) => narrowed,
+            None => ensure_candidates(candidates_slot, inner).to_vec(),
+        };
     let mut best: Option<QueryResult> = None;
     let mut any_witness = false;
     for cand in &candidates {
@@ -325,7 +315,7 @@ fn eval_negated_exists_group(
         b.insert(group.event_var.clone(), cand.clone());
         let mut all_inner_true = true;
         let mut inner_pending: Option<QueryResult> = None;
-        for tmpl in &effective {
+        for tmpl in &group.conditions {
             let cs = substitute_fact(tmpl, &b);
             let r = check_predicate_in_kb_typed(&cs, inner, depth + 1, visited);
             if r.is_false() {
@@ -367,21 +357,12 @@ fn fold_negated_groups(
     visited: &mut HashSet<StoredFact>,
     hold: &mut bool,
     pending: &mut Option<QueryResult>,
-    tense_fact: Option<&StoredFact>,
 ) {
     if rule.negated_exists_groups.is_empty() || (!*hold && pending.is_none()) {
         return;
     }
     for group in &rule.negated_exists_groups {
-        let gv = eval_negated_exists_group(
-            group,
-            bindings,
-            inner,
-            candidates_slot,
-            depth,
-            visited,
-            tense_fact,
-        );
+        let gv = eval_negated_exists_group(group, bindings, inner, candidates_slot, depth, visited);
         if gv.is_false() {
             *hold = false;
             *pending = None;
@@ -1964,37 +1945,32 @@ fn stored_fact_contains_var(fact: &StoredFact, var: &str) -> bool {
 /// Sound one-step provability lookahead used at the depth horizon: a goal can
 /// only be proved by (a) direct assertion (the caller checks that before
 /// backward chaining) or (b) firing a rule whose conclusion template unifies
-/// with it — for a tensed goal, temporal lifting strips the tense first, so
-/// the tense-stripped goal is also tried against the (always-Bare) templates.
-/// If no conclusion unifies, no amount of extra depth can ever prove the goal.
+/// with it in the same exact flavor. If no conclusion unifies, no amount of
+/// extra depth can ever prove the goal.
 fn any_rule_conclusion_unifies(fact: &StoredFact, inner: &KnowledgeBaseInner) -> bool {
-    let try_goal = |goal: &StoredFact| {
-        inner
-            .universal_rules
-            .get(goal.relation())
-            .is_some_and(|rules| {
-                rules.iter().any(|r| {
-                    r.typed_conclusions
-                        .iter()
-                        .any(|c| unify_facts(c, goal).is_some())
-                })
+    inner
+        .universal_rules
+        .get(fact.relation())
+        .is_some_and(|rules| {
+            rules.iter().any(|r| {
+                r.typed_conclusions
+                    .iter()
+                    .any(|c| unify_facts(c, fact).is_some())
             })
-    };
-    try_goal(fact) || strip_tense_from_fact(fact).as_ref().is_some_and(try_goal)
+        })
 }
 
 /// Typed backward-chaining — structural matching instead of fact_repr tokenization.
 /// Narrow the candidate set for one unbound event variable by its single-event-var
 /// conditions, BEFORE the full combo enumeration. Unifies the candidate filter that
-/// was duplicated (and divergent) across all four backward-chain blocks
-/// (untraced/traced × normal/temporal): index-decidable conditions are checked first
+/// was duplicated (and divergent) across the traced and untraced paths:
+/// index-decidable conditions are checked first
 /// and definitively (`typed_fact_is_asserted`, no depth penalty); rule-backed
 /// conditions fall through to a recursive check kept unless DEFINITIVELY false
 /// (a non-definitive verdict near the depth horizon conservatively keeps the
-/// candidate). Negated conditions are inverted in both phases (NAF). A condition
-/// still carrying an unbound individual `x__` var is NOT pruned on — it is bound
-/// later by the index-anchored join. `tense_fact = Some(f)` applies f's tense to
-/// each condition (temporal lifting); `None` keeps them bare.
+/// candidate). Negated conditions are inverted (NAF). A condition still carrying
+/// an unbound individual `x__` var is NOT pruned on — it is bound later by the
+/// index-anchored join. Every condition keeps the exact flavor stored in the rule.
 #[allow(clippy::too_many_arguments)]
 fn filter_event_candidates(
     rule: &UniversalRuleRecord,
@@ -2005,7 +1981,6 @@ fn filter_event_candidates(
     inner: &KnowledgeBaseInner,
     depth: usize,
     visited: &mut HashSet<StoredFact>,
-    tense_fact: Option<&StoredFact>,
 ) -> Vec<GroundTerm> {
     let (decidable_indices, recursive_indices): (Vec<usize>, Vec<usize>) =
         single_var_cond_indices.iter().copied().partition(|&idx| {
@@ -2017,11 +1992,7 @@ fn filter_event_candidates(
             let mut tb = bindings.clone();
             tb.insert(ev_var.to_string(), (*candidate).clone());
             decidable_indices.iter().all(|&idx| {
-                let bare = substitute_fact(&rule.typed_conditions[idx], &tb);
-                let cs = match tense_fact {
-                    Some(f) => apply_tense_to_fact(&bare, f),
-                    None => bare,
-                };
+                let cs = substitute_fact(&rule.typed_conditions[idx], &tb);
                 if fact_has_unbound_pattern_var(&cs) {
                     return true;
                 }
@@ -2032,11 +2003,7 @@ fn filter_event_candidates(
                     asserted
                 }
             }) && recursive_indices.iter().all(|&idx| {
-                let bare = substitute_fact(&rule.typed_conditions[idx], &tb);
-                let cs = match tense_fact {
-                    Some(f) => apply_tense_to_fact(&bare, f),
-                    None => bare,
-                };
+                let cs = substitute_fact(&rule.typed_conditions[idx], &tb);
                 if fact_has_unbound_pattern_var(&cs) {
                     return true;
                 }
@@ -2125,10 +2092,9 @@ impl TraceSink for RecordingSink<'_> {
 /// Build the `Derived` proof step for a rule that fired, recording each
 /// condition's provenance as a child (a `Negation` leaf for a NAF-negated
 /// condition, otherwise the positive atom's full derivation via the sink).
-/// Called ONLY on the recording path (`S::RECORDING`); `tense_source`/
-/// `tense_label` carry the temporal-lifting context (both `None` for a normal
-/// rule). All conditions are known to hold (the four-valued verdict loop just
-/// confirmed it), so no re-check/break is needed here.
+/// Called ONLY on the recording path (`S::RECORDING`). All conditions are known
+/// to hold (the four-valued verdict loop just confirmed it), so no re-check/break
+/// is needed here.
 #[allow(clippy::too_many_arguments)]
 fn emit_derived<S: TraceSink>(
     sink: &mut S,
@@ -2138,17 +2104,11 @@ fn emit_derived<S: TraceSink>(
     inner: &KnowledgeBaseInner,
     depth: usize,
     visited: &mut HashSet<StoredFact>,
-    tense_source: Option<&StoredFact>,
-    tense_label: Option<&str>,
 ) -> u32 {
     let display = fact.to_display_string();
     let mut child_indices = Vec::new();
     for (idx, cond_template) in rule.typed_conditions.iter().enumerate() {
-        let bare = substitute_fact(cond_template, bindings);
-        let cond_fact = match tense_source {
-            Some(src) => apply_tense_to_fact(&bare, src),
-            None => bare,
-        };
+        let cond_fact = substitute_fact(cond_template, bindings);
         if rule.negated_condition_indices.contains(&idx) {
             let leaf = sink.push(ProofStep {
                 rule: ProofRule::Negation,
@@ -2172,13 +2132,9 @@ fn emit_derived<S: TraceSink>(
         });
         child_indices.push(leaf);
     }
-    let label = match tense_label {
-        Some(t) => format!("{} [{}]", rule.label, t),
-        None => rule.label.clone(),
-    };
     sink.push(ProofStep {
         rule: ProofRule::Derived {
-            label,
+            label: rule.label.clone(),
             fact: display,
         },
         holds: true,
@@ -2193,34 +2149,18 @@ fn emit_derived<S: TraceSink>(
 /// and identical to the former `try_backward_chain_typed`; proof steps are
 /// emitted only when `S::RECORDING`, and the second tuple field is the index of
 /// the `Derived` step proving the goal (`Some` only when recording AND a rule
-/// fired). This replaces the former untraced/traced × normal/temporal block
-/// duplication; sharing `visited` with the recording path closes the old
-/// traced-path per-condition cycle asymmetry (LP-L2).
-/// Map a tensed `StoredFact` to its proof-trace tense label.
-fn tense_label_of(f: &StoredFact) -> &'static str {
-    match f {
-        StoredFact::Past(_) => "past",
-        StoredFact::Present(_) => "present",
-        StoredFact::Future(_) => "future",
-        _ => "?",
-    }
-}
-
-/// Run one backward-chain phase (the per-rule firing loop) for `match_fact`.
+/// fired). Sharing `visited` with the recording path closes the old traced-path
+/// per-condition cycle asymmetry (LP-L2).
 ///
-/// `tense_fact` is `None` for the NORMAL phase (rules matching the goal
-/// directly, conditions checked bare) and `Some(tensed_goal)` for the
-/// TEMPORAL-LIFTING phase (timeless rules fired against the bare goal, each
-/// condition re-tensed with the goal's tense). It is the SOLE difference
-/// between the two phases — it drives the candidate-filter tense, the
-/// per-condition re-tensing, and the proof-step tense label.
+/// Run the per-rule firing loop for `match_fact`. Rule conclusions and conditions
+/// retain their exact Bare/Past/Present/Future flavors; there is no implicit
+/// cross-flavor phase.
 ///
 /// Returns `Some(root)` if a rule fired definitively True (the caller returns
 /// `(True, root)`); `None` if no rule fired, accumulating any non-definitive
 /// verdict into `*best_result`. The caller owns `visited.remove(fact)`.
 fn process_phase<S: TraceSink>(
     match_fact: &StoredFact,
-    tense_fact: Option<&StoredFact>,
     inner: &KnowledgeBaseInner,
     depth: usize,
     visited: &mut HashSet<StoredFact>,
@@ -2228,11 +2168,6 @@ fn process_phase<S: TraceSink>(
     candidates_slot: &mut Option<Vec<GroundTerm>>,
     best_result: &mut Option<QueryResult>,
 ) -> Option<Option<u32>> {
-    // The original goal carries the proof emission + (when lifting) the tense
-    // source; in the normal phase it is just `match_fact`.
-    let orig_fact = tense_fact.unwrap_or(match_fact);
-    let tense_label = tense_fact.map(tense_label_of);
-
     let rules = matching_rules_typed(match_fact, &inner.universal_rules);
     for rule in rules {
         for typed_concl in &rule.typed_conclusions {
@@ -2267,9 +2202,6 @@ fn process_phase<S: TraceSink>(
                     if single_var_cond_indices.is_empty() {
                         per_var_candidates.push(ensure_candidates(candidates_slot, inner).to_vec());
                     } else {
-                        // Temporal lifting (tense_fact = Some): the candidate filter
-                        // applies the queried fact's tense to each condition (the
-                        // shared helper handles the decidable/recursive split + NAF).
                         let cand = ensure_candidates(candidates_slot, inner).to_vec();
                         let filtered = filter_event_candidates(
                             rule,
@@ -2280,7 +2212,6 @@ fn process_phase<S: TraceSink>(
                             inner,
                             depth,
                             visited,
-                            tense_fact,
                         );
                         per_var_candidates.push(filtered);
                     }
@@ -2304,12 +2235,7 @@ fn process_phase<S: TraceSink>(
                     let mut all_hold = true;
                     let mut pending_here = None;
                     for (idx, ct) in rule.typed_conditions.iter().enumerate() {
-                        // Temporal lifting re-tenses each condition with the goal's
-                        // tense; the normal phase checks it bare.
-                        let cs = match tense_fact {
-                            Some(src) => apply_tense_to_fact(&substitute_fact(ct, &bindings), src),
-                            None => substitute_fact(ct, &bindings),
-                        };
+                        let cs = substitute_fact(ct, &bindings);
                         let result = check_predicate_in_kb_typed(&cs, inner, depth + 1, visited);
                         let verdict = if rule.negated_condition_indices.contains(&idx) {
                             negate_result(result)
@@ -2327,9 +2253,8 @@ fn process_phase<S: TraceSink>(
                         }
                     }
                     // Negated-exists groups are flavor-aware: an explicit `past
-                    // ~P` restrictor carries its flavor on the templates; a bare
-                    // `~P` is temporally lifted with the goal's tense (`tense_fact`)
-                    // exactly like the positive conditions above.
+                    // ~P` restrictor carries its flavor on the templates, while a
+                    // bare `~P` remains bare.
                     fold_negated_groups(
                         rule,
                         &bindings,
@@ -2339,7 +2264,6 @@ fn process_phase<S: TraceSink>(
                         visited,
                         &mut all_hold,
                         &mut pending_here,
-                        tense_fact,
                     );
                     if all_hold {
                         found = true;
@@ -2369,10 +2293,7 @@ fn process_phase<S: TraceSink>(
             let mut all_conditions_hold = true;
             let mut rule_pending = None;
             for (idx, ct) in rule.typed_conditions.iter().enumerate() {
-                let cs = match tense_fact {
-                    Some(src) => apply_tense_to_fact(&substitute_fact(ct, &bindings), src),
-                    None => substitute_fact(ct, &bindings),
-                };
+                let cs = substitute_fact(ct, &bindings);
                 let result = check_predicate_in_kb_typed(&cs, inner, depth + 1, visited);
                 // Negated antecedent conditions hold via negation-as-failure: invert
                 // the verdict so ¬P holds iff P is unprovable (False), not iff P is True.
@@ -2400,21 +2321,12 @@ fn process_phase<S: TraceSink>(
                 visited,
                 &mut all_conditions_hold,
                 &mut rule_pending,
-                tense_fact,
             );
 
             if all_conditions_hold {
                 let root = if S::RECORDING {
                     Some(emit_derived(
-                        sink,
-                        rule,
-                        &bindings,
-                        orig_fact,
-                        inner,
-                        depth,
-                        visited,
-                        tense_fact,
-                        tense_label,
+                        sink, rule, &bindings, match_fact, inner, depth, visited,
                     ))
                 } else {
                     None
@@ -2545,10 +2457,10 @@ fn try_backward_chain_core<S: TraceSink>(
     }
     let mut best_result = None;
 
-    // Normal phase: fire rules matching the goal directly (no tense lifting).
+    // Rule facts are flavor-exact. A tensed goal can only match a conclusion
+    // carrying that same explicit tense; a bare rule is bare-only.
     if let Some(root) = process_phase(
         fact,
-        None,
         inner,
         depth,
         visited,
@@ -2558,24 +2470,6 @@ fn try_backward_chain_core<S: TraceSink>(
     ) {
         visited.remove(&cycle_key(fact));
         return (QueryResult::True, root);
-    }
-
-    // Temporal lifting: a tensed goal also tries bare (timeless) rules, re-tensing
-    // each condition with the goal's tense.
-    if let Some(bare_fact) = strip_tense_from_fact(fact) {
-        if let Some(root) = process_phase(
-            &bare_fact,
-            Some(fact),
-            inner,
-            depth,
-            visited,
-            sink,
-            &mut candidates_slot,
-            &mut best_result,
-        ) {
-            visited.remove(&cycle_key(fact));
-            return (QueryResult::True, root);
-        }
     }
 
     visited.remove(&cycle_key(fact));
@@ -2592,35 +2486,6 @@ pub(super) fn try_backward_chain_typed(
     visited: &mut HashSet<StoredFact>,
 ) -> QueryResult {
     try_backward_chain_core(fact, inner, depth, visited, &mut NoOpSink).0
-}
-
-/// Strip tense wrapper from a StoredFact, returning the bare fact.
-fn strip_tense_from_fact(fact: &StoredFact) -> Option<StoredFact> {
-    match fact {
-        StoredFact::Past(f) | StoredFact::Present(f) | StoredFact::Future(f) => {
-            Some(StoredFact::Bare(f.clone()))
-        }
-        _ => None,
-    }
-}
-
-/// Apply the tense of `source` to a bare fact.
-fn apply_tense_to_fact(fact: &StoredFact, source: &StoredFact) -> StoredFact {
-    match source {
-        StoredFact::Past(_) => match fact {
-            StoredFact::Bare(f) => StoredFact::Past(f.clone()),
-            other => other.clone(),
-        },
-        StoredFact::Present(_) => match fact {
-            StoredFact::Bare(f) => StoredFact::Present(f.clone()),
-            other => other.clone(),
-        },
-        StoredFact::Future(_) => match fact {
-            StoredFact::Bare(f) => StoredFact::Future(f.clone()),
-            other => other.clone(),
-        },
-        _ => fact.clone(),
-    }
 }
 
 /// Cartesian product over typed GroundTerm vectors.

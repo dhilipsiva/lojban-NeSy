@@ -86,16 +86,37 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Language semantics
 
-- **Make temporal lifting a declared semantic choice, not an untyped global rule.**
-  `try_backward_chain_typed` unconditionally gives every tensed goal a second pass over
-  bare rules (`nibli-reason/src/reasoning.rs`:2548-2577), re-tensing every condition.
-  That is defensible for timeless taxonomy (`dog -> animal`) but can be false for causal,
-  episodic, or normative rules; the language has no rule class that distinguishes them.
-  Decide between explicit opt-in lifting, a restricted proved-safe class, or removal of
-  automatic lifting. Specify how tensed antecedents/conclusions, NAF, proof labels, and
-  materialisation interact. **Exit:** paired taxonomy and causal counterexamples pin the
-  chosen behavior through the KR surface, the seam and soundness differentials cover it,
-  and NIBLI_KR/guarantees/Chapters 4, 5, 9 and Appendix H state the same contract.
+- **Synchronize the manuscript with explicit, flavor-exact temporal rules (engine
+  decision complete 2026-08-04).** The engine no longer gives a tensed goal a hidden
+  second pass over Bare rules: unprefixed ordinary-predicate literals remain Bare, and
+  authors write same- or cross-flavor mappings explicitly (`past P -> past Q`,
+  `past P -> now Q`). Engine/root docs, KR seam, determinism, materialisation ON/OFF,
+  proof traces, and zero-skip Vampire/clingo cases pin that contract. The separate
+  `book/` repo still teaches the removed behavior: Chapter 5 calls bare rules timeless
+  and automatically lifted; Chapter 7 documents the deleted `strip_tense_from_fact` /
+  `apply_tense_to_fact` path; Chapter 9 makes lifting a pipeline step and exercise;
+  Appendix H lists it as supported. Sweep Chapters 4, 5, 7, 9, 11, 17, and 21;
+  Appendices F, G, H, and I; and `book-outline.md` for derivative claims. This is a
+  `book-todo` task in the nested repo (its Maintenance umbrella already names temporal
+  lifting), not an engine-code change. **Exit:** examples distinguish bare-rule FALSE
+  from explicitly flavored TRUE and cross-flavor causation; implementation walkthroughs
+  contain no deleted helper/phase; limitations describe conservative surface-relation
+  stratification and the separately tracked stacked-modifier gap; `verify_book.py`,
+  `verify_book_refs.py`, and `capture_book.py --check` pass in the book repo, and root
+  `just verify-book-refs` reports no stale temporal claim.
+
+- **Make stacked tense×deontic semantics compositional or reject the syntax.**
+  KR accepts and the seam structurally pins `must past ~P` as
+  `Obligatory(Past(Not(P)))` (`NIBLI_KR.md` §6; `nibli_kr_seam_gate.rs`), but runtime
+  facts/rule templates have one mutually exclusive `StoredFact` flavor and the
+  evaluator/flatteners overwrite an outer wrapper when they descend into an inner one
+  (`nibli-reason/src/reasoning.rs`:561-637; `rules.rs`:186-237,361-409). The compiled
+  tree therefore advertises a modifier product the reasoner cannot represent. Choose a
+  real product type with defined NAF/proof/materialisation semantics, or fail closed on
+  stacked modifiers before assertion/query; do not silently pick one wrapper. **Exit:**
+  fact, query, antecedent, conclusion, NAF, proof-trace, and retraction tests cover both
+  modifier orders; the seam and external oracle either model the product or pin rejection;
+  KR/IR/guarantees and the relevant book chapters state the same implemented contract.
 
 - **Reconcile existential import with find/count semantics.** A description universal
   mints `presupposition_witnesses` when existential import is on

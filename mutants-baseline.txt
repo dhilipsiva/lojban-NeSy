@@ -48,8 +48,6 @@ nibli-reason/src/reasoning.rs: delete ! in trace_predicate_provenance_typed
 nibli-reason/src/reasoning.rs: delete ! in try_backward_chain_core
 nibli-reason/src/reasoning.rs: delete match arm QueryResult::ResourceExceeded(k) in check_formula_holds_core
 nibli-reason/src/reasoning.rs: delete match arm QueryResult::Unknown(r) in check_formula_holds_core
-nibli-reason/src/reasoning.rs: delete match arm StoredFact::Future(_) in tense_label_of
-nibli-reason/src/reasoning.rs: delete match arm StoredFact::Present(_) in tense_label_of
 nibli-reason/src/reasoning.rs: replace != with == in equals_substitution_note
 nibli-reason/src/reasoning.rs: replace && with || in trace_predicate_provenance_typed
 nibli-reason/src/reasoning.rs: replace && with || in try_backward_chain_core
@@ -203,4 +201,3 @@ nibli-semantics/src/semantic/predicate.rs: replace match guard permuted.len() >=
 nibli-semantics/src/semantic/predicate.rs: replace match guard permuted.len() >= 3 with true in SemanticCompiler::apply_predicate
 nibli-semantics/src/semantic/predicate.rs: replace match guard permuted.len() >= 4 with true in SemanticCompiler::apply_predicate
 nibli-semantics/src/semantic/predicate.rs: replace match guard permuted.len() >= 5 with true in SemanticCompiler::apply_predicate
-

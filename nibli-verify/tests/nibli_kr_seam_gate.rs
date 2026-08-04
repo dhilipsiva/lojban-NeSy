@@ -213,6 +213,33 @@ fn kr_semantics_seam_conformance() {
         structural += 1;
     }
 
+    // Temporal rule mappings are declared on the literals, not on the rule as
+    // a whole: Past(dog(x)) -> Present(animal(x)).
+    {
+        let b = kompile("all $x: past dog($x) -> now animal($x).").unwrap();
+        let LogicNode::ForAllNode((_, body)) = seam::root(&b) else {
+            panic!("temporal rule root is not ForAllNode: {:?}", seam::root(&b));
+        };
+        let LogicNode::OrNode((left, right)) = seam::node(&b, *body) else {
+            panic!(
+                "temporal rule body is not OrNode: {:?}",
+                seam::node(&b, *body)
+            );
+        };
+        let LogicNode::NotNode(antecedent) = seam::node(&b, *left) else {
+            panic!("temporal antecedent is not negated");
+        };
+        assert!(
+            matches!(seam::node(&b, *antecedent), LogicNode::PastNode(_)),
+            "the antecedent must retain its explicit Past wrapper"
+        );
+        assert!(
+            matches!(seam::node(&b, *right), LogicNode::PresentNode(_)),
+            "the conclusion must retain its explicit Present wrapper"
+        );
+        structural += 1;
+    }
+
     // Equality: `=` is the flat 2-arg identity predicate (union-find keyed),
     // never event-decomposed.
     {
