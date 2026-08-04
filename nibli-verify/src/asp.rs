@@ -473,6 +473,13 @@ fn collect_query_body(
         return Ok(());
     }
     match node_at(buf, id)? {
+        // Query-side §6 factoring can place one user-named existential around
+        // several independently reified event groups. Peel that binder and
+        // let the shared VarMap preserve the join across all body literals;
+        // an event existential (`_evN`) still goes through `regroup_event`.
+        LogicNode::ExistsNode((var, body)) if var.starts_with('$') => {
+            collect_query_body(buf, *body, vars, out)?;
+        }
         // A `du` query after canonicalization: identity holds iff both sides rewrote to
         // the SAME representative. Delegate to clingo's term-equality builtin so the
         // oracle — not the translator — decides: `goal :- c1 == c2.`

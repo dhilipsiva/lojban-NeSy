@@ -22,7 +22,7 @@
 //! build and NEVER skips.
 
 use nibli_types::logic::{LogicNode, LogicalTerm};
-use nibli_verify::nibli_kr_battery::{CONSTRUCT_INVENTORY, canonical, kompile};
+use nibli_verify::nibli_kr_battery::{CONSTRUCT_INVENTORY, canonical, kompile, kompile_query};
 use nibli_verify::{nibli_kr_seam, seam};
 
 /// Seeded metamorphic batch size (mirrors the Lojban seam gate's SEAM_BATCH).
@@ -68,6 +68,43 @@ fn kr_semantics_seam_conformance() {
         assert!(matches!(seam::root(&b), LogicNode::AndNode(_)));
         let b = kompile("dog(Adam) | cat(Betis).").unwrap();
         assert!(matches!(seam::root(&b), LogicNode::OrNode(_)));
+        structural += 1;
+    }
+
+    // Query-side statement-wide co-reference (§6): one free textual `$x`
+    // binder must dominate BOTH connected propositions. Proposition-local
+    // closure would instead let two different entities satisfy the query.
+    {
+        let b = kompile_query("bite($x, Bel) & bite($x, Dana).").unwrap();
+        let LogicNode::ExistsNode((name, body)) = seam::root(&b) else {
+            panic!(
+                "shared-name query root is not ExistsNode: {:?}",
+                seam::root(&b)
+            );
+        };
+        assert_eq!(name, "$x", "the source variable name must survive");
+        assert!(
+            matches!(seam::node(&b, *body), LogicNode::AndNode(_)),
+            "the shared `$x` binder must dominate the connected And"
+        );
+        let bound_roles = b
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node,
+                    LogicNode::Predicate((relation, args))
+                        if relation == "bite_x1"
+                            && args.iter().any(|term| {
+                                matches!(term, LogicalTerm::Variable(var) if var == "$x")
+                            })
+                )
+            })
+            .count();
+        assert_eq!(
+            bound_roles, 2,
+            "both bite propositions must use the one shared `$x` variable"
+        );
         structural += 1;
     }
 

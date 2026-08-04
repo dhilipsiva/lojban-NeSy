@@ -1114,7 +1114,7 @@ fn QueryTabs(
         }
         let parsed = nibli_kr::parse_text(q);
         if parsed.errors.is_empty() {
-            match nibli_semantics::compile_from_ast(parsed.buffer) {
+            match nibli_semantics::compile_query_from_ast(parsed.buffer) {
                 Ok(buf) => QueryReading::Reads(nibli_render::render_logic_buffer(
                     &buf,
                     nibli_render::Register::Spec,

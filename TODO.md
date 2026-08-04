@@ -86,25 +86,26 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Language semantics
 
-- **NIBLI_KR.md §6 co-reference — QUERY SIDE ONLY now.** The compiler still gives each
-  top-level `&` side its own existential scope (`bite($x, Bel) & bite($x, Dana).` compiles
-  to `∃$x.(…) ∧ ∃$x.(…)`; `nibli-semantics/src/semantic/compile.rs`:274-289 closes per
-  PROPOSITION and :567-588 compiles each `&` side separately). But the two paths diverge,
-  and only one disagrees with §6:
-  - **Asserted — §6 holds, by accident.** `collect_exists_for_skolem`
-    (`nibli-reason/src/rules.rs`:37-49) keys its Skolem map by variable NAME across the
-    whole buffer, so both scopes collapse onto ONE constant: the statement stores
-    `bite(sk_0, Bel)` and `bite(sk_0, Dana)`, while `$p`/`$q` give `sk_0`/`sk_2`. A rule
-    needing one entity to do both fires for the shared name and not for distinct ones.
-  - **Queried — the disagreement.** No such collapse: `bite(Ann, Bel). bite(Cy, Dana).`
-    then `? bite($x, Bel) & bite($x, Dana).` answers TRUE though no single biter did both.
-    This is the fluent-but-wrong case Ch 21 discloses.
+- **NIBLI_KR.md §6 co-reference — ASSERTION SIDE remains.** Query text now has an
+  explicit lowering path: `nibli-semantics::compile_query_from_ast` factors repeated,
+  safely exposed textual `$name` binders once around an ordinary connected region; unresolved
+  negative/modal/quantified/anonymous/abstraction scope crossings reject fail-closed.
+  Verdict, proof, find, count, and aggregate all use that path through `CoreSession`;
+  `NibliEngine::compile_query_debug` gives the differential oracles that exact query IR,
+  and the UI's preset guard + live query reading use the same compiler. Split witnesses
+  therefore cannot satisfy `bite($x, Bel) & bite($x, Dana)`, while `$p`/`$q` remain
+  independent and single-region scope is unchanged.
 
-  Decide: bind `$name` statement-wide on the query path (matching what assert already does
-  by name-keying), or amend §6 to a per-conjunct scope rule for queries. **The assert-side
-  agreement is INCIDENTAL** — a name-keyed Skolem map, not a designed co-reference pass —
-  so a refactor to fresh-per-scope Skolems would silently break it; whichever way this
-  resolves, it wants a pin. Ripple: Ch 21 + NIBLI_KR.md §6 together.
+  Assertions deliberately retain the old proposition-local buffer shape for now.
+  `collect_exists_for_skolem` (`nibli-reason/src/rules.rs`:37-49) keys its substitution map
+  by variable name across the whole buffer, so repeated `$x` nodes currently collapse onto
+  one Skolem witness — observable agreement with §6, but still an INCIDENTAL property of
+  Skolem collection rather than a designed compiler invariant. Make that behavior explicit:
+  either compile assertion roots with the same statement-wide binder pass, or specify and
+  enforce name-keyed collapse as the assertion contract. Pin shared versus distinct names
+  through stored facts, a downstream rule requiring the joint witness, retraction/replay,
+  and repeated names under explicit universal scopes. Do not assert exact `sk_N` spellings.
+  The book-side Chapter 21 correction remains a coordinated manuscript task.
 
 - **Eliminate hash-only semantic identity (rules and opaque abstractions).** Two
   correctness decisions currently depend on a 64-bit digest with no equality fallback:

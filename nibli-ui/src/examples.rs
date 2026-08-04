@@ -240,10 +240,16 @@ pub const EXAMPLES: &[Example] = &[
 mod tests {
     use super::EXAMPLES;
 
-    fn compile_nibli_kr(line: &str) -> Result<(), String> {
+    fn compile_nibli_kr_assertion(line: &str) -> Result<(), String> {
         let ast = nibli_kr::parse_checked(line).map_err(|e| e.to_string())?;
         nibli_semantics::compile_from_ast(ast).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn compile_nibli_kr_query(line: &str) -> Result<(), String> {
+        nibli_session::compile_query_unmarked(line)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     #[test]
@@ -258,7 +264,7 @@ mod tests {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                compile_nibli_kr(line).unwrap_or_else(|e| {
+                compile_nibli_kr_assertion(line).unwrap_or_else(|e| {
                     panic!(
                         "example {:?} KB line {} does not compile: {line:?} — {e}",
                         ex.name,
@@ -268,7 +274,7 @@ mod tests {
                 checked += 1;
             }
             for q in ex.queries {
-                compile_nibli_kr(q.query).unwrap_or_else(|e| {
+                compile_nibli_kr_query(q.query).unwrap_or_else(|e| {
                     panic!(
                         "example {:?} query {:?} does not compile: {e}",
                         ex.name, q.query

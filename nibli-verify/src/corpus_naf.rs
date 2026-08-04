@@ -63,6 +63,14 @@ pub const NAF_CASES: &[Case] = &[
         query: "person(Adam).",
         expect: Expect::True,
     },
+    // Query IR must be compiled through the same named-variable join path
+    // before translation to clingo.
+    Case {
+        name: "asp_named_query_join_split_false",
+        kb: &["person(Adam).", "dog(Bel)."],
+        query: "person($x) & dog($x).",
+        expect: Expect::False,
+    },
     // ── Taxonomy through NAF: NAF rule feeds a Horn rule (stratified: morsi is base). ──
     Case {
         name: "naf_taxonomy_through_naf",

@@ -250,6 +250,10 @@ impl NibliEngine {
         self.core.compile_text(input)
     }
 
+    fn compile_query_text(&self, input: &str) -> Result<logic::LogicBuffer, EngineError> {
+        self.core.compile_query_text(input)
+    }
+
     /// Reset the knowledge base, clearing all facts and rules.
     pub fn reset(&self) {
         self.core.kb().reset().ok();
@@ -382,6 +386,12 @@ impl NibliEngine {
     /// S-expression string is produced.
     pub fn compile_debug(&self, text: &str) -> Result<EngineLogicBuffer, EngineError> {
         self.compile_text(text)
+    }
+
+    /// Compile KR query text to the exact typed FOL `LogicBuffer` consumed by
+    /// the query APIs, including connected-clause `$name` co-reference.
+    pub fn compile_query_debug(&self, text: &str) -> Result<EngineLogicBuffer, EngineError> {
+        self.compile_query_text(text)
     }
 
     /// List all active (non-retracted) facts with their IDs and labels.

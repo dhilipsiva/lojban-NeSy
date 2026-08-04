@@ -2038,6 +2038,80 @@ fn query_parse_error() {
 }
 
 #[test]
+fn named_query_variable_corefers_across_conjuncts() {
+    let shared = "bite($x, Bel) & bite($x, Dana).";
+    let shared_with_gap = "bite($x, Bel) & bite(Ann, Bel) & bite($x, Dana).";
+    let distinct = "bite($p, Bel) & bite($q, Dana).";
+
+    let split = engine_with_facts(&["bite(Ann, Bel).", "bite(Cy, Dana)."]);
+    assert_false(
+        &split.query_holds(shared).unwrap(),
+        "one shared `$x` cannot be satisfied by two different biters",
+    );
+    assert_false(
+        &split.query_holds(shared_with_gap).unwrap(),
+        "an intervening ordinary clause must not split the shared `$x` scope",
+    );
+    assert_false(
+        &split.query_text_with_proof(shared).unwrap().0,
+        "the proof-producing query path must use the same shared binder",
+    );
+    assert!(
+        split.query_find_text(shared).unwrap().is_empty(),
+        "find must not manufacture a joint `$x` witness from split facts"
+    );
+    assert_eq!(
+        split.count_witnesses_text(shared).unwrap(),
+        0,
+        "count must share the same statement-wide query binding"
+    );
+    assert_true(
+        &split.query_holds(distinct).unwrap(),
+        "different names remain independent and may use different witnesses",
+    );
+
+    let joint = engine_with_facts(&["bite(Ann, Bel).", "bite(Ann, Dana)."]);
+    assert_true(
+        &joint.query_holds(shared).unwrap(),
+        "one entity satisfying both conjuncts is a valid shared witness",
+    );
+    assert_true(
+        &joint.query_holds(shared_with_gap).unwrap(),
+        "a joint witness remains valid across an intervening ordinary clause",
+    );
+    let witnesses = joint.query_find_text(shared).unwrap();
+    assert_eq!(
+        witnesses.len(),
+        1,
+        "exactly one joint witness: {witnesses:?}"
+    );
+    assert!(
+        witnesses[0].iter().any(|binding| {
+            binding.variable == "$x"
+                && matches!(&binding.term, EngineLogicalTerm::Constant(name) if name == "ann")
+        }),
+        "the shared `$x` binding must be Ann: {witnesses:?}"
+    );
+
+    let numeric = engine_with_facts(&[
+        "quantity(Varfarin, 5).",
+        "quantity(Fenitoin, 7).",
+        "year(Term, 5).",
+    ]);
+    assert_eq!(
+        numeric
+            .aggregate_text(
+                "quantity($drug, $dose) & year(Term, $dose).",
+                "$dose",
+                EngineAggregateOp::Sum,
+            )
+            .unwrap(),
+        Some(5.0),
+        "aggregate must use only numeric witnesses shared across both clauses"
+    );
+}
+
+#[test]
 fn partial_parse_fails_closed_for_query() {
     // The unified fail-closed policy: the parser recovers per statement, so this input
     // has a valid first sentence and an unlexable second. A QUERY must abort on

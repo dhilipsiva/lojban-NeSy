@@ -202,7 +202,7 @@ pub fn run_lines(
             }
         }
     }
-    let query_buf = match engine.compile_debug(query) {
+    let query_buf = match engine.compile_query_debug(query) {
         Ok(b) => b,
         Err(e) => {
             return Outcome::Error {
@@ -398,7 +398,7 @@ pub fn run_corpus_slice(label: &str, corpus: &str, cfg: &OracleConfig) -> Report
         .filter(|p| {
             let q = format!("{p}(Adam).");
             engine
-                .compile_debug(&q)
+                .compile_query_debug(&q)
                 .map(|b| filter::buffer_non_classical(&b).is_none())
                 .unwrap_or(false)
         })
@@ -414,7 +414,7 @@ pub fn run_corpus_slice(label: &str, corpus: &str, cfg: &OracleConfig) -> Report
         let Some(name) = kr_name(e) else { continue };
         for p in &queryable {
             let query = format!("{p}({name}).");
-            if engine.compile_debug(&query).is_err() {
+            if engine.compile_query_debug(&query).is_err() {
                 continue;
             }
             outcomes.push(run_lines(
@@ -475,7 +475,7 @@ pub fn run_asp_corpus_slice(label: &str, corpus: &str, cfg: &AspConfig) -> Repor
         .filter(|p| {
             let q = format!("{p}(Adam).");
             engine
-                .compile_debug(&q)
+                .compile_query_debug(&q)
                 .map(|b| filter::buffer_asp_mappable_query(&b).is_none())
                 .unwrap_or(false)
         })
@@ -487,7 +487,7 @@ pub fn run_asp_corpus_slice(label: &str, corpus: &str, cfg: &AspConfig) -> Repor
         let Some(name) = kr_name(e) else { continue };
         for p in &queryable {
             let query = format!("{p}({name}).");
-            if engine.compile_debug(&query).is_err() {
+            if engine.compile_query_debug(&query).is_err() {
                 continue;
             }
             outcomes.push(run_lines_asp(
@@ -672,7 +672,7 @@ pub fn run_lines_asp(
             }
         }
     }
-    let query_buf = match engine.compile_debug(query) {
+    let query_buf = match engine.compile_query_debug(query) {
         Ok(b) => b,
         Err(e) => {
             return Outcome::Error {

@@ -440,6 +440,197 @@ impl SemanticCompiler {
         }
     }
 
+    /// Collect free textual binders reachable through one ordinary connected
+    /// region. Named `Exists` nodes and the four transparent connectives are
+    /// traversed; every actual scope boundary stops the walk. Traversing the
+    /// connective tree (rather than only its root spine) is what lets
+    /// `A($x) & B & C($x)` correlate across the intervening clause.
+    fn collect_exposed_named_exists(
+        &self,
+        form: &IrForm,
+        seen: &mut std::collections::HashSet<lasso::Spur>,
+        out: &mut Vec<lasso::Spur>,
+    ) {
+        match form {
+            IrForm::Exists(var, body) if self.interner.resolve(var).starts_with('$') => {
+                if seen.insert(*var) {
+                    out.push(*var);
+                }
+                self.collect_exposed_named_exists(body, seen, out);
+            }
+            IrForm::And(left, right)
+            | IrForm::Or(left, right)
+            | IrForm::Biconditional(left, right)
+            | IrForm::Xor(left, right) => {
+                self.collect_exposed_named_exists(left, seen, out);
+                self.collect_exposed_named_exists(right, seen, out);
+            }
+            IrForm::Predicate { .. }
+            | IrForm::Exists(_, _)
+            | IrForm::ForAll(_, _)
+            | IrForm::Not(_)
+            | IrForm::Past(_)
+            | IrForm::Present(_)
+            | IrForm::Future(_)
+            | IrForm::Obligatory(_)
+            | IrForm::Permitted(_)
+            | IrForm::Count { .. } => {}
+        }
+    }
+
+    fn exposed_named_exists(&self, form: &IrForm) -> Vec<lasso::Spur> {
+        let mut seen = std::collections::HashSet::new();
+        let mut vars = Vec::new();
+        self.collect_exposed_named_exists(form, &mut seen, &mut vars);
+        vars
+    }
+
+    /// Remove selected variables from the exposed part of an ordinary
+    /// connected region. Non-selected binders and all scope boundaries are
+    /// rebuilt in place.
+    fn strip_exposed_named_exists(
+        &self,
+        form: IrForm,
+        hoisted: &std::collections::HashSet<lasso::Spur>,
+    ) -> IrForm {
+        match form {
+            IrForm::Exists(var, body) if self.interner.resolve(&var).starts_with('$') => {
+                let body = self.strip_exposed_named_exists(*body, hoisted);
+                if hoisted.contains(&var) {
+                    body
+                } else {
+                    IrForm::Exists(var, Box::new(body))
+                }
+            }
+            IrForm::And(left, right) => IrForm::And(
+                Box::new(self.strip_exposed_named_exists(*left, hoisted)),
+                Box::new(self.strip_exposed_named_exists(*right, hoisted)),
+            ),
+            IrForm::Or(left, right) => IrForm::Or(
+                Box::new(self.strip_exposed_named_exists(*left, hoisted)),
+                Box::new(self.strip_exposed_named_exists(*right, hoisted)),
+            ),
+            IrForm::Biconditional(left, right) => IrForm::Biconditional(
+                Box::new(self.strip_exposed_named_exists(*left, hoisted)),
+                Box::new(self.strip_exposed_named_exists(*right, hoisted)),
+            ),
+            IrForm::Xor(left, right) => IrForm::Xor(
+                Box::new(self.strip_exposed_named_exists(*left, hoisted)),
+                Box::new(self.strip_exposed_named_exists(*right, hoisted)),
+            ),
+            other => other,
+        }
+    }
+
+    fn collect_named_exists_occurrences(
+        &self,
+        form: &IrForm,
+        counts: &mut std::collections::HashMap<lasso::Spur, usize>,
+        order: &mut Vec<lasso::Spur>,
+    ) {
+        match form {
+            IrForm::Exists(var, body) => {
+                if self.interner.resolve(var).starts_with('$') {
+                    let count = counts.entry(*var).or_default();
+                    if *count == 0 {
+                        order.push(*var);
+                    }
+                    *count += 1;
+                }
+                self.collect_named_exists_occurrences(body, counts, order);
+            }
+            IrForm::ForAll(_, body)
+            | IrForm::Not(body)
+            | IrForm::Past(body)
+            | IrForm::Present(body)
+            | IrForm::Future(body)
+            | IrForm::Obligatory(body)
+            | IrForm::Permitted(body)
+            | IrForm::Count { body, .. } => {
+                self.collect_named_exists_occurrences(body, counts, order);
+            }
+            IrForm::And(left, right)
+            | IrForm::Or(left, right)
+            | IrForm::Biconditional(left, right)
+            | IrForm::Xor(left, right) => {
+                self.collect_named_exists_occurrences(left, counts, order);
+                self.collect_named_exists_occurrences(right, counts, order);
+            }
+            IrForm::Predicate { .. } => {}
+        }
+    }
+
+    /// After connected-region factoring, a repeated textual binder can remain
+    /// only when the occurrences were separated by a real lexical scope
+    /// boundary. Validate each query root as a whole so the same rule also
+    /// covers a boundary nested inside one proposition (not just two sentence
+    /// operands).
+    pub(crate) fn validate_query_coreference(&mut self, form: &IrForm) {
+        if !self.query_connected_coreference {
+            return;
+        }
+
+        let mut counts = std::collections::HashMap::new();
+        let mut order = Vec::new();
+        self.collect_named_exists_occurrences(form, &mut counts, &mut order);
+        let ambiguous = order
+            .into_iter()
+            .filter(|var| counts.get(var).copied().unwrap_or_default() > 1)
+            .map(|var| self.interner.resolve(&var))
+            .collect::<Vec<_>>();
+        if !ambiguous.is_empty() {
+            self.errors.push(format!(
+                "Query co-reference for {} crosses a negative, modal, quantified, \
+                 anonymous-witness, or abstraction scope. That de-re/de-dicto reading is \
+                 not specified; use distinct names or an explicit binder.",
+                ambiguous.join(", ")
+            ));
+        }
+    }
+
+    /// Factor repeated free `$name` binders that both operands expose through
+    /// the same ordinary connected region. Names hidden behind a real scope
+    /// boundary remain duplicated and are rejected by the root validator.
+    fn factor_connected_named_exists(
+        &self,
+        left: IrForm,
+        right: IrForm,
+    ) -> (Vec<lasso::Spur>, IrForm, IrForm) {
+        let left_outer = self.exposed_named_exists(&left);
+        let right_outer = self.exposed_named_exists(&right);
+        let right_set: std::collections::HashSet<_> = right_outer.iter().copied().collect();
+        let repeated: Vec<_> = left_outer
+            .iter()
+            .copied()
+            .filter(|var| right_set.contains(var))
+            .collect();
+        if repeated.is_empty() {
+            return (Vec::new(), left, right);
+        }
+
+        // Hoist every exposed binder through the last repeated name on each
+        // side. This preserves first-surface binder order when a shared name
+        // follows a side-local named binder or an intervening clause.
+        let left_last = left_outer
+            .iter()
+            .rposition(|var| repeated.contains(var))
+            .expect("every repeated var was found on the left outer spine");
+        let right_last = right_outer
+            .iter()
+            .rposition(|var| repeated.contains(var))
+            .expect("every repeated var was found on the right outer spine");
+        let mut hoisted = left_outer[..=left_last].to_vec();
+        for var in &right_outer[..=right_last] {
+            if !hoisted.contains(var) {
+                hoisted.push(*var);
+            }
+        }
+        let hoisted_set: std::collections::HashSet<_> = hoisted.iter().copied().collect();
+        let left = self.strip_exposed_named_exists(left, &hoisted_set);
+        let right = self.strip_exposed_named_exists(right, &hoisted_set);
+        (hoisted, left, right)
+    }
+
     /// Shallow scan of a proposition's direct terms for an explicit `it` (the
     /// bound-entity marker) — bare, or under place-tag wrappers (unwrapped
     /// transitively). Does NOT descend into Description/Restricted/Abstraction
@@ -568,7 +759,13 @@ impl SemanticCompiler {
                 let left_form = self.compile_sentence(*left_id, predicates, arguments, sentences);
                 let right_form = self.compile_sentence(*right_id, predicates, arguments, sentences);
 
-                match connective {
+                let (hoisted, left_form, right_form) = if self.query_connected_coreference {
+                    self.factor_connected_named_exists(left_form, right_form)
+                } else {
+                    (Vec::new(), left_form, right_form)
+                };
+
+                let mut form = match connective {
                     SentenceConnective::Implies => IrForm::Or(
                         Box::new(IrForm::Not(Box::new(left_form))),
                         Box::new(right_form),
@@ -584,7 +781,11 @@ impl SemanticCompiler {
                         }
                         Connective::Xor => IrForm::Xor(Box::new(left_form), Box::new(right_form)),
                     },
+                };
+                for var in hoisted.into_iter().rev() {
+                    form = IrForm::Exists(var, Box::new(form));
                 }
+                form
             }
         }
     }

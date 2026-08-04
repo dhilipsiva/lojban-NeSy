@@ -44,6 +44,15 @@ pub fn compile_unmarked(text: &str) -> Result<LogicBuffer, NibliError> {
     nibli_semantics::compile_from_ast(ast)
 }
 
+/// Compile KR query text without compute-marking. Unlike assertion/debug
+/// compilation, this applies nibli KR §6's connected-clause co-reference rule:
+/// repeated, safely exposed textual `$name` binders are factored once around
+/// their ordinary connected region; ambiguous scope crossings fail closed.
+pub fn compile_query_unmarked(text: &str) -> Result<LogicBuffer, NibliError> {
+    let ast = nibli_kr::parse_checked(text)?;
+    nibli_semantics::compile_query_from_ast(ast)
+}
+
 /// THE compile chain: parse + semantic compile + compute-marking against the
 /// given predicate set. Free-fn form for per-call-set users (nibli-ui builds
 /// its set fresh each query); [`CoreSession::compile_text`] is the
@@ -53,6 +62,18 @@ pub fn compile_text(
     compute_predicates: &HashSet<String>,
 ) -> Result<LogicBuffer, NibliError> {
     let mut buf = compile_unmarked(text)?;
+    nibli_reason::transform_compute_nodes(&mut buf, compute_predicates);
+    Ok(buf)
+}
+
+/// The query compile chain: parse + connected-clause `$name` factoring +
+/// compute-marking. Kept separate from [`compile_text`] so proposition-local
+/// query scope and assertion buffers retain their established shapes.
+pub fn compile_query_text(
+    text: &str,
+    compute_predicates: &HashSet<String>,
+) -> Result<LogicBuffer, NibliError> {
+    let mut buf = compile_query_unmarked(text)?;
     nibli_reason::transform_compute_nodes(&mut buf, compute_predicates);
     Ok(buf)
 }
@@ -150,6 +171,11 @@ impl CoreSession {
         compile_text(text, &self.compute_predicates)
     }
 
+    /// Query-side compile chain with connected-clause `$name` factoring.
+    pub fn compile_query_text(&self, text: &str) -> Result<LogicBuffer, NibliError> {
+        compile_query_text(text, &self.compute_predicates)
+    }
+
     /// Compile KR text and assert it, splitting a multi-statement input into
     /// one INDEPENDENT fact per root (`split_roots` — connectives compile to a
     /// single root and stay one compound fact). The full input text is each
@@ -197,7 +223,7 @@ impl CoreSession {
 
     /// Compile a KR query and run the entailment check.
     pub fn query_text(&self, text: &str) -> Result<QueryResult, NibliError> {
-        let buf = self.compile_text(text)?;
+        let buf = self.compile_query_text(text)?;
         self.kb.query_entailment(buf)
     }
 
@@ -207,19 +233,19 @@ impl CoreSession {
         &self,
         text: &str,
     ) -> Result<(QueryResult, ProofTrace), NibliError> {
-        let buf = self.compile_text(text)?;
+        let buf = self.compile_query_text(text)?;
         self.kb.query_entailment_with_proof(buf)
     }
 
     /// Compile a KR query and extract all satisfying witness binding sets.
     pub fn query_find_text(&self, text: &str) -> Result<Vec<Vec<WitnessBinding>>, NibliError> {
-        let buf = self.compile_text(text)?;
+        let buf = self.compile_query_text(text)?;
         self.kb.query_find(buf)
     }
 
     /// Count the distinct witness binding sets satisfying a KR query.
     pub fn count_witnesses_text(&self, text: &str) -> Result<usize, NibliError> {
-        let buf = self.compile_text(text)?;
+        let buf = self.compile_query_text(text)?;
         self.kb.count_witnesses(buf)
     }
 
@@ -231,7 +257,7 @@ impl CoreSession {
         variable: &str,
         op: AggregateOp,
     ) -> Result<Option<f64>, NibliError> {
-        let buf = self.compile_text(text)?;
+        let buf = self.compile_query_text(text)?;
         self.kb.aggregate(buf, variable, op)
     }
 
@@ -249,5 +275,131 @@ impl CoreSession {
     /// List all active (non-retracted) facts with their ids and labels.
     pub fn list_facts(&self) -> Result<Vec<FactSummary>, NibliError> {
         self.kb.list_facts()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nibli_types::logic::LogicNode;
+
+    fn children(node: &LogicNode) -> Vec<u32> {
+        match node {
+            LogicNode::Predicate(_) | LogicNode::ComputeNode(_) => Vec::new(),
+            LogicNode::AndNode((left, right)) | LogicNode::OrNode((left, right)) => {
+                vec![*left, *right]
+            }
+            LogicNode::NotNode(child)
+            | LogicNode::PastNode(child)
+            | LogicNode::PresentNode(child)
+            | LogicNode::FutureNode(child)
+            | LogicNode::ObligatoryNode(child)
+            | LogicNode::PermittedNode(child) => vec![*child],
+            LogicNode::ExistsNode((_, body)) | LogicNode::ForAllNode((_, body)) => vec![*body],
+            LogicNode::CountNode((_, _, body)) => vec![*body],
+        }
+    }
+
+    fn count_exists(buffer: &LogicBuffer, node_id: u32, name: &str) -> usize {
+        let node = &buffer.nodes[node_id as usize];
+        usize::from(matches!(node, LogicNode::ExistsNode((var, _)) if var == name))
+            + children(node)
+                .into_iter()
+                .map(|child| count_exists(buffer, child, name))
+                .sum::<usize>()
+    }
+
+    #[test]
+    fn query_compile_closes_shared_name_once_across_conjuncts() {
+        let predicates = HashSet::new();
+        let text = "bite($x, Bel) & bite($x, Dana).";
+        let query = compile_query_text(text, &predicates).unwrap();
+        let assertion = compile_text(text, &predicates).unwrap();
+
+        let query_root = query.roots[0];
+        let body = match &query.nodes[query_root as usize] {
+            LogicNode::ExistsNode((name, body)) => {
+                assert_eq!(name, "$x");
+                *body
+            }
+            other => panic!("query root must be the shared `$x` binder, got {other:?}"),
+        };
+        assert!(
+            matches!(query.nodes[body as usize], LogicNode::AndNode(_)),
+            "the one `$x` binder must dominate both connected propositions"
+        );
+        assert_eq!(count_exists(&query, query_root, "$x"), 1);
+        assert_eq!(
+            count_exists(&assertion, assertion.roots[0], "$x"),
+            2,
+            "assertion compilation stays proposition-local in this query-only change"
+        );
+    }
+
+    #[test]
+    fn query_compile_preserves_first_name_order() {
+        let query = compile_query_text(
+            "bite($first, $second) & bite($first, $second).",
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        let first_body = match &query.nodes[query.roots[0] as usize] {
+            LogicNode::ExistsNode((name, body)) => {
+                assert_eq!(name, "$first");
+                *body
+            }
+            other => panic!("first surface name must be outermost, got {other:?}"),
+        };
+        match &query.nodes[first_body as usize] {
+            LogicNode::ExistsNode((name, _)) => assert_eq!(name, "$second"),
+            other => panic!("second surface name must be the next binder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_compile_correlates_nonadjacent_three_conjuncts() {
+        for text in [
+            "bite($x, Bel) & dog(Adam) & bite($x, Dana).",
+            "dog(Adam) & bite($x, Bel) & cat(Bel) & bite($x, Dana).",
+        ] {
+            let query = compile_query_unmarked(text).unwrap();
+            assert_eq!(
+                count_exists(&query, query.roots[0], "$x"),
+                1,
+                "an ordinary intervening clause must not become a scope boundary: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn query_compile_preserves_single_clause_scope_and_abstraction_keys() {
+        for text in [
+            "~dog($x).",
+            "loves(every dog, $x).",
+            "desires(me, event { dog($x) }).",
+        ] {
+            assert_eq!(
+                compile_query_unmarked(text).unwrap(),
+                compile_unmarked(text).unwrap(),
+                "query-only correlation must not rewrite a single proposition: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn query_compile_rejects_ambiguous_scope_crossing() {
+        for text in [
+            "~bite($x, Bel) & bite($x, Dana).",
+            "desires($x, event { dog($x) }).",
+            "desires($x, event { dog($x) }) & dog($x).",
+        ] {
+            let err = compile_query_unmarked(text)
+                .expect_err("moving `$x` across a lexical boundary needs an explicit scope");
+            assert!(
+                err.to_string().contains("de-re/de-dicto"),
+                "unexpected error for {text}: {err}"
+            );
+        }
     }
 }

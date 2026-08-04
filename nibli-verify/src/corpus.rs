@@ -23,6 +23,20 @@ pub const CASES: &[Case] = &[
         query: "cat(Adam).",
         expect: Expect::False,
     },
+    // ── Query-side named-variable join (the oracle must translate the exact
+    //    query IR that nibli evaluates, not assertion-mode sibling Exists) ──
+    Case {
+        name: "named_query_join_split_false",
+        kb: &["dog(Adam).", "animal(Bel)."],
+        query: "dog($x) & animal($x).",
+        expect: Expect::False,
+    },
+    Case {
+        name: "named_query_join_joint_true",
+        kb: &["dog(Adam).", "animal(Adam)."],
+        query: "dog($x) & animal($x).",
+        expect: Expect::True,
+    },
     // ── One-step modus ponens (syllogism) ──
     Case {
         name: "syllogism_true",

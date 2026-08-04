@@ -300,12 +300,20 @@ all $x: dog($x) -> animal($x).        # ro da zo'u ganai da gerku gi da danlu
 ```
 
 `all $x, $y: …` nests ForAlls. Prenex is universal-only, like `ro da zo'u` (there is no
-existential prenex — a bare `$x` in a body *is* the existential form). Unbound `$x` is
-existentially closed at its **first surface position** (leftmost binder outermost); all
-occurrences of one `$name` in a statement co-refer. Lowering note: nibli-semantics currently
-offers three bare variables per scope (`da/de/di`); the compiler maps the first three
-distinct names onto them and **rejects a fourth with a clear error** (never silently
-merges) until the nibli-semantics cap is lifted.
+existential prenex — a bare `$x` in a body *is* the existential form). On the query path,
+repeated free `$name` binders in one ordinary connected-clause region are factored once
+around the region, ordered by first surface occurrence (leftmost name outermost); thus
+`bite($x, Bel) & dog(Adam) & bite($x, Dana)` requires one biter satisfying both bite
+clauses even across the intervening ground clause. Repetition that would cross a negative,
+tense/deontic, quantified, anonymous-witness, or abstraction scope is rejected fail-closed
+until its de-re/de-dicto reading is specified. Single-clause scope and `$p`/`$q`
+independence are unchanged; `?` remains fresh per occurrence. The front end preserves
+arbitrary `$name` spellings verbatim — there is no `da/de/di` three-variable cap.
+
+Assertion compilation still emits proposition-local existential nodes; assertion ingestion
+currently gives repeated names one witness through its name-keyed Skolem map. That mechanism
+is observable-compatible for the simple connected case but remains separately tracked until
+the assertion-side invariant is designed and pinned directly.
 
 **Integrity constraints** need no keyword, matching the engine: a disjunctive universal
 conclusion registers the constraint —
@@ -499,8 +507,8 @@ inline determiner grammars are consistent; underscore identifiers remove the
 hyphen-vs-`->` lexing wrinkle.
 
 **Open issues:**
-- **O1**: 3-variable lowering cap (§6) — surface promises more than the seam delivers;
-  lifting it is a nibli-semantics change (widen the bare-variable set), not a syntax change.
+- **O1 (RESOLVED 2026-07-17)**: the KR emitter preserves arbitrary `$name` variables
+  verbatim; the inherited `da/de/di` three-variable lowering cap no longer exists.
 - **O2**: whole-rule tense (`past animal(every dog)`) parses and fails at nibli-reason assert,
   same as Lojban; static rejection would duplicate an engine check.
 - **O3 (RESOLVED 2026-07-12)**: nibli-semantics's wrapper emission is
