@@ -86,42 +86,6 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Language semantics
 
-- **Synchronize the manuscript with explicit, flavor-exact temporal rules (engine
-  decision complete 2026-08-04).** The engine no longer gives a tensed goal a hidden
-  second pass over Bare rules: unprefixed ordinary-predicate literals remain Bare, and
-  authors write same- or cross-flavor mappings explicitly (`past P -> past Q`,
-  `past P -> now Q`). Engine/root docs, KR seam, determinism, materialisation ON/OFF,
-  proof traces, and zero-skip Vampire/clingo cases pin that contract. The separate
-  `book/` repo still teaches the removed behavior: Chapter 5 calls bare rules timeless
-  and automatically lifted; Chapter 7 documents the deleted `strip_tense_from_fact` /
-  `apply_tense_to_fact` path; Chapter 9 makes lifting a pipeline step and exercise;
-  Appendix H lists it as supported. Sweep Chapters 4, 5, 7, 9, 11, 17, and 21;
-  Appendices F, G, H, and I; and `book-outline.md` for derivative claims. This is a
-  `book-todo` task in the nested repo (its Maintenance umbrella already names temporal
-  lifting), not an engine-code change. **Exit:** examples distinguish bare-rule FALSE
-  from explicitly flavored TRUE and cross-flavor causation; implementation walkthroughs
-  contain no deleted helper/phase; limitations describe conservative surface-relation
-  stratification and the fail-closed mixed-prefix restriction; `verify_book.py`,
-  `verify_book_refs.py`, and `capture_book.py --check` pass in the book repo, and root
-  `just verify-book-refs` reports no stale temporal claim.
-
-- **Synchronize the manuscript with fail-closed stacked tense×deontic syntax
-  (engine decision complete 2026-08-04).** The engine now rejects a second flavor
-  wrapper on the same formula path instead of silently discarding one: both mixed
-  prefix orders fail in KR, programmatic dual-field AST propositions fail at
-  compile/render, and manually nested raw IR fails before assertion, rules/NAF,
-  query/find, proof, materialisation, retraction replay, or persisted-buffer replay.
-  Engine docs and tests pin the path-sensitive boundary; separate rule literals may
-  still map flavors explicitly (`past P -> must Q`). The nested `book/` repo must now
-  sweep every chapter/appendix occurrence of stacked modifiers, `must past`, compiler
-  ordering, the old O3 pin, or the one-slot "not guaranteed" limitation. This is a
-  `book-todo` task, not an engine-code change. **Exit:** valid examples distinguish
-  `past ~P`, `must ~P`, and separate-literal flavor mappings; invalid examples and
-  limitations state that both mixed orders are compile errors; no prose advertises a
-  nested product the runtime cannot encode; `verify_book.py`, `verify_book_refs.py`,
-  and `capture_book.py --check` pass in the book repo, and root
-  `just verify-book-refs` reports no stale stacked-modifier claim.
-
 - **Reconcile existential import with find/count semantics.** A description universal
   mints `presupposition_witnesses` when existential import is on
   (`nibli-reason/src/rules.rs`:1290-1320). Those constants satisfy existential and
