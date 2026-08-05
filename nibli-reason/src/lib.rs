@@ -8,8 +8,9 @@
 //! - **Entailment queries** — Recursive formula checking via [`check_formula_holds`] with
 //!   demand-driven backward-chaining through universal rules.
 //! - **Proof traces** — [`check_formula_holds_recording`] builds a proof tree recording which
-//!   rule/axiom was applied at each step (19 proof rule variants). Multi-hop derivation
-//!   provenance traces derived facts through universal rule chains via backward-chaining.
+//!   rule/source was applied at each step (20 proof rule variants). Multi-hop derivation
+//!   provenance traces derived facts through universal rule chains, including conclusions
+//!   eagerly inserted by forward chaining.
 //! - **Witness extraction** — [`find_witnesses`] returns all satisfying entity bindings for
 //!   existential variables.
 //! - **Compute dispatch** — `ComputeNode` predicates are forwarded to the host-provided
@@ -26,8 +27,8 @@
 
 use nibli_types::error::NibliError;
 use nibli_types::logic::{
-    FactSummary, LogicBuffer, LogicNode, LogicalTerm, ProofRule, ProofStep, ProofTrace,
-    QueryResult, ResourceKind, UnknownReason, WitnessBinding,
+    AssertionCitation, FactSummary, LogicBuffer, LogicNode, LogicalTerm, ProofRule, ProofStep,
+    ProofTrace, QueryResult, ResourceKind, RuleCitation, UnknownReason, WitnessBinding,
 };
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -243,7 +244,7 @@ fn proof_step_open_world_status(
                 OpenWorldStatus::False
             }
         }
-        ProofRule::Asserted { .. } => {
+        ProofRule::Asserted { .. } | ProofRule::Presupposed { .. } => {
             if step.holds {
                 OpenWorldStatus::True
             } else {
@@ -458,13 +459,16 @@ impl KnowledgeBase {
         inner.known_rules.clear();
         inner.skolem_fn_registry.clear();
         inner.fact_store.clear();
+        inner.fact_origins.clear();
         inner.universal_rules.clear();
         inner.pred_dep_graph.clear();
         inner.equivalence_parent.clear();
         inner.equivalence_classes.clear();
+        inner.equality_adjacency.clear();
         inner.predicate_registry.clear();
         inner.arg_position_index.clear();
         inner.rule_source_map.clear();
+        inner.current_rule_ordinal = 0;
         inner.negative_facts.clear();
         inner.disjunctive_constraints.clear();
         // The saturated extensions are derived from the rules and facts being cleared
@@ -499,6 +503,7 @@ impl KnowledgeBase {
             inner.current_assertion_id = None;
         }
         inner.rebuilding = false;
+        debug_assert!(inner.fact_origin_invariant_holds());
 
         // Restore the preserved sorts into the re-populated registry.
         for (pred, sorts) in saved_arg_sorts {
@@ -962,7 +967,7 @@ impl KnowledgeBase {
         // cache (warmed by Phase 1) makes this build's verdict sub-checks cheap; the
         // trace is byte-identical to the former per-depth build because the trace
         // descent never shortcuts on the verdict cache and the fact store is
-        // set-idempotent for the only state it reads (`typed_fact_is_asserted`).
+        // set-idempotent for the only state it reads (`typed_fact_is_stored`).
         self.inner.borrow_mut().max_chain_depth = resolving_depth;
         let out = self.run_entailment_check_with_proof_and_compute_memo(&logic, &mut compute_memo);
         {
@@ -1496,8 +1501,8 @@ impl KnowledgeBase {
     }
 
     /// Mark all rules concluding the given predicate as forward-chaining enabled.
-    /// Forward-enabled rules fire eagerly on fact assertion when all conditions
-    /// are directly asserted in the fact store.
+    /// Forward-enabled rules fire eagerly on fact insertion when all conditions
+    /// are already in the truth store (directly asserted or eagerly derived).
     ///
     /// FAIL CLOSED: a rule with a negation-as-failure condition (a flat negated
     /// condition or a `poi na <predicate>` group) is NOT forward-enabled — it stays
@@ -1629,7 +1634,7 @@ impl KnowledgeBase {
     /// Scan the KB for contradictions. Returns human-readable descriptions.
     ///
     /// **Category 4 (negation)** uses a two-tier check: (a) store membership of
-    /// the positive counterpart (asserted facts), then (b) a *cheap middle* —
+    /// the positive counterpart (stored direct/eager facts), then (b) a *cheap middle* —
     /// after dropping the inner borrow, each unmatched asserted `~P` is re-run
     /// as a positive entailment query, so a **rule-derived** positive also
     /// flags (e.g. `travel(every person where ~prisoner)` + `person(Kilo)` +

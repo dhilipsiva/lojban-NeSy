@@ -3102,6 +3102,66 @@ fn persistent_engine_replays_asserted_facts_after_reopen() {
 }
 
 #[test]
+fn persistent_duplicate_assertion_citations_survive_reopen_and_retraction() {
+    fn assertion_sources(engine: &NibliEngine) -> Vec<(u64, String)> {
+        let (result, trace) = engine
+            .query_text_raw_proof("Adam = Bob.")
+            .expect("the persisted identity should remain queryable");
+        assert_true(&result, "the persisted identity should hold");
+        match &trace.steps[trace.root as usize].rule {
+            nibli_protocol::ProofRule::Asserted { sources, .. } => sources
+                .iter()
+                .map(|source| (source.id, source.label.clone()))
+                .collect(),
+            other => panic!("an exact direct identity must be Asserted, got {other:?}"),
+        }
+    }
+
+    let path = temp_db_path("duplicate_origin_replay");
+    cleanup(&path);
+
+    let (first, second, expected) = {
+        let engine = fresh_open(&path, "Persistent engine should open");
+        let first = engine.assert_text("Adam = Bob.").unwrap()[0];
+        let second = engine.assert_text("Adam = Bob.").unwrap()[0];
+        let expected = vec![
+            (first, "Adam = Bob.".to_string()),
+            (second, "Adam = Bob.".to_string()),
+        ];
+        assert_eq!(assertion_sources(&engine), expected);
+        (first, second, expected)
+    };
+
+    {
+        let reopened = fresh_open(&path, "Duplicate assertion sources should replay");
+        assert_eq!(
+            assertion_sources(&reopened),
+            expected,
+            "reopen must preserve both durable source ids and labels"
+        );
+        reopened
+            .retract_fact(first)
+            .expect("one duplicate source should retract independently");
+        assert_eq!(
+            assertion_sources(&reopened),
+            vec![(second, "Adam = Bob.".to_string())],
+            "retracting one source must not erase or relabel its duplicate"
+        );
+    }
+
+    {
+        let reopened = fresh_open(&path, "Duplicate-source retraction should persist");
+        assert_eq!(
+            assertion_sources(&reopened),
+            vec![(second, "Adam = Bob.".to_string())],
+            "the retracted citation must not resurrect on a second replay"
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
 fn persistent_engine_never_journals_proof_local_compute_results() {
     let path = temp_db_path("proof_local_compute_not_persisted");
     cleanup(&path);

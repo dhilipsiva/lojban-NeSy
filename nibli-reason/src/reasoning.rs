@@ -67,11 +67,11 @@ fn ensure_candidates<'a>(
 /// prove it beyond a direct fact-store lookup: no rule concludes the relation
 /// at all (a conservative relation-level check across every flavor), it is not
 /// the special-cased `du` equality predicate, and no du-equivalence classes exist
-/// (equivalence substitution could otherwise rewrite the fact into an asserted
+/// (equivalence substitution could otherwise rewrite the fact into a stored
 /// variant via the recursive fallback).
 ///
 /// For such relations `check_predicate_in_kb_typed` reduces to
-/// `typed_fact_is_asserted` at ANY depth, so the unbound-event-variable filter
+/// `typed_fact_is_stored` at ANY depth, so the unbound-event-variable filter
 /// can evaluate them definitively without recursion — crucially, even at the
 /// depth horizon, where the recursive check returns ResourceExceeded for
 /// every candidate and would otherwise pessimistically keep the entire
@@ -92,7 +92,7 @@ fn fact_has_unbound_pattern_var(fact: &StoredFact) -> bool {
 
 /// Index-anchored join binding. After a rule's event variables are bound, a
 /// condition like `fanta_x1(ev_f, x__v0)` has a GROUND anchor arg (the bound
-/// event) and an unbound individual pattern var. Look the matching asserted fact
+/// event) and an unbound individual pattern var. Look the matching stored fact
 /// up in `arg_position_index` and bind the individual var to it — instead of
 /// enumerating those vars over a `members^k` domain cartesian. Runs to a
 /// fixpoint so a var bound from one condition (the shared `di`) propagates to the
@@ -1763,8 +1763,8 @@ pub(super) fn invalidate_materialization(inner: &KnowledgeBaseInner) {
     *inner.materialized.borrow_mut() = None;
 }
 
-/// Check if a typed fact is asserted in the typed fact store.
-pub(super) fn typed_fact_is_asserted(fact: &StoredFact, inner: &KnowledgeBaseInner) -> bool {
+/// Check whether a typed fact is present in the content-only truth store.
+pub(super) fn typed_fact_is_stored(fact: &StoredFact, inner: &KnowledgeBaseInner) -> bool {
     // Fast path: exact match.
     if inner.fact_store.contains(fact) {
         return true;
@@ -1773,14 +1773,13 @@ pub(super) fn typed_fact_is_asserted(fact: &StoredFact, inner: &KnowledgeBaseInn
     if inner.equivalence_parent.is_empty() {
         return false;
     }
-    typed_fact_is_asserted_with_equivalence(fact, inner).is_some()
+    typed_fact_is_stored_with_equivalence(fact, inner).is_some()
 }
 
 /// If `fact` holds under some du-equivalence substitution of its arguments,
-/// return the directly-asserted equivalent variant (so a traced proof can render
-/// the substitution honestly as `EqualitySubstitution` rather than `Asserted`);
-/// `None` if no equivalent variant is directly asserted.
-fn typed_fact_is_asserted_with_equivalence(
+/// return the exact equivalent variant present in the truth store. Its origin
+/// sidecar, not this membership check, decides how a trace labels the child.
+fn typed_fact_is_stored_with_equivalence(
     fact: &StoredFact,
     inner: &KnowledgeBaseInner,
 ) -> Option<StoredFact> {
@@ -1830,6 +1829,33 @@ fn equals_substitution_note(orig: &StoredFact, variant: &StoredFact) -> String {
         .join(", ")
 }
 
+/// Recover the real equality assertions that license every changed argument.
+/// The union-find index proves that two terms share a representative but cannot
+/// explain why after path compression; the evidence graph preserves those
+/// edges. Missing evidence is treated fail-closed by the trace path.
+fn equality_support_facts(
+    orig: &StoredFact,
+    variant: &StoredFact,
+    inner: &KnowledgeBaseInner,
+) -> Option<Vec<StoredFact>> {
+    let mut facts = Vec::new();
+    let mut seen = HashSet::new();
+    for (original, substituted) in orig
+        .inner()
+        .args
+        .iter()
+        .zip(variant.inner().args.iter())
+        .filter(|(original, substituted)| original != substituted)
+    {
+        for equality in equality_path_facts(inner, original, substituted)? {
+            if seen.insert(equality.clone()) {
+                facts.push(equality);
+            }
+        }
+    }
+    Some(facts)
+}
+
 /// Bound on the du-equivalence VARIANT DERIVATION fan-out: the fallback in
 /// `check_predicate_in_kb_typed` (and its recording twin) runs a FULL
 /// recursive derivation per Cartesian combination of the arguments'
@@ -1838,8 +1864,8 @@ fn equals_substitution_note(orig: &StoredFact, variant: &StoredFact) -> String {
 /// bound the verdict fallback DOWNGRADES a would-be `False` to
 /// `ResourceExceeded(Depth)` (sound-but-incomplete, like a cycle cut —
 /// never a wrong definitive verdict; disclosed in GUARANTEES
-/// §Completeness). The cheap asserted-variant CONTAINS scan
-/// (`typed_fact_is_asserted_with_equivalence`) is deliberately unbounded:
+/// §Completeness). The cheap stored-variant CONTAINS scan
+/// (`typed_fact_is_stored_with_equivalence`) is deliberately unbounded:
 /// O(1) per combo, and truncating it could return a wrong `false`.
 const DU_VARIANT_BOUND: usize = 256;
 
@@ -1968,7 +1994,7 @@ pub(super) fn check_predicate_in_kb_typed(
         }
     }
 
-    if typed_fact_is_asserted(fact, inner) {
+    if typed_fact_is_stored(fact, inner) {
         return QueryResult::True;
     }
     let cached = if inner.pred_cache_enabled.get() {
@@ -2172,7 +2198,7 @@ fn any_rule_conclusion_unifies(fact: &StoredFact, inner: &KnowledgeBaseInner) ->
 /// conditions, BEFORE the full combo enumeration. Unifies the candidate filter that
 /// was duplicated (and divergent) across the traced and untraced paths:
 /// index-decidable conditions are checked first
-/// and definitively (`typed_fact_is_asserted`, no depth penalty); rule-backed
+/// and definitively (`typed_fact_is_stored`, no depth penalty); rule-backed
 /// conditions fall through to a recursive check kept unless DEFINITIVELY false
 /// (a non-definitive verdict near the depth horizon conservatively keeps the
 /// candidate). Negated conditions are inverted (NAF). A condition still carrying
@@ -2203,11 +2229,11 @@ fn filter_event_candidates(
                 if fact_has_unbound_pattern_var(&cs) {
                     return true;
                 }
-                let asserted = typed_fact_is_asserted(&cs, inner);
+                let stored = typed_fact_is_stored(&cs, inner);
                 if rule.negated_condition_indices.contains(&idx) {
-                    !asserted
+                    !stored
                 } else {
-                    asserted
+                    stored
                 }
             }) && recursive_indices.iter().all(|&idx| {
                 let cs = substitute_fact(&rule.typed_conditions[idx], &tb);
@@ -2296,6 +2322,73 @@ impl TraceSink for RecordingSink<'_> {
     }
 }
 
+/// Resolve one active assertion record into the public, stable citation shape.
+/// Rebuild keeps retracted records for ID stability, so provenance must filter
+/// them rather than assuming every registry entry is live.
+fn assertion_citation(inner: &KnowledgeBaseInner, assertion_id: u64) -> Option<AssertionCitation> {
+    let record = inner.fact_registry.get(&assertion_id)?;
+    (!record.retracted).then(|| AssertionCitation {
+        id: record.id,
+        label: record.label.clone(),
+    })
+}
+
+fn assertion_citations(
+    inner: &KnowledgeBaseInner,
+    assertion_ids: impl IntoIterator<Item = u64>,
+) -> Vec<AssertionCitation> {
+    let mut citations: Vec<_> = assertion_ids
+        .into_iter()
+        .filter_map(|id| assertion_citation(inner, id))
+        .collect();
+    citations.sort_by_key(|citation| citation.id);
+    citations.dedup_by_key(|citation| citation.id);
+    citations
+}
+
+fn rule_citation(inner: &KnowledgeBaseInner, source: RuleSourceId) -> Option<RuleCitation> {
+    let assertion = assertion_citation(inner, source.assertion_id)?;
+    Some(RuleCitation {
+        assertion_id: assertion.id,
+        rule_ordinal: source.local_ordinal,
+        assertion_label: assertion.label,
+    })
+}
+
+fn rule_citations(inner: &KnowledgeBaseInner, identity: &RuleIdentity) -> Vec<RuleCitation> {
+    inner
+        .known_rules
+        .source_ids(identity)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter_map(|source| rule_citation(inner, source))
+        .collect()
+}
+
+fn rule_label(inner: &KnowledgeBaseInner, identity: &RuleIdentity) -> Option<String> {
+    inner
+        .universal_rules
+        .values()
+        .flat_map(|rules| rules.iter())
+        .find(|rule| rule.identity.as_ref() == identity)
+        .map(|rule| rule.label.clone())
+}
+
+fn rule_label_for_source(inner: &KnowledgeBaseInner, source: RuleSourceId) -> Option<String> {
+    inner
+        .universal_rules
+        .values()
+        .flat_map(|rules| rules.iter())
+        .find(|rule| {
+            inner
+                .known_rules
+                .source_ids(rule.identity.as_ref())
+                .is_some_and(|sources| sources.contains(&source))
+        })
+        .map(|rule| rule.label.clone())
+}
+
 /// Build the `Derived` proof step for a rule that fired, recording each
 /// condition's provenance as a child (a `Negation` leaf for a NAF-negated
 /// condition, otherwise the positive atom's full derivation via the sink).
@@ -2343,6 +2436,7 @@ fn emit_derived<S: TraceSink>(
         rule: ProofRule::Derived {
             label: rule.label.clone(),
             fact: display,
+            sources: rule_citations(inner, rule.identity.as_ref()),
         },
         holds: true,
         children: child_indices,
@@ -2786,12 +2880,113 @@ pub(super) fn trace_predicate_provenance_typed(
         return idx;
     }
 
-    // Exact store hit → genuinely asserted.
+    // Exact store hit. Truth membership is content-only; the sidecar records
+    // whether that tuple was directly asserted, eagerly derived, admitted as
+    // an existential-import presupposition, or inserted only by internal test
+    // support. Never infer provenance from set membership.
     if inner.fact_store.contains(fact) {
+        let origins = inner.fact_origins_for(fact);
+        let direct_sources = assertion_citations(
+            inner,
+            origins.iter().filter_map(|origin| match origin {
+                StoredFactOrigin::Assertion { assertion_id } => Some(*assertion_id),
+                _ => None,
+            }),
+        );
+
+        if !direct_sources.is_empty() {
+            let idx = steps.len() as u32;
+            steps.push(ProofStep {
+                rule: ProofRule::Asserted {
+                    fact: display.clone(),
+                    sources: direct_sources,
+                },
+                holds: true,
+                children: vec![],
+            });
+            memo.insert(fact.clone(), idx);
+            return idx;
+        }
+
+        // Among non-direct supports, choose the earliest one. Every forward
+        // support is appended only after its captured premises already exist;
+        // following insertion order therefore strictly decreases support time
+        // and cannot walk a later P↔Q support cycle. A presupposition/internal
+        // leaf that predates a later forward derivation remains the primary
+        // explanation. Direct assertions above are terminal and deliberately
+        // take precedence regardless of insertion time.
+        match origins
+            .iter()
+            .find(|origin| !matches!(origin, StoredFactOrigin::Assertion { .. }))
+            .cloned()
+        {
+            Some(StoredFactOrigin::ForwardDerived {
+                rule_identity: identity,
+                premises,
+            }) => {
+                let children = premises
+                    .iter()
+                    .map(|premise| {
+                        trace_predicate_provenance_typed(
+                            premise,
+                            inner,
+                            steps,
+                            depth + 1,
+                            memo,
+                            visited,
+                        )
+                    })
+                    .collect();
+                let sources = rule_citations(inner, identity.as_ref());
+                let label = rule_label(inner, identity.as_ref())
+                    .or_else(|| sources.first().map(|source| source.assertion_label.clone()))
+                    .unwrap_or_else(|| "forward derivation".to_string());
+                let idx = steps.len() as u32;
+                steps.push(ProofStep {
+                    rule: ProofRule::Derived {
+                        label,
+                        fact: display.clone(),
+                        sources,
+                    },
+                    holds: true,
+                    children,
+                });
+                memo.insert(fact.clone(), idx);
+                return idx;
+            }
+            Some(StoredFactOrigin::Presupposition { rule_source }) => {
+                let sources: Vec<_> = rule_citation(inner, rule_source).into_iter().collect();
+                let label = rule_label_for_source(inner, rule_source)
+                    .or_else(|| {
+                        sources
+                            .first()
+                            .map(|citation| citation.assertion_label.clone())
+                    })
+                    .unwrap_or_else(|| "existential import".to_string());
+                let idx = steps.len() as u32;
+                steps.push(ProofStep {
+                    rule: ProofRule::Presupposed {
+                        label,
+                        fact: display.clone(),
+                        sources,
+                    },
+                    holds: true,
+                    children: vec![],
+                });
+                memo.insert(fact.clone(), idx);
+                return idx;
+            }
+            Some(StoredFactOrigin::Internal) | Some(StoredFactOrigin::Assertion { .. }) | None => {}
+        }
+
+        // Defensive/internal fallback. A content fact with no attributable
+        // active origin may still occur in in-crate support code, but it is not
+        // a user assertion and must never be serialized as one.
         let idx = steps.len() as u32;
         steps.push(ProofStep {
-            rule: ProofRule::Asserted {
-                fact: display.clone(),
+            rule: ProofRule::PredicateCheck {
+                method: "internal-store".to_string(),
+                detail: display.clone(),
             },
             holds: true,
             children: vec![],
@@ -2800,39 +2995,48 @@ pub(super) fn trace_predicate_provenance_typed(
         return idx;
     }
 
-    // Holds only via a directly-asserted du-equivalent variant → render the
-    // substitution honestly as EqualitySubstitution (the fact itself was never
-    // asserted). The combined condition (exact contains OR an asserted equivalent
-    // variant) is identical to `typed_fact_is_asserted`, so the trace fires in
-    // exactly the cases the verdict treats as asserted — only the LABEL of the
-    // asserted-via-equivalence sub-case changes. The recursive child trace bottoms
-    // out at the asserted variant (an exact store hit, above). A RULE-DERIVED
-    // equivalent variant is NOT caught here (it is not in the store); it flows to
-    // the rule-derived equality fallback further down.
+    // Holds via a du-equivalent variant already in the content store → render
+    // the substitution as EqualitySubstitution and let the child's origin
+    // sidecar decide whether that variant is Asserted, Derived, Presupposed, or
+    // Internal. A purely backward-derived equivalent variant is not in the store
+    // and therefore flows to the derivation fallback further down.
     if !inner.equivalence_parent.is_empty() {
-        if let Some(variant) = typed_fact_is_asserted_with_equivalence(fact, inner) {
-            let equals_note = equals_substitution_note(fact, &variant);
-            let substituted = variant.to_display_string();
-            let child = trace_predicate_provenance_typed(
-                &variant,
-                inner,
-                steps,
-                depth,
-                memo,
-                &mut HashSet::new(),
-            );
-            let idx = steps.len() as u32;
-            steps.push(ProofStep {
-                rule: ProofRule::EqualitySubstitution {
-                    original: display.clone(),
-                    equality_facts: equals_note,
-                    substituted,
-                },
-                holds: true,
-                children: vec![child],
-            });
-            memo.insert(fact.clone(), idx);
-            return idx;
+        if let Some(variant) = typed_fact_is_stored_with_equivalence(fact, inner) {
+            if let Some(equality_facts) = equality_support_facts(fact, &variant, inner) {
+                let equals_note = equals_substitution_note(fact, &variant);
+                let substituted = variant.to_display_string();
+                let child = trace_predicate_provenance_typed(
+                    &variant,
+                    inner,
+                    steps,
+                    depth,
+                    memo,
+                    &mut HashSet::new(),
+                );
+                let mut children = vec![child];
+                children.extend(equality_facts.iter().map(|equality| {
+                    trace_predicate_provenance_typed(
+                        equality,
+                        inner,
+                        steps,
+                        depth,
+                        memo,
+                        &mut HashSet::new(),
+                    )
+                }));
+                let idx = steps.len() as u32;
+                steps.push(ProofStep {
+                    rule: ProofRule::EqualitySubstitution {
+                        original: display.clone(),
+                        equality_facts: equals_note,
+                        substituted,
+                    },
+                    holds: true,
+                    children,
+                });
+                memo.insert(fact.clone(), idx);
+                return idx;
+            }
         }
     }
 
@@ -2865,8 +3069,8 @@ pub(super) fn trace_predicate_provenance_typed(
     // probe terminates (returns a definitive verdict) for every variant. A du-
     // cycle therefore yields `satisfying = None` rather than overflowing the
     // stack, and the recursive `trace_predicate_provenance_typed` below only fires
-    // for a genuinely-provable variant (which bottoms out at an asserted fact /
-    // rule), so it terminates as well. No extra depth gate is needed here, and
+    // for a genuinely-provable variant (which bottoms out at a sourced stored
+    // fact or rule), so it terminates as well. No extra depth gate is needed here, and
     // adding one would wrongly suppress the fallback on shallow iterative-
     // deepening passes.
     if !inner.equivalence_parent.is_empty() && fact.relation() != nibli_types::relations::IDENTITY {
@@ -2912,28 +3116,41 @@ pub(super) fn trace_predicate_provenance_typed(
                 inner.du_variant_budget.set(None);
             }
             if let Some(variant) = satisfying {
-                let equals_note = equals_substitution_note(fact, &variant);
-                let substituted = variant.to_display_string();
-                let child = trace_predicate_provenance_typed(
-                    &variant,
-                    inner,
-                    steps,
-                    depth,
-                    memo,
-                    &mut HashSet::new(),
-                );
-                let idx = steps.len() as u32;
-                steps.push(ProofStep {
-                    rule: ProofRule::EqualitySubstitution {
-                        original: display.clone(),
-                        equality_facts: equals_note,
-                        substituted,
-                    },
-                    holds: true,
-                    children: vec![child],
-                });
-                memo.insert(fact.clone(), idx);
-                return idx;
+                if let Some(equality_facts) = equality_support_facts(fact, &variant, inner) {
+                    let equals_note = equals_substitution_note(fact, &variant);
+                    let substituted = variant.to_display_string();
+                    let child = trace_predicate_provenance_typed(
+                        &variant,
+                        inner,
+                        steps,
+                        depth,
+                        memo,
+                        &mut HashSet::new(),
+                    );
+                    let mut children = vec![child];
+                    children.extend(equality_facts.iter().map(|equality| {
+                        trace_predicate_provenance_typed(
+                            equality,
+                            inner,
+                            steps,
+                            depth,
+                            memo,
+                            &mut HashSet::new(),
+                        )
+                    }));
+                    let idx = steps.len() as u32;
+                    steps.push(ProofStep {
+                        rule: ProofRule::EqualitySubstitution {
+                            original: display.clone(),
+                            equality_facts: equals_note,
+                            substituted,
+                        },
+                        holds: true,
+                        children,
+                    });
+                    memo.insert(fact.clone(), idx);
+                    return idx;
+                }
             }
         }
     }

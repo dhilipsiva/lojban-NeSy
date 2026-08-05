@@ -15,6 +15,19 @@ here first.
 
 ### Changed
 
+- **Proof facts carry structural source provenance; WIT is
+  `nibli:engine@0.10.0`:** the truth store now has a replay-derived support
+  sidecar instead of treating set membership as proof of user assertion.
+  `Asserted` lists every active fact id/label (so duplicate assertions remain
+  separately citable), `Derived` cites stable `{assertion id, rule ordinal}`
+  sources and grounded premises even when forward chaining eagerly stored its
+  conclusion, and existential-import evidence is a distinct `Presupposed`
+  case. Equality-substitution proofs cite a deterministic path of actual
+  equality facts rather than a synthetic union-find shortcut. Retraction,
+  rebuild, profile toggles, and persistent reopen regenerate the same sources
+  from the authoritative assertion registry. This changes the native proof
+  JSON and component proof-rule ABI during 0.x; old JSON without citation
+  fields still deserializes through serde defaults.
 - **Compute results are proof-local, never knowledge-base facts:** built-in and
   external results decide only the current `ComputeCheck`; they are not inserted
   into the typed fact store or assertion registry, receive no id, do not appear

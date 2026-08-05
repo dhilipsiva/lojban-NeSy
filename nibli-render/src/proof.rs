@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 use nibli_protocol::LogicalTerm;
-use nibli_protocol::{ProofRule, ProofTrace, WitnessOrigin};
+use nibli_protocol::{AssertionCitation, ProofRule, ProofTrace, RuleCitation, WitnessOrigin};
 
 use crate::fact::humanize_fact;
 use crate::register::Register;
@@ -139,6 +139,7 @@ pub fn icon(rule: &ProofRule) -> &'static str {
         ProofRule::PredicateCheck { .. } | ProofRule::ComputeCheck { .. } => "⊢",
         ProofRule::Asserted { .. } => "▣",
         ProofRule::Derived { .. } => "⊢",
+        ProofRule::Presupposed { .. } => "∃",
         ProofRule::ProofRef { .. } => "↑",
         ProofRule::EqualitySubstitution { .. } => "≡",
         ProofRule::RuleAttemptFailed { .. } => "✗",
@@ -151,6 +152,7 @@ pub fn css_class(rule: &ProofRule) -> &'static str {
     match rule {
         ProofRule::Asserted { .. } => "proof-asserted",
         ProofRule::Derived { .. } => "proof-derived",
+        ProofRule::Presupposed { .. } => "proof-exists",
         ProofRule::ProofRef { .. } => "proof-ref",
         ProofRule::ExistsWitness { .. } | ProofRule::ModalPassthrough { .. } => "proof-exists",
         ProofRule::ExistsFailed | ProofRule::ForallCounterexample { .. } => "proof-failed",
@@ -171,6 +173,39 @@ fn witness_origin_suffix(origin: WitnessOrigin) -> &'static str {
         WitnessOrigin::GeneratedWitness => " [generated-witness]",
         WitnessOrigin::ExistentialImport => " [existential-import]",
     }
+}
+
+fn one_line_source_label(label: &str) -> String {
+    label.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn assertion_sources_suffix(sources: &[AssertionCitation]) -> String {
+    if sources.is_empty() {
+        return String::new();
+    }
+    let citations: Vec<String> = sources
+        .iter()
+        .map(|source| format!("#{} {}", source.id, one_line_source_label(&source.label)))
+        .collect();
+    format!(" [assertions: {}]", citations.join("; "))
+}
+
+fn rule_sources_suffix(sources: &[RuleCitation]) -> String {
+    if sources.is_empty() {
+        return String::new();
+    }
+    let citations: Vec<String> = sources
+        .iter()
+        .map(|source| {
+            format!(
+                "#{}/{} {}",
+                source.assertion_id,
+                source.rule_ordinal,
+                one_line_source_label(&source.assertion_label)
+            )
+        })
+        .collect();
+    format!(" [rule sources: {}]", citations.join("; "))
 }
 
 /// Human-readable label describing the proof step (UI component form).
@@ -225,14 +260,33 @@ pub fn label(rule: &ProofRule) -> String {
         ProofRule::ComputeCheck { method, detail } => {
             format!("Compute ({method}): {}", humanize_fact(detail))
         }
-        ProofRule::Asserted { fact } => format!("Asserted: {}", humanize_fact(fact)),
-        ProofRule::Derived { label, fact } => {
+        ProofRule::Asserted { fact, sources } => format!(
+            "Asserted: {}{}",
+            humanize_fact(fact),
+            assertion_sources_suffix(sources)
+        ),
+        ProofRule::Derived {
+            label,
+            fact,
+            sources,
+        } => {
             format!(
-                "Derived ({}): {}",
+                "Derived ({}): {}{}",
                 humanize_rule_label(label),
-                humanize_fact(fact)
+                humanize_fact(fact),
+                rule_sources_suffix(sources)
             )
         }
+        ProofRule::Presupposed {
+            label,
+            fact,
+            sources,
+        } => format!(
+            "Presupposed (legacy existential import; {}): {}{}",
+            humanize_rule_label(label),
+            humanize_fact(fact),
+            rule_sources_suffix(sources)
+        ),
         ProofRule::ProofRef { fact } => format!("(proved above): {}", humanize_fact(fact)),
         ProofRule::EqualitySubstitution {
             original,
@@ -321,15 +375,36 @@ pub fn trace_display(rule: &ProofRule, result: bool) -> String {
         ProofRule::ComputeCheck { method, detail } => {
             format!("Compute ({}): {} -> {}", method, humanize_fact(detail), tag)
         }
-        ProofRule::Asserted { fact } => format!("Fact: {} -> {}", humanize_fact(fact), tag),
-        ProofRule::Derived { label, fact } => {
+        ProofRule::Asserted { fact, sources } => format!(
+            "Fact: {}{} -> {}",
+            humanize_fact(fact),
+            assertion_sources_suffix(sources),
+            tag
+        ),
+        ProofRule::Derived {
+            label,
+            fact,
+            sources,
+        } => {
             format!(
-                "Rule ({}): {} -> {}",
+                "Rule ({}): {}{} -> {}",
                 humanize_rule_label(label),
                 humanize_fact(fact),
+                rule_sources_suffix(sources),
                 tag
             )
         }
+        ProofRule::Presupposed {
+            label,
+            fact,
+            sources,
+        } => format!(
+            "Presupposition (legacy existential import; {}): {}{} -> {}",
+            humanize_rule_label(label),
+            humanize_fact(fact),
+            rule_sources_suffix(sources),
+            tag
+        ),
         ProofRule::ProofRef { fact } => format!("(see above): {} -> {}", humanize_fact(fact), tag),
         ProofRule::EqualitySubstitution {
             original,
@@ -421,6 +496,7 @@ mod tests {
         let t = trace(
             ProofRule::Asserted {
                 fact: "dog_x1(sk_2, adam)".to_string(),
+                sources: vec![],
             },
             true,
         );
@@ -436,6 +512,7 @@ mod tests {
             ProofRule::Derived {
                 label: "dog ∧ gerku_x1 → animal ∧ danlu_x1".to_string(),
                 fact: "animal(adam)".to_string(),
+                sources: vec![],
             },
             true,
         );
@@ -468,5 +545,43 @@ mod tests {
             trace_display(&rule, true),
             "Exists: $x = sk_0 [generated-witness] -> TRUE"
         );
+    }
+
+    #[test]
+    fn assertion_citations_are_visible_and_keep_duplicates_distinct() {
+        let rule = ProofRule::Asserted {
+            fact: "animal(adam)".to_string(),
+            sources: vec![
+                AssertionCitation {
+                    id: 3,
+                    label: "animal(Adam).".to_string(),
+                },
+                AssertionCitation {
+                    id: 8,
+                    label: "animal(Adam).".to_string(),
+                },
+            ],
+        };
+        let rendered = label(&rule);
+        assert!(rendered.contains("#3 animal(Adam)."), "{rendered}");
+        assert!(rendered.contains("#8 animal(Adam)."), "{rendered}");
+    }
+
+    #[test]
+    fn presupposed_fact_is_never_rendered_as_asserted() {
+        let rule = ProofRule::Presupposed {
+            label: "dog → animal".to_string(),
+            fact: "dog(sk_import_0)".to_string(),
+            sources: vec![RuleCitation {
+                assertion_id: 11,
+                rule_ordinal: 2,
+                assertion_label: "Every dog is an animal.".to_string(),
+            }],
+        };
+        let rendered = label(&rule);
+        assert!(rendered.starts_with("Presupposed (legacy existential import;"));
+        assert!(rendered.contains("#11/2 Every dog is an animal."));
+        assert!(!rendered.contains("Asserted:"));
+        assert!(trace_display(&rule, true).starts_with("Presupposition "));
     }
 }

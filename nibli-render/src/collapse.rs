@@ -80,6 +80,9 @@ pub(crate) enum MacroKind {
     Given,
     /// Derived by a rule; the string is the (relation-only) rule label.
     Derived(String),
+    /// Minted by the optional legacy existential-import profile; the string is
+    /// the rule label that licensed the presupposition.
+    Presupposed(String),
     /// A computed leaf; the string is the `ComputeCheck` source method, so the
     /// rendered label can distinguish a LOCAL computation (built-in arithmetic /
     /// numeric comparison) from a value TRUSTED from the external backend (an
@@ -134,6 +137,17 @@ fn step_to_rendered(step: &MacroStep) -> RenderedNode {
             step.holds,
             step.role_detail.clone(),
         ),
+        MacroKind::Presupposed(label) => {
+            let just = presupposition_justification(label);
+            macro_leaf(
+                &step.statement,
+                &just,
+                "∃",
+                "proof-exists",
+                step.holds,
+                step.role_detail.clone(),
+            )
+        }
         MacroKind::Computed(method) => macro_leaf(
             &step.statement,
             computed_label(method),
@@ -372,8 +386,9 @@ fn goal_event_key(trace: &ProofTrace, g: u32) -> Option<LeafKey> {
 /// The surface fact string a goal step is about, if any.
 fn goal_fact(rule: &ProofRule) -> Option<String> {
     match rule {
-        ProofRule::Asserted { fact }
+        ProofRule::Asserted { fact, .. }
         | ProofRule::Derived { fact, .. }
+        | ProofRule::Presupposed { fact, .. }
         | ProofRule::ProofRef { fact } => Some(fact.clone()),
         ProofRule::PredicateCheck { detail, .. } | ProofRule::ComputeCheck { detail, .. } => {
             Some(detail.clone())
@@ -387,6 +402,7 @@ fn goal_fact(rule: &ProofRule) -> Option<String> {
 enum GroupKind {
     Given,
     Derived(String),
+    Presupposed(String),
     /// String is the `ComputeCheck` source method (see [`computed_label`]).
     Computed(String),
     Checked,
@@ -396,6 +412,7 @@ enum GroupKind {
 
 fn classify_group(trace: &ProofTrace, steps: &[u32]) -> GroupKind {
     let mut derived: Option<String> = None;
+    let mut presupposed: Option<String> = None;
     let mut computed_method: Option<String> = None;
     let (mut given, mut checked, mut notfound, mut nonref) = (false, false, false, false);
     for &g in steps {
@@ -406,6 +423,10 @@ fn classify_group(trace: &ProofTrace, steps: &[u32]) -> GroupKind {
             }
             ProofRule::Asserted { .. } => {
                 given = true;
+                nonref = true;
+            }
+            ProofRule::Presupposed { label, .. } => {
+                presupposed = Some(label.clone());
                 nonref = true;
             }
             ProofRule::ComputeCheck { method, .. } => {
@@ -428,6 +449,8 @@ fn classify_group(trace: &ProofTrace, steps: &[u32]) -> GroupKind {
     }
     if let Some(l) = derived {
         GroupKind::Derived(l)
+    } else if let Some(l) = presupposed {
+        GroupKind::Presupposed(l)
     } else if given {
         GroupKind::Given
     } else if let Some(m) = computed_method {
@@ -478,6 +501,12 @@ fn build_macro_step(
             holds,
             role_detail(trace, steps),
         ),
+        GroupKind::Presupposed(label) => leaf_step(
+            statement,
+            MacroKind::Presupposed(label),
+            holds,
+            role_detail(trace, steps),
+        ),
         GroupKind::Computed(method) => leaf_step(
             statement,
             MacroKind::Computed(method),
@@ -524,7 +553,7 @@ fn build_single_step(
     let rule = &trace.steps[g as usize].rule;
     let holds = trace.steps[g as usize].holds;
     match rule {
-        ProofRule::Asserted { fact } => {
+        ProofRule::Asserted { fact, .. } => {
             let stmt = flat_statement(fact, register);
             if seen.contains(&stmt) {
                 return leaf_step(stmt, MacroKind::Reference, true, None);
@@ -556,7 +585,15 @@ fn build_single_step(
             holds,
             None,
         ),
-        ProofRule::Derived { label, fact } => {
+        ProofRule::Presupposed { label, fact, .. } => {
+            let stmt = flat_statement(fact, register);
+            if seen.contains(&stmt) {
+                return leaf_step(stmt, MacroKind::Reference, true, None);
+            }
+            seen.push(stmt.clone());
+            leaf_step(stmt, MacroKind::Presupposed(label.clone()), holds, None)
+        }
+        ProofRule::Derived { label, fact, .. } => {
             let stmt = flat_statement(fact, register);
             if seen.contains(&stmt) {
                 return leaf_step(stmt, MacroKind::Reference, true, None);
@@ -606,6 +643,14 @@ fn rule_justification(label: &str) -> String {
     match rule_to_english(&humanized) {
         Some(e) => format!("by the rule: {e}"),
         None => format!("by rule: {humanized}"),
+    }
+}
+
+fn presupposition_justification(label: &str) -> String {
+    let humanized = humanize_rule_label(label);
+    match rule_to_english(&humanized) {
+        Some(rule) => format!("presupposed by legacy existential import: {rule}"),
+        None => format!("presupposed by legacy existential import: {humanized}"),
     }
 }
 
@@ -697,6 +742,7 @@ mod tests {
     fn asserted(fact: &str) -> ProofRule {
         ProofRule::Asserted {
             fact: fact.to_string(),
+            sources: vec![],
         }
     }
 
@@ -710,6 +756,7 @@ mod tests {
         ProofRule::Derived {
             label: "dog ∧ gerku_x1 ∧ gerku_x2 → animal ∧ danlu_x1 ∧ danlu_x2".to_string(),
             fact: fact.to_string(),
+            sources: vec![],
         }
     }
 
@@ -859,12 +906,39 @@ mod tests {
     }
 
     #[test]
+    fn flat_presupposed_fact_is_not_collapsed_to_given() {
+        let trace = ProofTrace {
+            steps: vec![step(
+                ProofRule::Presupposed {
+                    label: "dog → animal".to_string(),
+                    fact: "animal(adam)".to_string(),
+                    sources: vec![],
+                },
+                true,
+                vec![],
+            )],
+            root: 0,
+            naf_dependent: false,
+            cwa_false: false,
+        };
+        let node = collapse_proof(&trace, Register::Spec);
+        assert_eq!(node.css_class, "proof-exists");
+        assert!(
+            node.label.contains("legacy existential import"),
+            "{}",
+            node.label
+        );
+        assert!(!node.label.contains("given"), "{}", node.label);
+    }
+
+    #[test]
     fn multi_hop_nests_two_rule_steps() {
         // alive(adam) <- animal(adam) <- dog(adam), each a single-role event for
         // a compact fixture. Exercises premise-of-premise recursion.
         let dl = |lhs_base: &str, rhs: &str, fact: &str| ProofRule::Derived {
             label: format!("{lhs_base} ∧ {lhs_base}_x1 → {rhs} ∧ {rhs}_x1"),
             fact: fact.to_string(),
+            sources: vec![],
         };
         let trace = ProofTrace {
             steps: vec![

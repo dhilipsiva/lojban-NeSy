@@ -2,7 +2,7 @@
 
 The component boundary, as declared in
 [`wit/world.wit`](https://github.com/dhilipsiva/nibli/blob/main/wit/world.wit)
-— package **`nibli:engine@0.9.0`**, world **`nibli-pipeline`**:
+— package **`nibli:engine@0.10.0`**, world **`nibli-pipeline`**:
 
 ```wit
 world nibli-pipeline {
@@ -43,11 +43,14 @@ The IR and verdict types ([Pipeline & IR](pipeline-and-ir.md)):
 - `witness-origin`: `knowledge-base` | `generated-witness` | `existential-import`;
   `witness-binding { variable, term, origin }`, `fact-id` (u64),
   `fact-summary { id, label, root-count }`.
-- `proof-rule` (19 cases) + 15 named-field payload records (WIT variant cases
+- `proof-rule` (20 cases) + 16 named-field payload records (WIT variant cases
   hold at most one payload type, so each data-carrying case gets a record —
   the interface self-documents instead of using positional tuples);
   `exists-witness-rule` carries `origin`, while `count-result-rule` carries
-  `existential-imported` alongside `expected` and `actual`;
+  `existential-imported` alongside `expected` and `actual`. `asserted-rule`
+  lists every active assertion citation, `derived-rule` lists stable
+  assertion-local rule citations, and `presupposed-rule` keeps
+  existential-import evidence distinct from user-given facts;
   `proof-step { rule, holds, children }`;
   `proof-trace { steps, root, naf-dependent, cwa-false }` — the NAF/CWA flags
   are computed once in the engine and carried across so consumers never
@@ -119,7 +122,7 @@ hand-written `convert_proof_rule` bridge in `nibli-pipeline/src/lib.rs`
 (`proof-step`/`proof-trace` reference it and stay generated too).
 
 **Version-bump checklist:** the remap keys pin the interface version
-(`nibli:engine/logic-types@0.9.0/…`). Any WIT version change must bump **all
+(`nibli:engine/logic-types@0.10.0/…`). Any WIT version change must bump **all
 eleven keys** — a missed key silently stops remapping and resurrects the mirror
 types.
 
@@ -127,6 +130,7 @@ types.
 
 | WIT | Change |
 |-----|--------|
+| 0.10.0 | Added stable assertion/rule citations to proof facts and a distinct `presupposed` case; eager rule conclusions and imported witnesses can no longer cross the component boundary as user-given facts |
 | 0.9.0 | Added `generated-witness` origin and changed universal proof payloads from bare terms to origin-bearing witness bindings, separating reasoner-minted witnesses from user constants at every public result/proof surface |
 | 0.8.0 | Witness origin on find/exists proofs, imported contribution on count proofs, fallible `set-existential-import`, and `existential-import-enabled` |
 | 0.7.0 | `set-materialization` + `materialization-report` |

@@ -133,18 +133,6 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Proof provenance / compute assurance
 
-- **Track fact origin so traces cannot call derived facts “asserted.”**
-  `trace_predicate_provenance_typed` treats any exact `fact_store` hit as
-  `ProofRule::Asserted` (`nibli-reason/src/reasoning.rs`:2724-2735), but that same store
-  also receives forward-derived facts (`nibli-reason/src/rules.rs`:985-1098), which carry
-  no user `FactRecord` id/label/source. This can turn a rule-derived premise into a
-  displayed `[given]`. Introduce explicit origin metadata (user assertion id, rule id,
-  presupposition, or other internal source), retain it through equivalence and rebuild,
-  and render origins honestly. **Exit:** tests force the same ground fact through user
-  assertion and forward derivation and require distinct serialized/WIT proof steps;
-  duplicate user assertions remain separately citable; retraction/reopen retains
-  provenance; Chapters 10, 11, 16 and Appendices C/E recapture real output.
-
 - **Define a high-assurance compute admission policy.** Today a backend reply crosses a
   plaintext JSONL/TCP seam and is accepted as trusted evidence for the current
   `ComputeCheck`. The proof-local lifecycle prevents it from becoming a stored premise,

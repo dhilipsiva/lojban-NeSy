@@ -237,6 +237,34 @@ impl QueryResult {
     }
 }
 
+/// Unique identifier for a stored assertion in the knowledge base.
+pub type FactId = u64;
+
+/// A direct assertion that supports an [`ProofRule::Asserted`] fact.
+///
+/// Identical ground facts may be asserted more than once. Each assertion keeps
+/// its own stable ID and source label so a proof can cite every active source
+/// instead of collapsing provenance along with fact-store membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AssertionCitation {
+    pub id: FactId,
+    pub label: String,
+}
+
+/// A stored rule assertion that supports a derived or presupposed fact.
+///
+/// `rule_ordinal` distinguishes multiple universal rules compiled from one
+/// stored assertion while `assertion_id` and `assertion_label` identify that
+/// assertion across rebuilds and persistence replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RuleCitation {
+    pub assertion_id: FactId,
+    pub rule_ordinal: u32,
+    pub assertion_label: String,
+}
+
 /// Proof rule applied at a single proof step.
 ///
 /// This IS the serde wire type (named fields, `#[serde(tag = "type")]`): the same
@@ -285,9 +313,32 @@ pub enum ProofRule {
     #[cfg_attr(feature = "serde", serde(rename = "compute_check"))]
     ComputeCheck { method: String, detail: String },
     #[cfg_attr(feature = "serde", serde(rename = "asserted"))]
-    Asserted { fact: String },
+    Asserted {
+        fact: String,
+        /// Every active direct assertion of this exact fact, in stable order.
+        #[cfg_attr(feature = "serde", serde(default))]
+        sources: Vec<AssertionCitation>,
+    },
     #[cfg_attr(feature = "serde", serde(rename = "derived"))]
-    Derived { label: String, fact: String },
+    Derived {
+        label: String,
+        fact: String,
+        /// Stored rule assertions whose canonical rule identity supports this step.
+        #[cfg_attr(feature = "serde", serde(default))]
+        sources: Vec<RuleCitation>,
+    },
+    /// Fact minted by the optional legacy existential-import profile.
+    ///
+    /// This is admitted base evidence under that explicit profile, not a direct
+    /// user assertion and not an ordinary rule firing.
+    #[cfg_attr(feature = "serde", serde(rename = "presupposed"))]
+    Presupposed {
+        label: String,
+        fact: String,
+        /// The rule assertion(s) that causally licensed this presupposition.
+        #[cfg_attr(feature = "serde", serde(default))]
+        sources: Vec<RuleCitation>,
+    },
     #[cfg_attr(feature = "serde", serde(rename = "proof_ref"))]
     ProofRef { fact: String },
     /// Equality substitution: fact proved by substituting equivalent terms.
@@ -362,9 +413,6 @@ pub enum AggregateOp {
     Max,
     Avg,
 }
-
-/// Unique identifier for a stored fact in the knowledge base.
-pub type FactId = u64;
 
 /// Summary of an active fact in the knowledge base.
 #[derive(Clone, Debug)]
@@ -462,6 +510,7 @@ pub fn __exhaustiveness_guard(node: &LogicNode, term: &LogicalTerm, rule: &Proof
         ProofRule::ComputeCheck { .. } => {}
         ProofRule::Asserted { .. } => {}
         ProofRule::Derived { .. } => {}
+        ProofRule::Presupposed { .. } => {}
         ProofRule::ProofRef { .. } => {}
         ProofRule::EqualitySubstitution { .. } => {}
         ProofRule::RuleAttemptFailed { .. } => {}

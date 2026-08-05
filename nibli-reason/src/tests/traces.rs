@@ -412,6 +412,7 @@ fn trace_soundness_conformance() {
     #[derive(Default)]
     struct Exercised {
         factax: usize,      // Asserted leaf checked against the fact store
+        presupposed: usize, // Profile-generated fact checked against its rule source
         derived: usize,     // Derived step checked against a registered rule
         notfound: usize,    // PredicateNotFound checked to be a genuine non-fact
         ruleblocked: usize, // RuleAttemptFailed child checked to name a registered rule
@@ -463,6 +464,28 @@ fn trace_soundness_conformance() {
         ex: &mut Exercised,
     ) -> Result<(), String> {
         let inner = kb.inner.borrow();
+        // Every physical store member must have at least one structural support,
+        // and no support entry may outlive its fact. This is the lifecycle seam
+        // that prevents a set-membership shortcut from inventing "asserted".
+        let stored_facts: std::collections::HashSet<StoredFact> =
+            inner.fact_store.all_facts().cloned().collect();
+        let supported_facts: std::collections::HashSet<StoredFact> = inner
+            .fact_origins
+            .iter()
+            .filter(|(_, origins)| !origins.is_empty())
+            .map(|(fact, _)| fact.clone())
+            .collect();
+        if stored_facts != supported_facts {
+            return Err(format!(
+                "fact-store/support-sidecar invariant failed: stored-only={:?}, support-only={:?}",
+                stored_facts
+                    .difference(&supported_facts)
+                    .collect::<Vec<_>>(),
+                supported_facts
+                    .difference(&stored_facts)
+                    .collect::<Vec<_>>()
+            ));
+        }
         // The store's fact display strings + the registered rules' base labels — the engine-side
         // ground truth the trace's leaves must be tied to.
         let fact_displays: std::collections::HashSet<String> = inner
@@ -482,7 +505,7 @@ fn trace_soundness_conformance() {
             let any_hold = step.children.iter().any(|&c| holds(c));
             match &step.rule {
                 // Pos.fact — a positive leaf certificate is a true leaf AND (factAx) a genuine KB fact.
-                ProofRule::Asserted { fact } => {
+                ProofRule::Asserted { fact, sources } => {
                     if !step.holds {
                         return Err(format!("step #{i} Asserted but holds=false"));
                     }
@@ -491,11 +514,98 @@ fn trace_soundness_conformance() {
                             "step #{i} Asserted '{fact}' is not in the fact store (factAx bridge)"
                         ));
                     }
+                    if sources.is_empty() {
+                        return Err(format!(
+                            "step #{i} Asserted '{fact}' has no assertion citation"
+                        ));
+                    }
+                    let mut actual_source_ids: Vec<u64> = inner
+                        .fact_origins
+                        .iter()
+                        .filter(|(stored, _)| stored.to_display_string() == *fact)
+                        .flat_map(|(_, origins)| origins)
+                        .filter_map(|origin| match origin {
+                            crate::kb::StoredFactOrigin::Assertion { assertion_id } => {
+                                Some(*assertion_id)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    actual_source_ids.sort_unstable();
+                    actual_source_ids.dedup();
+                    let traced_source_ids: Vec<u64> =
+                        sources.iter().map(|source| source.id).collect();
+                    if traced_source_ids != actual_source_ids {
+                        return Err(format!(
+                            "step #{i} Asserted '{fact}' cites {traced_source_ids:?}, but its active direct supports are {actual_source_ids:?}"
+                        ));
+                    }
+                    for source in sources {
+                        let Some(record) = inner.fact_registry.get(&source.id) else {
+                            return Err(format!(
+                                "step #{i} Asserted '{fact}' cites missing FactRecord #{}",
+                                source.id
+                            ));
+                        };
+                        if record.retracted || record.label != source.label {
+                            return Err(format!(
+                                "step #{i} Asserted '{fact}' citation #{} is stale or has the wrong label",
+                                source.id
+                            ));
+                        }
+                    }
                     ex.factax += 1;
+                }
+                ProofRule::Presupposed {
+                    label,
+                    fact,
+                    sources,
+                } => {
+                    if !step.holds || sources.is_empty() || !fact_displays.contains(fact) {
+                        return Err(format!(
+                            "step #{i} Presupposed must be a stored holding fact with a rule citation"
+                        ));
+                    }
+                    if !rule_labels.contains(label.as_str()) {
+                        return Err(format!(
+                            "step #{i} Presupposed label '{label}' is not a registered rule"
+                        ));
+                    }
+                    for source in sources {
+                        let Some(record) = inner.fact_registry.get(&source.assertion_id) else {
+                            return Err(format!(
+                                "step #{i} Presupposed cites missing rule assertion #{}",
+                                source.assertion_id
+                            ));
+                        };
+                        if record.retracted || record.label != source.assertion_label {
+                            return Err(format!(
+                                "step #{i} Presupposed rule citation #{} is stale or mislabeled",
+                                source.assertion_id
+                            ));
+                        }
+                        let wanted = crate::kb::RuleSourceId {
+                            assertion_id: source.assertion_id,
+                            local_ordinal: source.rule_ordinal,
+                        };
+                        let registered = inner.universal_rules.values().flatten().any(|rule| {
+                            inner
+                                .known_rules
+                                .source_ids(&rule.identity)
+                                .is_some_and(|ids| ids.contains(&wanted))
+                        });
+                        if !registered {
+                            return Err(format!(
+                                "step #{i} Presupposed cites unregistered rule source {:?}",
+                                wanted
+                            ));
+                        }
+                    }
+                    ex.presupposed += 1;
                 }
                 // Pos.fire — holds ⟹ condition children present + all hold; AND (candOk/ruleClosed)
                 // the fired rule is registered.
-                ProofRule::Derived { label, .. } => {
+                ProofRule::Derived { label, sources, .. } => {
                     if step.holds && (step.children.is_empty() || !all_hold) {
                         return Err(format!(
                             "step #{i} Derived holds=true but a condition child is missing or does not hold"
@@ -506,6 +616,44 @@ fn trace_soundness_conformance() {
                             "step #{i} Derived label '{}' is not a registered rule (candOk/ruleClosed bridge)",
                             label
                         ));
+                    }
+                    if sources.is_empty() {
+                        return Err(format!("step #{i} Derived '{label}' has no rule citation"));
+                    }
+                    for source in sources {
+                        let Some(record) = inner.fact_registry.get(&source.assertion_id) else {
+                            return Err(format!(
+                                "step #{i} Derived '{label}' cites missing rule assertion #{}",
+                                source.assertion_id
+                            ));
+                        };
+                        if record.retracted || record.label != source.assertion_label {
+                            return Err(format!(
+                                "step #{i} Derived '{label}' citation #{} is stale or mislabeled",
+                                source.assertion_id
+                            ));
+                        }
+                        let wanted = crate::kb::RuleSourceId {
+                            assertion_id: source.assertion_id,
+                            local_ordinal: source.rule_ordinal,
+                        };
+                        let registered = inner
+                            .universal_rules
+                            .values()
+                            .flatten()
+                            .filter(|rule| rule.label == *label)
+                            .any(|rule| {
+                                inner
+                                    .known_rules
+                                    .source_ids(&rule.identity)
+                                    .is_some_and(|ids| ids.contains(&wanted))
+                            });
+                        if !registered {
+                            return Err(format!(
+                                "step #{i} Derived '{label}' cites unregistered rule source {:?}",
+                                wanted
+                            ));
+                        }
                     }
                     ex.derived += 1;
                 }
@@ -646,6 +794,13 @@ fn trace_soundness_conformance() {
                     if step.children.is_empty() || step.holds != holds(step.children[0]) {
                         return Err(format!(
                             "step #{i} ProofRef holds mismatch with its referent"
+                        ));
+                    }
+                }
+                ProofRule::EqualitySubstitution { .. } => {
+                    if step.holds && (step.children.is_empty() || !all_hold) {
+                        return Err(format!(
+                            "step #{i} EqualitySubstitution holds without a holding substituted proof and equality path"
                         ));
                     }
                 }
@@ -812,9 +967,36 @@ fn trace_soundness_conformance() {
         run_case("chain_blocked_false", &kb, make_query("adam", "xanlu"));
         checked += 1;
     }
+    // 13. The optional existential-import profile stores a presupposition, not
+    //     an asserted fact. Its certificate must resolve to the rule assertion.
+    {
+        let kb = new_kb();
+        kb.set_existential_import(true).unwrap();
+        assert_id(
+            &kb,
+            make_universal("gerku", "danlu"),
+            "all dogs are animals",
+        );
+        let mut nodes = Vec::new();
+        let dog = pred(
+            &mut nodes,
+            "gerku",
+            vec![LogicalTerm::Variable("x".into()), LogicalTerm::Unspecified],
+        );
+        let root = exists(&mut nodes, "x", dog);
+        run_case(
+            "existential_import_presupposition",
+            &kb,
+            LogicBuffer {
+                nodes,
+                roots: vec![root],
+            },
+        );
+        checked += 1;
+    }
 
     assert!(
-        checked >= 12,
+        checked >= 13,
         "trace-soundness corpus too small ({checked}); gate near-vacuous"
     );
     // The axiom bridges must not be vacuous: each KB-tied check fired at least once across the corpus.
@@ -826,6 +1008,10 @@ fn trace_soundness_conformance() {
     assert!(
         ex.derived > 0,
         "candOk/ruleClosed bridge never exercised (no Derived step checked vs a rule)"
+    );
+    assert!(
+        ex.presupposed > 0,
+        "presupposition bridge never exercised (no profile-generated fact checked vs its rule)"
     );
     assert!(
         ex.notfound > 0,

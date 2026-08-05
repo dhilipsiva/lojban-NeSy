@@ -119,12 +119,47 @@ fn convert_proof_rule(r: &logic::ProofRule) -> export_logic::ProofRule {
                 detail: detail.clone(),
             })
         }
-        logic::ProofRule::Asserted { fact } => {
-            e::ProofRule::Asserted(e::AssertedRule { fact: fact.clone() })
-        }
-        logic::ProofRule::Derived { label, fact } => e::ProofRule::Derived(e::DerivedRule {
+        logic::ProofRule::Asserted { fact, sources } => e::ProofRule::Asserted(e::AssertedRule {
+            fact: fact.clone(),
+            sources: sources
+                .iter()
+                .map(|source| e::AssertionCitation {
+                    id: source.id,
+                    label: source.label.clone(),
+                })
+                .collect(),
+        }),
+        logic::ProofRule::Derived {
+            label,
+            fact,
+            sources,
+        } => e::ProofRule::Derived(e::DerivedRule {
             label: label.clone(),
             fact: fact.clone(),
+            sources: sources
+                .iter()
+                .map(|source| e::RuleCitation {
+                    assertion_id: source.assertion_id,
+                    rule_ordinal: source.rule_ordinal,
+                    assertion_label: source.assertion_label.clone(),
+                })
+                .collect(),
+        }),
+        logic::ProofRule::Presupposed {
+            label,
+            fact,
+            sources,
+        } => e::ProofRule::Presupposed(e::PresupposedRule {
+            label: label.clone(),
+            fact: fact.clone(),
+            sources: sources
+                .iter()
+                .map(|source| e::RuleCitation {
+                    assertion_id: source.assertion_id,
+                    rule_ordinal: source.rule_ordinal,
+                    assertion_label: source.assertion_label.clone(),
+                })
+                .collect(),
         }),
         logic::ProofRule::ProofRef { fact } => {
             e::ProofRule::ProofRef(e::ProofRefRule { fact: fact.clone() })

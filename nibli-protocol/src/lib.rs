@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 // ProofTrace, LogicalTerm}` unchanged. The JSON (de)serialization helpers live
 // below as free functions (`proof_trace_to_json` / `proof_trace_from_json`).
 pub use nibli_types::logic::{
-    LogicalTerm, ProofRule, ProofStep, ProofTrace, WitnessBinding, WitnessOrigin,
+    AssertionCitation, FactId, LogicalTerm, ProofRule, ProofStep, ProofTrace, RuleCitation,
+    WitnessBinding, WitnessOrigin,
 };
 
 /// The native TCP compute-backend JSON-Lines client, shared by nibli-host (the WASM
@@ -90,6 +91,10 @@ mod tests {
     fn proof_trace_json_roundtrip() {
         let trace = one_step(ProofRule::Asserted {
             fact: "gerku(adam)".to_string(),
+            sources: vec![AssertionCitation {
+                id: 7,
+                label: "dog(Adam).".to_string(),
+            }],
         });
         let json = proof_trace_to_json(&trace);
         let back = proof_trace_from_json(&json).unwrap();
@@ -97,17 +102,53 @@ mod tests {
     }
 
     #[test]
-    fn wire_json_shape_is_byte_stable() {
-        // The rule-level wire JSON the UI parses must be byte-stable across the
-        // consolidation: an Asserted rule serializes with the `asserted` tag and
-        // the named `fact` field. (Rule tags + string fields are unchanged by the
-        // canonical-as-wire unification — only nested term encoding changed.)
+    fn asserted_wire_json_carries_stable_source_identity() {
         let trace = one_step(ProofRule::Asserted {
             fact: "gerku(adam)".to_string(),
+            sources: vec![AssertionCitation {
+                id: 7,
+                label: "dog(Adam).".to_string(),
+            }],
         });
         let json = proof_trace_to_json(&trace);
         assert!(json.contains(r#""type":"asserted""#), "json: {json}");
         assert!(json.contains(r#""fact":"gerku(adam)""#), "json: {json}");
+        assert!(
+            json.contains(r#""sources":[{"id":7,"label":"dog(Adam)."}]"#),
+            "json: {json}"
+        );
+    }
+
+    #[test]
+    fn old_asserted_and_derived_json_default_to_empty_sources() {
+        let old = r#"{"steps":[{"rule":{"type":"asserted","fact":"dog(adam)"},"holds":true,"children":[]},{"rule":{"type":"derived","label":"dog -> animal","fact":"animal(adam)"},"holds":true,"children":[0]}],"root":1}"#;
+        let trace = proof_trace_from_json(old).expect("pre-origin proof JSON remains readable");
+        assert!(matches!(
+            &trace.steps[0].rule,
+            ProofRule::Asserted { sources, .. } if sources.is_empty()
+        ));
+        assert!(matches!(
+            &trace.steps[1].rule,
+            ProofRule::Derived { sources, .. } if sources.is_empty()
+        ));
+    }
+
+    #[test]
+    fn presupposed_wire_json_carries_rule_source() {
+        let trace = one_step(ProofRule::Presupposed {
+            label: "dog -> animal".to_string(),
+            fact: "dog(sk_import_0)".to_string(),
+            sources: vec![RuleCitation {
+                assertion_id: 11,
+                rule_ordinal: 2,
+                assertion_label: "Every dog is an animal.".to_string(),
+            }],
+        });
+        let json = proof_trace_to_json(&trace);
+        assert!(json.contains(r#""type":"presupposed""#), "json: {json}");
+        assert!(json.contains(r#""assertion_id":11"#), "json: {json}");
+        assert!(json.contains(r#""rule_ordinal":2"#), "json: {json}");
+        assert_eq!(proof_trace_from_json(&json), Some(trace));
     }
 
     #[test]

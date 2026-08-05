@@ -294,7 +294,7 @@ fn cross_flavor_rule_trace_discloses_both_wrappers() {
 
     assert!(
         trace.steps.iter().any(
-            |step| matches!(&step.rule, ProofRule::Asserted { fact } if fact.starts_with("Past("))
+            |step| matches!(&step.rule, ProofRule::Asserted { fact, .. } if fact.starts_with("Past("))
         ),
         "the premise must remain visibly Past in the proof: {:?}",
         trace.steps

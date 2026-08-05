@@ -1055,7 +1055,7 @@ pub(super) fn saturate(
     // with no equivalence expansion. With `Ara = Bel` and a stored `rotten(Bel)`, the
     // seed for `rotten` omits `rotten(Ara)` — so `~rotten(Ara)` would look like "no
     // witness" and answer TRUE where backward chaining, which expands equivalence
-    // variants in `typed_fact_is_asserted`, correctly answers FALSE. That is a WRONG
+    // variants in `typed_fact_is_stored`, correctly answers FALSE. That is a WRONG
     // definitive verdict, the exact failure this module must never produce.
     //
     // (Caught by `equality_classes_refuse_the_whole_kb`, which is why that test asserts

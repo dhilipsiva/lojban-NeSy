@@ -12,6 +12,14 @@ The engine never returns **TRUE** for a formula that does not follow from the as
 
 This is **not** omniscience: change the premises and the verdict can change.
 
+Proof sources are explicit. A stored tuple is not automatically called a user
+assertion: `Asserted` names every active fact id and label, `Derived` cites the
+rule assertion and grounded premises even for eagerly forward-chained facts,
+and legacy existential-import evidence is `Presupposed`. Duplicate assertions
+remain separately citable; retraction and reopen reconstruct citations from the
+same authoritative assertion registry. Equality substitution cites the real
+stored equality path it used.
+
 Ordinary-predicate temporal rule literals are **flavor-exact**. Bare rules are
 unqualified and do not silently lift into `past`, `now`, or `future`; authors
 declare same- or cross-flavor mappings explicitly. Negation-as-failure follows the same rule:

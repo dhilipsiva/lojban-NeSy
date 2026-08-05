@@ -410,8 +410,14 @@ fn proof_memo_uses_structural_fact_identity_not_equal_display_text() {
     trace_predicate_provenance_typed(&first, &inner, &mut steps, 0, &mut memo, &mut visited);
     trace_predicate_provenance_typed(&second, &inner, &mut steps, 0, &mut memo, &mut visited);
     assert_eq!(memo.len(), 2);
-    assert!(matches!(steps[0].rule, ProofRule::Asserted { .. }));
-    assert!(matches!(steps[1].rule, ProofRule::Asserted { .. }));
+    assert!(matches!(
+        steps[0].rule,
+        ProofRule::PredicateCheck { ref method, .. } if method == "internal-store"
+    ));
+    assert!(matches!(
+        steps[1].rule,
+        ProofRule::PredicateCheck { ref method, .. } if method == "internal-store"
+    ));
 }
 
 #[test]

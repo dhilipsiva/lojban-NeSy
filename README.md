@@ -131,7 +131,7 @@ Built-in, zero-hallucination **authorization** (entailment of `authorized(...)` 
 |-------|----------|
 | Guide | [mdBook: Authorization](https://dhilipsiva.github.io/nibli/user/authorization.html) (or `just docs-serve`) |
 | Rust crate | `nibli-auth` — `Authorizer`, `tls` (thread-local for async servers). Not on crates.io yet (`publish = false`) — use a git or path dependency |
-| WIT | `nibli:engine@0.9.0` export `authorizer` (the version lives in `wit/world.wit`) |
+| WIT | `nibli:engine@0.10.0` export `authorizer` (the version lives in `wit/world.wit`) |
 | Python | `just build-auth-py` → `nibli_auth` / `nibli_auth_native` |
 | Examples | `examples/auth-axum`, `examples/auth-fastapi` (same policy) |
 | Tests | `just test-auth`; Python: `just test-auth-py` (local, maturin) |
@@ -474,7 +474,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
   source-scoped typed identity (`Skolem` / `SkolemFn` + `DepPair` for
   multi-dependency); friendly `sk_N` text is display only and cannot alias a user
   constant
-- **Proof traces:** every query produces a proof tree over the `ProofRule` taxonomy (`nibli-types/src/logic.rs`) with DAG memoization via `ProofRef`
+- **Proof traces:** every query produces a proof tree over the `ProofRule` taxonomy (`nibli-types/src/logic.rs`) with DAG memoization via `ProofRef`. Stored truth and source are separate: `Asserted` lists every active fact id/label, `Derived` cites stable assertion-local rule ids and grounded premises (including eagerly stored conclusions), and existential-import facts are `Presupposed`, never `[given]`
 - **Witness extraction:** `query-find` returns all satisfying binding sets for existential variables
 - **Belief revision:** retract-and-rebuild with monotonic fact IDs; `:retract <id>` and `:facts` REPL commands
 - **Four-valued query result:** `TRUE`, `FALSE`, `UNKNOWN` (cycle cut / incomplete knowledge / NAF dependent / backend unavailable / non-finite), `RESOURCE_EXCEEDED` (depth / fuel / memory)
@@ -484,7 +484,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Numerical comparisons:** `greater` (>), `less` (<), `num_equal` (==) evaluated at query time on `Num` terms
 - **Compute dispatch:** `compute-backend` WIT protocol with `ComputeNode` IR variant; results are proof-local and never stored as KB facts
 - **Ground conjunction flattening:** top-level `And` trees flattened before assertion; ground material conditionals auto-registered as zero-variable rules for modus ponens
-- **Equality reasoning:** the `=` identity builtin (compiled relation `equals`) with union-find congruence closure
+- **Equality reasoning:** the `=` identity builtin (compiled relation `equals`) with union-find congruence closure; proof substitution follows and cites actual stored equality edges rather than presenting a compressed class link as an asserted equality
 - **Stratification enforcement:** predicate dependency graph analysis prevents unsound negative cycles
 - **Stratum-ordered materialisation:** the stratification is also USED, not only checked — the relations a query reads under `~` are saturated bottom-up in stratum order, so `~p(x)` is a set-membership test rather than an exhaustive attempt to prove `p(x)` and fail. Fail-closed: tense/deontic flavours, `du` equivalence classes, compute conditions and non-projectable rules are refused and keep the ordinary backward-chaining path. `NIBLI_MATERIALIZE=0` turns it off
 - **Integrity constraints:** `deny` rules enforce assertion-time invariants

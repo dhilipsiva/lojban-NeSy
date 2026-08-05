@@ -295,7 +295,7 @@ fn test_proof_trace_asserted_fact() {
     let root_step = &trace.steps[trace.root as usize];
     assert!(root_step.holds);
     assert!(matches!(&root_step.rule, ProofRule::Asserted { .. }));
-    if let ProofRule::Asserted { fact } = &root_step.rule {
+    if let ProofRule::Asserted { fact, .. } = &root_step.rule {
         assert!(fact.contains("gerku"));
         assert!(fact.contains("alis"));
     }
@@ -312,7 +312,7 @@ fn test_proof_trace_single_hop_derived() {
     let root_step = &trace.steps[trace.root as usize];
     assert!(root_step.holds);
     assert!(matches!(&root_step.rule, ProofRule::Derived { .. }));
-    if let ProofRule::Derived { label, fact } = &root_step.rule {
+    if let ProofRule::Derived { label, fact, .. } = &root_step.rule {
         assert!(fact.contains("danlu"));
         assert!(label.contains("gerku"));
         assert!(label.contains("danlu"));
@@ -322,6 +322,136 @@ fn test_proof_trace_single_hop_derived() {
     let child_step = &trace.steps[root_step.children[0] as usize];
     assert!(child_step.holds);
     assert!(matches!(&child_step.rule, ProofRule::Asserted { .. }));
+}
+
+#[test]
+fn forward_derived_exact_store_hit_keeps_rule_and_premise_provenance() {
+    // A forward conclusion physically occupies `fact_store`, but it is still a
+    // derivation. The exact-hit fast path must not relabel it as an assertion.
+    let kb = new_kb();
+    let rule_id = assert_id(
+        &kb,
+        make_universal("gerku", "danlu"),
+        "all dogs are animals",
+    );
+    kb.set_rule_forward("danlu", true);
+    let premise_id = assert_id(&kb, make_assertion("alis", "gerku"), "Alice is a dog");
+
+    let derived_fact = StoredFact::Bare(GroundFact::new(
+        "danlu",
+        vec![GroundTerm::Constant("alis".into()), GroundTerm::Unspecified],
+    ));
+    assert!(
+        kb.inner.borrow().fact_store.contains(&derived_fact),
+        "sanity: the forward rule must eagerly place danlu(alis) in the store"
+    );
+
+    let (result, trace) = query_with_proof(&kb, make_query("alis", "danlu"));
+    assert!(result);
+    let root = &trace.steps[trace.root as usize];
+    let ProofRule::Derived { sources, .. } = &root.rule else {
+        panic!(
+            "a forward-only exact store hit must be Derived, never Asserted: {:?}",
+            root.rule
+        );
+    };
+    assert_eq!(sources.len(), 1, "one rule assertion supports this rule");
+    assert_eq!(sources[0].assertion_id, rule_id);
+    assert_eq!(sources[0].rule_ordinal, 0);
+    assert_eq!(sources[0].assertion_label, "all dogs are animals");
+    assert_eq!(root.children.len(), 1, "the rule has one positive premise");
+    match &trace.steps[root.children[0] as usize].rule {
+        ProofRule::Asserted { sources, .. } => {
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources[0].id, premise_id);
+            assert_eq!(sources[0].label, "Alice is a dog");
+        }
+        other => panic!("the forward certificate must retain its asserted premise: {other:?}"),
+    }
+
+    // The exact same tuple can later gain a direct user source. Direct support
+    // is then a terminal Asserted certificate; retracting only that source
+    // exposes the still-valid rule derivation again rather than erasing or
+    // relabelling it.
+    let direct_id = assert_id(
+        &kb,
+        make_assertion("alis", "danlu"),
+        "Alice is directly an animal",
+    );
+    let (_, direct_trace) = query_with_proof(&kb, make_query("alis", "danlu"));
+    match &direct_trace.steps[direct_trace.root as usize].rule {
+        ProofRule::Asserted { sources, .. } => {
+            assert_eq!(
+                sources.iter().map(|source| source.id).collect::<Vec<_>>(),
+                vec![direct_id]
+            );
+        }
+        other => panic!("direct support must take precedence over eager support: {other:?}"),
+    }
+    kb.retract_fact_inner(direct_id).unwrap();
+    let (_, derived_again) = query_with_proof(&kb, make_query("alis", "danlu"));
+    match &derived_again.steps[derived_again.root as usize].rule {
+        ProofRule::Derived { sources, .. } => {
+            assert_eq!(sources[0].assertion_id, rule_id);
+        }
+        other => panic!("after direct-source retraction the rule proof must remain: {other:?}"),
+    }
+}
+
+#[test]
+fn forward_cycle_keeps_earliest_presupposition_as_acyclic_primary_support() {
+    // Seed P with a semantic presupposition, then let enabled P→Q and Q→P
+    // rules add later forward supports. Choosing "any forward origin" would
+    // trace P←Q←P forever; choosing the earliest non-direct support bottoms
+    // out at the presupposition. Build the cycle through the public profile/rule
+    // paths so the regression covers real insertion order rather than a hand-
+    // assembled sidecar.
+    let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
+    assert_buf(&kb, make_universal("gerku", "danlu"));
+    kb.set_rule_forward("danlu", true);
+    assert_buf(&kb, make_universal("danlu", "gerku"));
+    kb.set_rule_forward("gerku", true);
+    // This third description universal mints a fresh gerku presupposition.
+    // P→Q then derives danlu for that witness and Q→P adds a later forward
+    // support back onto the same gerku tuple.
+    assert_buf(&kb, make_universal("gerku", "xanlu"));
+
+    let cycle_fact = {
+        let inner = kb.inner.borrow();
+        inner
+            .fact_origins
+            .iter()
+            .find(|(_, origins)| {
+                origins.iter().any(|origin| {
+                    matches!(origin, crate::kb::StoredFactOrigin::Presupposition { .. })
+                }) && origins.iter().any(|origin| {
+                    matches!(origin, crate::kb::StoredFactOrigin::ForwardDerived { .. })
+                })
+            })
+            .map(|(fact, _)| fact.clone())
+            .expect("the fresh P witness must gain a later P←Q forward support")
+    };
+
+    let inner = kb.inner.borrow();
+    let mut steps = Vec::new();
+    let root = trace_predicate_provenance_typed(
+        &cycle_fact,
+        &inner,
+        &mut steps,
+        0,
+        &mut HashMap::new(),
+        &mut HashSet::new(),
+    );
+    assert!(matches!(
+        steps[root as usize].rule,
+        ProofRule::Presupposed { .. }
+    ));
+    assert_eq!(
+        steps.len(),
+        1,
+        "the earliest presupposition is a terminal proof leaf"
+    );
 }
 
 #[test]
@@ -356,6 +486,198 @@ fn test_proof_trace_multi_hop_derived() {
 }
 
 #[test]
+fn rule_source_ordinals_and_duplicate_citations_survive_rebuild() {
+    fn push_universal(nodes: &mut Vec<LogicNode>, from: &str, to: &str) -> u32 {
+        let restrict = pred(
+            nodes,
+            from,
+            vec![
+                LogicalTerm::Variable("_v0".into()),
+                LogicalTerm::Unspecified,
+            ],
+        );
+        let conclusion = pred(
+            nodes,
+            to,
+            vec![
+                LogicalTerm::Variable("_v0".into()),
+                LogicalTerm::Unspecified,
+            ],
+        );
+        let negated = not(nodes, restrict);
+        let implication = or(nodes, negated, conclusion);
+        forall(nodes, "_v0", implication)
+    }
+
+    // One FactRecord produces two executable rules. Their public identity is
+    // the source assertion id plus deterministic local registration ordinal.
+    let kb = new_kb();
+    let mut nodes = Vec::new();
+    let first = push_universal(&mut nodes, "gerku", "danlu");
+    let second = push_universal(&mut nodes, "gerku", "jmive");
+    let multi_rule_id = assert_id(
+        &kb,
+        LogicBuffer {
+            nodes,
+            roots: vec![first, second],
+        },
+        "two dog rules",
+    );
+    assert_id(&kb, make_assertion("alis", "gerku"), "Alice is a dog");
+
+    let ordinal_for = |predicate: &str| {
+        let (_, trace) = query_with_proof(&kb, make_query("alis", predicate));
+        match &trace.steps[trace.root as usize].rule {
+            ProofRule::Derived { sources, .. } => {
+                assert_eq!(sources.len(), 1);
+                assert_eq!(sources[0].assertion_id, multi_rule_id);
+                assert_eq!(sources[0].assertion_label, "two dog rules");
+                sources[0].rule_ordinal
+            }
+            other => panic!("{predicate} should be rule-derived: {other:?}"),
+        }
+    };
+    assert_eq!(ordinal_for("danlu"), 0);
+    assert_eq!(ordinal_for("jmive"), 1);
+    kb.rebuild().unwrap();
+    assert_eq!(
+        ordinal_for("danlu"),
+        0,
+        "rebuild must preserve rule ordinal"
+    );
+    assert_eq!(
+        ordinal_for("jmive"),
+        1,
+        "rebuild must preserve rule ordinal"
+    );
+
+    // Executable-rule dedup must not collapse the separately retractable source
+    // assertions that make the canonical rule citable.
+    let duplicate = new_kb();
+    let first_id = assert_id(
+        &duplicate,
+        make_universal("gerku", "danlu"),
+        "rule copy one",
+    );
+    let second_id = assert_id(
+        &duplicate,
+        make_universal("gerku", "danlu"),
+        "rule copy two",
+    );
+    assert_buf(&duplicate, make_assertion("alis", "gerku"));
+    let (_, trace) = query_with_proof(&duplicate, make_query("alis", "danlu"));
+    let ProofRule::Derived { sources, .. } = &trace.steps[trace.root as usize].rule else {
+        panic!("duplicate canonical rule should still derive danlu(alis)");
+    };
+    assert_eq!(
+        sources
+            .iter()
+            .map(|source| (source.assertion_id, source.rule_ordinal))
+            .collect::<Vec<_>>(),
+        vec![(first_id, 0), (second_id, 0)],
+        "both duplicate rule assertions must remain separately citable"
+    );
+}
+
+#[test]
+fn duplicate_flat_assertions_retain_each_citation_through_rebuild_and_retraction() {
+    fn identity(a: &str, b: &str) -> LogicBuffer {
+        LogicBuffer {
+            nodes: vec![LogicNode::Predicate((
+                nibli_types::relations::IDENTITY.to_string(),
+                vec![
+                    LogicalTerm::Constant(a.into()),
+                    LogicalTerm::Constant(b.into()),
+                ],
+            ))],
+            roots: vec![0],
+        }
+    }
+
+    fn source_ids(kb: &KnowledgeBase) -> Vec<u64> {
+        let (_, trace) = query_with_proof(kb, identity("adam", "bob"));
+        match &trace.steps[trace.root as usize].rule {
+            ProofRule::Asserted { sources, .. } => sources.iter().map(|source| source.id).collect(),
+            other => panic!("the exact stored identity must be asserted: {other:?}"),
+        }
+    }
+
+    let kb = new_kb();
+    let first = assert_id(&kb, identity("adam", "bob"), "identity copy one");
+    let second = assert_id(&kb, identity("adam", "bob"), "identity copy two");
+    assert_eq!(source_ids(&kb), vec![first, second]);
+
+    kb.rebuild().unwrap();
+    assert_eq!(
+        source_ids(&kb),
+        vec![first, second],
+        "rebuild must regenerate both direct supports in fact-id order"
+    );
+
+    kb.retract_fact_inner(first).unwrap();
+    assert_eq!(
+        source_ids(&kb),
+        vec![second],
+        "retracting one duplicate must leave the other citation and the fact"
+    );
+}
+
+#[test]
+fn equality_substitution_cites_the_real_transitive_path() {
+    fn identity(a: &str, b: &str) -> LogicBuffer {
+        LogicBuffer {
+            nodes: vec![LogicNode::Predicate((
+                nibli_types::relations::IDENTITY.to_string(),
+                vec![
+                    LogicalTerm::Constant(a.into()),
+                    LogicalTerm::Constant(b.into()),
+                ],
+            ))],
+            roots: vec![0],
+        }
+    }
+
+    let kb = new_kb();
+    let ab = assert_id(&kb, identity("adam", "bob"), "Adam equals Bob");
+    let bc = assert_id(&kb, identity("bob", "cy"), "Bob equals Cy");
+    let premise = assert_id(&kb, make_assertion("adam", "gerku"), "Adam is a dog");
+
+    let (result, trace) = query_with_proof(&kb, make_query("cy", "gerku"));
+    assert!(result);
+    let root = &trace.steps[trace.root as usize];
+    assert!(matches!(root.rule, ProofRule::EqualitySubstitution { .. }));
+    assert_eq!(
+        root.children.len(),
+        3,
+        "child 0 is the substituted fact; the remaining children are the two real equality edges"
+    );
+    match &trace.steps[root.children[0] as usize].rule {
+        ProofRule::Asserted { sources, .. } => {
+            assert_eq!(
+                sources.iter().map(|s| s.id).collect::<Vec<_>>(),
+                vec![premise]
+            );
+        }
+        other => panic!("the substituted gerku(adam) proof must retain its source: {other:?}"),
+    }
+    let mut equality_sources: Vec<u64> = root.children[1..]
+        .iter()
+        .flat_map(|child| match &trace.steps[*child as usize].rule {
+            ProofRule::Asserted { sources, .. } => {
+                sources.iter().map(|source| source.id).collect::<Vec<_>>()
+            }
+            other => panic!("equality path child must cite an asserted edge: {other:?}"),
+        })
+        .collect();
+    equality_sources.sort_unstable();
+    assert_eq!(
+        equality_sources,
+        vec![ab, bc],
+        "the trace must cite the actual Adam=Bob and Bob=Cy path, not invent Adam=Cy"
+    );
+}
+
+#[test]
 fn test_proof_trace_derived_depth_limit() {
     // Self-referencing rule: gerku → gerku. Asserted fact should be found first,
     // preventing infinite backward-chaining.
@@ -371,12 +693,17 @@ fn test_proof_trace_derived_depth_limit() {
 }
 
 #[test]
-fn test_proof_trace_existential_import_presup_is_asserted() {
+fn test_proof_trace_existential_import_presupposition_is_not_asserted() {
     // Universal "animal(every dog)." creates existential-import presupposition Skolem.
-    // That fact should show as Asserted, not trigger backward-chaining.
+    // That fact is generated by the profile and must never be presented as a
+    // user assertion. It cites the rule assertion that requested the import.
     let kb = new_kb();
     kb.set_existential_import(true).unwrap();
-    assert_buf(&kb, make_universal("gerku", "danlu"));
+    let rule_id = assert_id(
+        &kb,
+        make_universal("gerku", "danlu"),
+        "all dogs are animals",
+    );
     // The friendly witness label is `sk_0`, but a user constant with that spelling
     // must not name the internal witness.
     let (colliding_user_result, _) = query_with_proof(&kb, make_query("sk_0", "gerku"));
@@ -407,10 +734,19 @@ fn test_proof_trace_existential_import_presup_is_asserted() {
             ..
         } if name == "sk_0"
     ));
-    assert!(matches!(
-        trace.steps[root_step.children[0] as usize].rule,
-        ProofRule::Asserted { .. }
-    ));
+    match &trace.steps[root_step.children[0] as usize].rule {
+        ProofRule::Presupposed { label, sources, .. } => {
+            assert!(
+                label.contains("gerku") && label.contains("danlu"),
+                "{label}"
+            );
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources[0].assertion_id, rule_id);
+            assert_eq!(sources[0].rule_ordinal, 0);
+            assert_eq!(sources[0].assertion_label, "all dogs are animals");
+        }
+        other => panic!("an imported restrictor witness must be Presupposed: {other:?}"),
+    }
 }
 
 // ─── Conjunction Introduction (Guarded) Tests ────────────────────

@@ -85,9 +85,10 @@ fn summarize_true(trace: &ProofTrace, register: Register) -> Option<String> {
     clauses.extend(collect_extras(trace));
     if clauses.is_empty() {
         // Fallback for a root the collapse cannot phrase as a derivation (e.g. a
-        // negation-as-failure root): list the asserted givens so a holding proof
-        // never renders an empty "why".
+        // negation-as-failure root): list direct assertions and explicitly
+        // identified legacy-import presuppositions. Never call the latter givens.
         clauses = asserted_givens(trace, register);
+        clauses.extend(presupposed_assumptions(trace, register));
     }
     if clauses.is_empty() {
         return None;
@@ -109,8 +110,8 @@ fn narrate_steps(steps: &[MacroStep], out: &mut Vec<String>) {
     }
     if !any_derived {
         for s in steps {
-            if matches!(s.kind, MacroKind::Given) {
-                let stmt = s.statement.trim().to_string();
+            if matches!(s.kind, MacroKind::Given | MacroKind::Presupposed(_)) {
+                let stmt = narrative_statement(s);
                 if !stmt.is_empty() && !out.contains(&stmt) {
                     out.push(stmt);
                 }
@@ -130,7 +131,7 @@ fn collect_derived_clauses(step: &MacroStep, out: &mut Vec<String>, any_derived:
         let prem: Vec<String> = step
             .premises
             .iter()
-            .map(|p| p.statement.trim().to_string())
+            .map(narrative_statement)
             .filter(|s| !s.is_empty())
             .collect();
         let concl = step.statement.trim();
@@ -142,6 +143,16 @@ fn collect_derived_clauses(step: &MacroStep, out: &mut Vec<String>, any_derived:
         if !out.contains(&clause) {
             out.push(clause);
         }
+    }
+}
+
+fn narrative_statement(step: &MacroStep) -> String {
+    let statement = step.statement.trim();
+    match &step.kind {
+        MacroKind::Presupposed(_) => {
+            format!("{statement} (presupposed by legacy existential import)")
+        }
+        _ => statement.to_string(),
     }
 }
 
@@ -167,11 +178,32 @@ fn asserted_givens(trace: &ProofTrace, register: Register) -> Vec<String> {
         .steps
         .iter()
         .filter_map(|s| match &s.rule {
-            ProofRule::Asserted { fact } => Some(fact.clone()),
+            ProofRule::Asserted { fact, .. } => Some(fact.clone()),
             _ => None,
         })
         .collect();
-    let (groups, flat) = regroup_event_leaves(&facts, register);
+    render_origin_facts(&facts, register)
+}
+
+/// Legacy existential-import facts, kept separate from direct assertions so a
+/// summary can never present a profile-minted witness as a user-provided given.
+fn presupposed_assumptions(trace: &ProofTrace, register: Register) -> Vec<String> {
+    let facts: Vec<String> = trace
+        .steps
+        .iter()
+        .filter_map(|s| match &s.rule {
+            ProofRule::Presupposed { fact, .. } => Some(fact.clone()),
+            _ => None,
+        })
+        .collect();
+    render_origin_facts(&facts, register)
+        .into_iter()
+        .map(|fact| format!("{fact} (presupposed by legacy existential import)"))
+        .collect()
+}
+
+fn render_origin_facts(facts: &[String], register: Register) -> Vec<String> {
+    let (groups, flat) = regroup_event_leaves(facts, register);
     let mut out: Vec<String> = Vec::new();
     for (key, pm) in &groups {
         if let Some(e) = render_group(key.0.as_deref(), &key.1, pm)
@@ -612,6 +644,7 @@ mod tests {
                 step(
                     ProofRule::Asserted {
                         fact: "dog_x1(sk_2, adam)".to_string(),
+                        sources: vec![],
                     },
                     true,
                     vec![],
@@ -620,6 +653,7 @@ mod tests {
                     ProofRule::Derived {
                         label: "dog ∧ gerku_x1 → animal ∧ danlu_x1".to_string(),
                         fact: "animal_x1(sk_3, adam)".to_string(),
+                        sources: vec![],
                     },
                     true,
                     vec![0],
@@ -651,6 +685,7 @@ mod tests {
                 step(
                     ProofRule::Asserted {
                         fact: "dog_x1(sk_2, adam)".to_string(),
+                        sources: vec![],
                     },
                     true,
                     vec![],
@@ -669,6 +704,30 @@ mod tests {
             s.contains("closed-world assumption"),
             "naf note missing: {s}"
         );
+    }
+
+    #[test]
+    fn summarize_presupposition_never_calls_it_a_given() {
+        let trace = ProofTrace {
+            steps: vec![step(
+                ProofRule::Presupposed {
+                    label: "dog → animal".to_string(),
+                    fact: "animal(adam)".to_string(),
+                    sources: vec![],
+                },
+                true,
+                vec![],
+            )],
+            root: 0,
+            naf_dependent: false,
+            cwa_false: false,
+        };
+        let s = summarize_proof(&trace, Register::Spec).expect("presupposition is narratable");
+        assert!(
+            s.contains("presupposed by legacy existential import"),
+            "{s}"
+        );
+        assert!(!s.contains("given"), "{s}");
     }
 
     #[test]
@@ -733,6 +792,7 @@ mod tests {
                 ProofRule::Derived {
                     label: "person → nu ∧ animal".to_string(),
                     fact: "animal_x1(sk_3, adam)".to_string(),
+                    sources: vec![],
                 },
                 true,
                 vec![],

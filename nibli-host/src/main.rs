@@ -21,7 +21,10 @@
 
 use anyhow::Result;
 use nibli_protocol::compute_client::{BackendArg, BackendClient, BackendRequest};
-use nibli_protocol::{ProofRule as ProtoRule, ProofStep as ProtoStep, ProofTrace as ProtoTrace};
+use nibli_protocol::{
+    AssertionCitation as ProtoAssertionCitation, ProofRule as ProtoRule, ProofStep as ProtoStep,
+    ProofTrace as ProtoTrace, RuleCitation as ProtoRuleCitation,
+};
 use nibli_store::{NibliStore, StoredAssertion, StoredLogicalTerm as StoredTerm};
 use reedline::{DefaultPrompt, Reedline, Signal};
 mod kr_highlighter;
@@ -281,10 +284,40 @@ fn rule_to_proto(rule: &ProofRule) -> ProtoRule {
         },
         ProofRule::Asserted(r) => ProtoRule::Asserted {
             fact: r.fact.clone(),
+            sources: r
+                .sources
+                .iter()
+                .map(|source| ProtoAssertionCitation {
+                    id: source.id,
+                    label: source.label.clone(),
+                })
+                .collect(),
         },
         ProofRule::Derived(r) => ProtoRule::Derived {
             label: r.label.clone(),
             fact: r.fact.clone(),
+            sources: r
+                .sources
+                .iter()
+                .map(|source| ProtoRuleCitation {
+                    assertion_id: source.assertion_id,
+                    rule_ordinal: source.rule_ordinal,
+                    assertion_label: source.assertion_label.clone(),
+                })
+                .collect(),
+        },
+        ProofRule::Presupposed(r) => ProtoRule::Presupposed {
+            label: r.label.clone(),
+            fact: r.fact.clone(),
+            sources: r
+                .sources
+                .iter()
+                .map(|source| ProtoRuleCitation {
+                    assertion_id: source.assertion_id,
+                    rule_ordinal: source.rule_ordinal,
+                    assertion_label: source.assertion_label.clone(),
+                })
+                .collect(),
         },
         ProofRule::ProofRef(r) => ProtoRule::ProofRef {
             fact: r.fact.clone(),

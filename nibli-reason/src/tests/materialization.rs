@@ -694,10 +694,10 @@ fn equal_abstraction_digest_prefixes_do_not_match_distinct_full_keys() {
     let colliding_query = StoredFact::Bare(GroundFact::new(second_relation, vec![referent]));
     let kb = new_kb();
     let mut inner = kb.inner.borrow_mut();
-    inner.fact_store.insert(stored.clone());
-    assert!(typed_fact_is_asserted(&stored, &inner));
+    assert_typed_fact(stored.clone(), &mut inner);
+    assert!(typed_fact_is_stored(&stored, &inner));
     assert!(
-        !typed_fact_is_asserted(&colliding_query, &inner),
+        !typed_fact_is_stored(&colliding_query, &inner),
         "the core matcher must compare the complete key, not the equal digest prefix"
     );
 }

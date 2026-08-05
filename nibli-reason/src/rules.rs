@@ -527,6 +527,8 @@ pub(super) fn collect_and_note_constants(
 pub(super) struct RuleRegistration {
     pub(super) rule_registered: bool,
     pub(super) existential_import_required: bool,
+    pub(super) rule_identity: Arc<RuleIdentity>,
+    pub(super) rule_source: Option<RuleSourceId>,
 }
 
 pub(super) fn register_rule(
@@ -552,6 +554,7 @@ pub(super) fn register_rule(
         );
     }
 
+    let rule_source = inner.next_rule_source_id()?;
     let identity = RuleIdentity::new(
         kind,
         &pattern_var_names,
@@ -561,12 +564,15 @@ pub(super) fn register_rule(
         &negated_exists_groups,
         forward,
     );
-    if inner.known_rules.contains(&identity) {
-        let existential_import_required =
-            requests_existential_import && inner.known_rules.claim_existential_import(&identity);
+    if let Some((rule_identity, existential_import_required)) = inner
+        .known_rules
+        .register_existing_source(&identity, rule_source, requests_existential_import)
+    {
         return Ok(RuleRegistration {
             rule_registered: false,
             existential_import_required,
+            rule_identity,
+            rule_source,
         });
     }
 
@@ -624,7 +630,16 @@ pub(super) fn register_rule(
         }
     }
 
+    // The digest is only a bucket selector. Full canonical equality above is
+    // the duplicate decision, and insertion happens only after every fallible
+    // registration step has succeeded.
+    let rule_identity = inner
+        .known_rules
+        .insert(identity, requests_existential_import, rule_source)
+        .expect("a pre-checked rule identity must insert exactly once");
+
     let rule = UniversalRuleRecord {
+        identity: Arc::clone(&rule_identity),
         label,
         typed_conditions,
         typed_conclusions,
@@ -662,17 +677,6 @@ pub(super) fn register_rule(
             .extend(pred_keys);
     }
 
-    // The digest is only a bucket selector. Full canonical equality above is
-    // the duplicate decision, and insertion happens only after every fallible
-    // registration step has succeeded.
-    let inserted = inner
-        .known_rules
-        .insert(identity, requests_existential_import);
-    debug_assert!(
-        inserted,
-        "a pre-checked rule identity must insert exactly once"
-    );
-
     // A new rule changes `pred_dep_graph`, and therefore BOTH the stratification
     // (`materialize::compute_strata`) and the eligibility closure
     // (`materialize::eligible_relations`) — so it can invalidate a COMPLETENESS claim,
@@ -685,6 +689,8 @@ pub(super) fn register_rule(
     Ok(RuleRegistration {
         rule_registered: true,
         existential_import_required: requests_existential_import,
+        rule_identity,
+        rule_source,
     })
 }
 
@@ -844,6 +850,11 @@ fn unassert_typed_fact(fact: &StoredFact, inner: &mut KnowledgeBaseInner) {
     if !inner.fact_store.remove(fact) {
         return;
     }
+    // Origins and tuple content are one lifecycle unit.  This rollback only
+    // runs for a tuple newly added by the current call, before its proposed
+    // origin is committed below, but remove defensively so the invariant stays
+    // structural if this helper gains another caller.
+    inner.fact_origins.remove(fact);
     let gf = fact.inner();
     for (pos, arg) in gf.args.iter().enumerate() {
         if let Some(by_val) = inner
@@ -860,6 +871,29 @@ fn unassert_typed_fact(fact: &StoredFact, inner: &mut KnowledgeBaseInner) {
 }
 
 pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner) {
+    let origin = inner
+        .current_assertion_id
+        .map(|assertion_id| StoredFactOrigin::Assertion { assertion_id })
+        .unwrap_or(StoredFactOrigin::Internal);
+    let accepted_fact = fact.clone();
+    let accepted_origin = origin.clone();
+    assert_typed_fact_with_origin(fact, origin, inner);
+    if inner
+        .fact_origins_for(&accepted_fact)
+        .contains(&accepted_origin)
+    {
+        record_direct_equality_fact(inner, &accepted_fact);
+    }
+}
+
+/// Insert a truth tuple together with one explicit support.  Content remains
+/// set-valued while the origin sidecar accumulates every distinct assertion or
+/// derivation that licenses the same tuple.
+pub(super) fn assert_typed_fact_with_origin(
+    fact: StoredFact,
+    origin: StoredFactOrigin,
+    inner: &mut KnowledgeBaseInner,
+) {
     // ── Groundness boundary: mechanism, not discipline ──
     // The soundness invariant "a stored fact never contains a PatternVar" is what makes
     // the one-directional unifier safe without an occurs check (`proofs/Unify.lean`'s
@@ -993,7 +1027,7 @@ pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner
         None
     };
 
-    inner.fact_store.insert(fact);
+    inner.fact_store.insert(fact.clone());
 
     // The fact store just changed. Clear the predicate result cache so no
     // subsequent lookup in the SAME query returns a stale verdict — forward
@@ -1033,15 +1067,31 @@ pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner
         }
     }
 
+    // Commit support only after every fail-closed acceptance check.  A rejected
+    // duplicate must not acquire an origin, and a rejected new tuple has already
+    // been removed by `unassert_typed_fact` above.
+    let origin_is_forward = matches!(&origin, StoredFactOrigin::ForwardDerived { .. });
+    let origins = inner.fact_origins.entry(fact.clone()).or_default();
+    if !origins.contains(&origin) {
+        origins.push(origin);
+    }
+    debug_assert!(inner.fact_store.contains(&fact));
+    debug_assert!(!inner.fact_origins_for(&fact).is_empty());
+
     // Selective forward chaining: fire forward-enabled rules triggered by this fact.
-    if !inner.rebuilding {
+    // Preserve the existing behavior where a duplicate DIRECT assertion can
+    // activate a rule whose forward flag was enabled after the first assertion.
+    // Adding another derivation support to an already-present tuple, however,
+    // cannot change truth and must not recursively refire the same rule graph.
+    if !inner.rebuilding && (!origin_is_forward || was_new) {
         trigger_forward_rules(&rel_owned, inner);
     }
 }
 
 /// Fire forward-enabled rules whose conditions are fully satisfied after a new
-/// fact insertion. Only checks directly asserted facts (not backward chaining)
-/// to keep forward chaining cheap. Depth-limited to prevent infinite loops.
+/// fact insertion. Only checks facts already in the truth store (direct or
+/// eagerly derived), not backward chaining, to keep forward chaining cheap.
+/// Depth-limited to prevent infinite loops.
 const MAX_FORWARD_DEPTH: usize = 10;
 
 fn trigger_forward_rules(new_rel: &str, inner: &mut KnowledgeBaseInner) {
@@ -1078,7 +1128,13 @@ fn trigger_forward_rules(new_rel: &str, inner: &mut KnowledgeBaseInner) {
     inner.forward_depth += 1;
 
     // For each forward rule, try to match the new fact against each condition.
-    let mut to_derive: Vec<StoredFact> = Vec::new();
+    let mut to_derive: Vec<(
+        StoredFact,
+        StoredFactOrigin,
+        Option<RuleSourceId>,
+        String,
+        String,
+    )> = Vec::new();
     for rule in &forward_rules {
         for (cond_idx, cond_template) in rule.typed_conditions.iter().enumerate() {
             if cond_template.relation() != new_rel {
@@ -1120,10 +1176,42 @@ fn trigger_forward_rules(new_rel: &str, inner: &mut KnowledgeBaseInner) {
                         }
                     });
                 if all_others {
+                    // Capture the exact substituted positive premises while the
+                    // satisfying binding is in hand.  A later proof request must
+                    // not depend on reconstructing this derivation through a
+                    // depth-limited backward search (or call the stored result an
+                    // assertion when that reconstruction fails).
+                    let premises: Vec<StoredFact> = rule
+                        .typed_conditions
+                        .iter()
+                        .map(|premise| substitute_fact(premise, &bindings))
+                        .collect();
+                    let source = inner
+                        .known_rules
+                        .source_ids(rule.identity.as_ref())
+                        .and_then(|sources| sources.first())
+                        .copied();
+                    let premise_key = premises
+                        .iter()
+                        .map(StoredFact::to_display_string)
+                        .collect::<Vec<_>>()
+                        .join("\u{1f}");
                     for concl in &rule.typed_conclusions {
                         let derived = substitute_fact(concl, &bindings);
-                        if !inner.fact_store.contains(&derived) {
-                            to_derive.push(derived);
+                        let origin = StoredFactOrigin::ForwardDerived {
+                            rule_identity: Arc::clone(&rule.identity),
+                            premises: premises.clone(),
+                        };
+                        if !to_derive.iter().any(|(known_fact, known_origin, _, _, _)| {
+                            known_fact == &derived && known_origin == &origin
+                        }) {
+                            to_derive.push((
+                                derived,
+                                origin,
+                                source,
+                                rule.label.clone(),
+                                premise_key.clone(),
+                            ));
                         }
                     }
                 }
@@ -1136,14 +1224,20 @@ fn trigger_forward_rules(new_rel: &str, inner: &mut KnowledgeBaseInner) {
     // is otherwise hasher-seed dependent. Sort by canonical display — the SET of
     // derived facts is unchanged (forward chaining is monotonic). This also makes
     // the output independent of the equal-priority `forward_rules` tie-break.
-    to_derive.sort_by(|a, b| a.to_display_string().cmp(&b.to_display_string()));
+    to_derive.sort_by(|a, b| {
+        a.0.to_display_string()
+            .cmp(&b.0.to_display_string())
+            .then(a.2.cmp(&b.2))
+            .then(a.3.cmp(&b.3))
+            .then(a.4.cmp(&b.4))
+    });
 
     // Assert derived facts (may trigger further forward chaining recursively).
-    for fact in to_derive {
-        if !inner.rebuilding {
+    for (fact, origin, _, _, _) in to_derive {
+        if !inner.rebuilding && !inner.fact_store.contains(&fact) {
             eprintln!("[Forward] Derived: {}", fact.to_display_string());
         }
-        assert_typed_fact(fact, inner);
+        assert_typed_fact_with_origin(fact, origin, inner);
     }
 
     inner.forward_depth -= 1;
@@ -1347,6 +1441,11 @@ fn register_clause_rule(
             universals.join(",")
         );
     }
+    debug_assert!(
+        inner
+            .known_rules
+            .contains(registration.rule_identity.as_ref())
+    );
 
     // existential-import presupposition applies ONLY to DESCRIPTION universals (`ro lo` / `ro le`),
     // which carry existential import — "there is such a thing" — so a fresh witness
@@ -1362,6 +1461,12 @@ fn register_clause_rule(
     // `∀x. R(x) → C(x)` with no phantom witness, so `∃x. R(x)` is not made true
     // by the rule alone (NIBLI_KR §14.4 item 3).
     if registration.existential_import_required {
+        let presupposition_origin = registration
+            .rule_source
+            .map(|rule_source| StoredFactOrigin::Presupposition { rule_source })
+            // Direct in-crate callers can compile without a fact-registry id;
+            // retain that support as explicitly internal, never asserted.
+            .unwrap_or(StoredFactOrigin::Internal);
         // One FRESH witness PER universal. `ro lo gerku cu pendo ro lo mlatu`
         // presupposes ≥1 dog AND ≥1 cat as DISTINCT entities; a single shared
         // witness would assert `gerku(xp) ∧ mlatu(xp)` — a phantom dog-cat (an
@@ -1400,7 +1505,7 @@ fn register_clause_rule(
         }
         for &(cid, tense) in &all_conditions {
             if let Some(fact) = build_stored_fact_from_node(buffer, cid, &xp_subs, tense) {
-                assert_typed_fact(fact, inner);
+                assert_typed_fact_with_origin(fact, presupposition_origin.clone(), inner);
             }
         }
     }

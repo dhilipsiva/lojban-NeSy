@@ -11,7 +11,7 @@
 ///
 /// Data crossing the host↔component boundary uses flat index-based arrays
 /// (`u32` indices into parallel lists) — no heap pointers cross the WASM boundary.
-package nibli:engine@0.9.0;
+package nibli:engine@0.10.0;
 
 /// Structured error types shared across all Nibli components.
 interface error-types {
@@ -139,6 +139,22 @@ interface logic-types {
         resource-exceeded(resource-kind),
     }
 
+    /// Unique identifier for a stored assertion in the knowledge base.
+    type fact-id = u64;
+
+    /// One active direct assertion that supports an asserted proof leaf.
+    record assertion-citation {
+        id: fact-id,
+        label: string,
+    }
+
+    /// One stored rule assertion that supports a derived or presupposed fact.
+    record rule-citation {
+        assertion-id: fact-id,
+        rule-ordinal: u32,
+        assertion-label: string,
+    }
+
     /// Named-field payload records for `proof-rule`'s data-carrying variants.
     /// WIT variant cases hold at most one payload type, so each carries a record
     /// whose fields mirror the canonical `nibli_types::logic::ProofRule` — the
@@ -188,12 +204,24 @@ interface logic-types {
     record asserted-rule {
         /// The ground fact that was directly asserted.
         fact: string,
+        /// Every active direct assertion of this exact fact, in stable order.
+        sources: list<assertion-citation>,
     }
     record derived-rule {
         /// The universal rule's label.
         label: string,
         /// The conclusion fact it derived.
         fact: string,
+        /// Stored rule assertions whose canonical rule identity supports this step.
+        sources: list<rule-citation>,
+    }
+    record presupposed-rule {
+        /// The universal rule's label.
+        label: string,
+        /// The fact minted by the optional legacy existential-import profile.
+        fact: string,
+        /// Rule assertion(s) that causally licensed this presupposition.
+        sources: list<rule-citation>,
     }
     record proof-ref-rule {
         /// The already-proved fact referenced (its full proof was shown at first occurrence).
@@ -242,11 +270,13 @@ interface logic-types {
         predicate-check(predicate-check-rule),
         /// Compute node checked.
         compute-check(compute-check-rule),
-        /// Directly asserted fact (ground truth).
+        /// Directly asserted fact.
         asserted(asserted-rule),
-        /// Derived via universal rule backward-chaining.
+        /// Derived via a universal rule.
         /// Children: proof traces of each premise that triggered the rule.
         derived(derived-rule),
+        /// Minted by the optional legacy existential-import profile.
+        presupposed(presupposed-rule),
         /// Reference to an already-proved fact.
         /// No children — the full proof was shown at its first occurrence.
         proof-ref(proof-ref-rule),
@@ -281,9 +311,6 @@ interface logic-types {
         /// dual of `naf-dependent` — under open-world semantics it would be Unknown.
         cwa-false: bool,
     }
-
-    /// Unique identifier for a stored fact in the knowledge base.
-    type fact-id = u64;
 
     /// Summary of an active fact in the knowledge base.
     record fact-summary {
@@ -454,7 +481,7 @@ interface engine {
 
 /// Built-in authorization surface (logical auth v0.1).
 ///
-/// Rides package `nibli:engine@0.9.0` for shipping tooling simplicity (single
+/// Rides package `nibli:engine@0.10.0` for shipping tooling simplicity (single
 /// WIT package / world). A future split to `nibli:auth@0.1.0` may re-home this
 /// interface without changing method shapes. Wraps the same policy as the
 /// native `nibli-auth` crate (`authorized` KR head, not corpus `can`).

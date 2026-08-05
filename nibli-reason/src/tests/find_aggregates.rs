@@ -1055,14 +1055,14 @@ fn test_proof_trace_equals_substitution_directly_asserted() {
     // fact was asserted (only xukmi(coumadin) genuinely was).
     assert!(
         !trace.steps.iter().any(|s| {
-            matches!(&s.rule, ProofRule::Asserted { fact: d } if d.contains("warfarin") && d.contains("xukmi"))
+            matches!(&s.rule, ProofRule::Asserted { fact: d, .. } if d.contains("warfarin") && d.contains("xukmi"))
         }),
         "no Asserted step may claim xukmi(warfarin) — it holds only via substitution"
     );
     // The substitution's child IS the genuinely-asserted xukmi(coumadin).
     assert!(
         trace.steps.iter().any(|s| {
-            matches!(&s.rule, ProofRule::Asserted { fact: d } if d.contains("coumadin") && d.contains("xukmi"))
+            matches!(&s.rule, ProofRule::Asserted { fact: d, .. } if d.contains("coumadin") && d.contains("xukmi"))
                 && s.holds
         }),
         "the substitution's child must be the asserted xukmi(coumadin)"

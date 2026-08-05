@@ -148,6 +148,14 @@ property, carried on the verdict side by `ProofTrace.naf_dependent` and
 | Reason over a buffer (BYO-IR) | `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact`. `CountNode` and executable `ComputeNode` formulas in asserted position are query-only; `assert_fact` and assumptions reject them, while opaque quoted content remains inert |
 | A packaged surface | `nibli_engine::NibliEngine` (native), the nibli-wasm `Session` (browser JS), or the `nibli-pipeline` component ([WIT surface](wit-surface.md)) |
 
+The reasoner's fact store remains a set keyed only by `StoredFact`; origin is a
+separate structural support index. Every insertion records a direct assertion,
+forward derivation with grounded premises, existential-import presupposition,
+or explicit internal source. Rule citations use the full collision-safe rule
+identity internally and expose the source assertion id plus deterministic local
+ordinal. Rebuild/reopen regenerate both indexes from active LogicBuffers, so the
+disposable typed mirror never becomes provenance authority.
+
 ## Stable vs internal
 
 **Stable:** the 13+5 variant inventories (names, payloads, declaration order);
@@ -160,7 +168,7 @@ concrete index values, the compiler's tree IR (`IrForm`), stored-fact forms,
 on-disk mirrors.
 
 The buffer has no version field — the WIT package version
-(`nibli:engine@0.9.0`) and nibli-store's fail-closed schema versions are the
+(`nibli:engine@0.10.0`) and nibli-store's fail-closed schema versions are the
 only version markers. Treat the format as pre-1.0: pin a commit if you build
 against it.
 

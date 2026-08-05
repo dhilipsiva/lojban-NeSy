@@ -22,8 +22,9 @@
     (every true atom is a fact or the head of a fireable candidate — least-model minimality). These
     are HYPOTHESES here (the model is characterized, not constructed as a fixpoint) — but each is
     BRIDGED to the real engine by the `trace_soundness_conformance` validator, so the theorem is
-    load-bearing rather than proof-conditional: `factAx` ↔ every `Asserted` leaf is a stored KB fact;
-    `candOk`/`ruleClosed` ↔ every `Derived` step maps to a registered rule (and `firing_sound` is
+    load-bearing rather than proof-conditional: `factAx` ↔ every `Asserted` or profile-explicit
+    `Presupposed` leaf is a sourced stored KB fact; `candOk`/`ruleClosed` ↔ every `Derived` step maps
+    by full rule identity/source citation to a registered rule (and `firing_sound` is
     itself proved + separately bridged by `rule_firing_conformance`); `supported` ↔ every closed-world
     FALSE (`PredicateNotFound`) records a genuine non-fact whose blocked candidates are all real rules
     (the `notFound`/`Neg` certificate the engine emits). `supported`'s well-definedness is further
@@ -56,13 +57,14 @@ structure Firing (Atom : Type) where
   neg : List Atom
 
 /-- The perfect model of a stratified program, characterized by four axioms. `M` = the true ground
-    atoms; `KB` = the asserted facts; `candidates a` = the finite registered rules that can conclude
+    atoms; `KB` = the sourced base facts (user assertions plus declared semantic presuppositions);
+    `candidates a` = the finite registered rules that can conclude
     `a`. -/
 structure PerfectModel (Atom : Type) where
   M : Atom → Prop
   KB : Atom → Prop
   candidates : Atom → List (Firing Atom)
-  /-- Asserted facts hold. -/
+  /-- Sourced base facts hold. -/
   factAx : ∀ a, KB a → M a
   /-- A fired candidate whose positive premises hold and whose negative premises fail concludes into
       the model. This IS `RuleFiring.firing_sound` at the ground instance. -/

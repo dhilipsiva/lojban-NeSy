@@ -178,7 +178,7 @@ pub(super) struct NumericGroupVerdict {
 /// — plus role predicates `rel_xN(Var ev, arg)` for the same rel with
 /// contiguous N starting at 1. Any other conjunct (pair modifier roles,
 /// tense nodes in hand-built buffers, a different event variable) returns
-/// None and normal evaluation proceeds, so asserted facts stay reachable.
+/// None and normal evaluation proceeds, so stored facts stay reachable.
 ///
 /// Routing is by RELATION NAME, arithmetic-first (matching the documented
 /// design, nibli-host's host evaluate(), and the batch path): comparison →

@@ -12,7 +12,24 @@ The front-end's independent oracle is the **KR seam gate** (`verify-nibli-kr-sea
 
 **Guarantee:** The engine never returns TRUE for a formula that does not follow from the asserted facts and compiled rules, given a correct implementation.
 
-If the engine says TRUE, a formal proof trace exists showing the derivation chain from asserted axioms through named inference rules to the conclusion. Every step is mechanically verifiable.
+If the engine says TRUE, a formal proof trace exists showing the derivation chain from user assertions or explicitly identified semantic presuppositions through named inference rules to the conclusion. Every step is mechanically verifiable.
+
+**Fact-source provenance is structural (2026-08-05).** The fact store is a
+set of propositions, not a claim that every member was written by a user. A
+parallel support index records how each stored proposition entered that set:
+direct assertion, eager forward derivation, existential-import presupposition,
+or an explicitly internal test/support path. `Asserted` proof steps therefore
+list every active fact-registry id and label; duplicate assertions remain
+separately citable even though the truth store deduplicates their common tuple.
+`Derived` steps carry stable rule citations (`assertion id + deterministic
+assertion-local rule ordinal`) and their actual grounded premise proofs, while
+`Presupposed` is a distinct proof case and can never render as `[given]`.
+Retraction, profile changes, and persistent reopen clear and reconstruct the
+support index by replaying the authoritative LogicBuffer registry, so citations
+cannot outlive their source. Equality substitution follows a deterministic path
+of actual stored `equals` edges and cites each edge's own origin; it never
+invents a direct `a = c` premise from union-find compression. The content-only
+typed store remains disposable and is never the provenance authority.
 
 **Caveat:** The engine is software. A bug in the parser (nibli-kr), semantic compiler (nibli-semantics), or reasoning engine (nibli-reason) could produce a valid-looking proof of a wrong statement. Such a bug would be deterministic, reproducible, and testable — fundamentally different from stochastic hallucination. The engine is tested by a four-figure suite of unit and integration tests across the full pipeline (derive the current figure with `just count-tests` — this document deliberately states no hard number, which goes stale) and, more load-bearing than any count, by the differential-oracle, mechanized-proof, mutation, and fuzz gates described below.
 
@@ -45,7 +62,7 @@ Together these validate **nibli-reason against both the classical and the strati
 - **The SCC decomposition** (`proofs/Scc.lean`): SCCs are the mutual-reachability equivalence classes (a unique partition), and the SCC-based stratification check equals the proven reachability criterion — tying Tarjan's `compute_sccs` to the criterion above.
 - **The one-directional unifier** (`proofs/Unify.lean`): a successful head match instantiates the rule template to *exactly* the ground goal (`unify_sound`).
 - **Rule firing** (`proofs/RuleFiring.lean`): one firing step is a sound universal-instantiation + modus-ponens step — composing `unify_sound` — and never fabricates.
-- **The capstone: a proof trace ⇒ the perfect model** (`proofs/Trace.lean`): a recorded trace, read as a proof certificate, is sound — a `TRUE` trace certifies the conclusion holds in the stratified/perfect model (`pos_sound`, composing rule firing), and a closed-world `FALSE` certifies it does *not* (`neg_sound` — no fabrication). The capstone's four model axioms are each **conformance-bridged to the engine** (`trace_soundness_conformance`): `factAx` — every `Asserted` leaf is a stored KB fact; `candOk`/`ruleClosed` — every `Derived` step maps to a registered rule; `supported` — every closed-world `FALSE` is a genuine non-fact, **every** candidate rule whose conclusion unifies with the goal is recorded as blocked (candidate-completeness), and each block is re-derived at the authoritative depth to a **definitive** premise — a positive premise definitively refuted or a negated premise definitively holding, never an `Unknown` standing in for a refutation — exactly the `Neg` constructor of `Trace.lean`. So the theorem is load-bearing, not merely proof-conditional.
+- **The capstone: a proof trace ⇒ the perfect model** (`proofs/Trace.lean`): a recorded trace, read as a proof certificate, is sound — a `TRUE` trace certifies the conclusion holds in the stratified/perfect model (`pos_sound`, composing rule firing), and a closed-world `FALSE` certifies it does *not* (`neg_sound` — no fabrication). The capstone's four model axioms are each **conformance-bridged to the engine** (`trace_soundness_conformance`): `factAx` — every `Asserted` or profile-explicit `Presupposed` leaf is a stored KB fact with a live structural source; `candOk`/`ruleClosed` — every `Derived` step maps by full collision-safe identity and stable source id to a registered rule; `supported` — every closed-world `FALSE` is a genuine non-fact, **every** candidate rule whose conclusion unifies with the goal is recorded as blocked (candidate-completeness), and each block is re-derived at the authoritative depth to a **definitive** premise — a positive premise definitively refuted or a negated premise definitively holding, never an `Unknown` standing in for a refutation — exactly the `Neg` constructor of `Trace.lean`. So the theorem is load-bearing, not merely proof-conditional.
 
 The proofs are model-level (the perfect model is *characterized* by axioms, not constructed as a fixpoint; each axiom is bridged to the engine by a conformance test rather than machine-proved in Lean) plus corpus conformance tests — not one end-to-end machine-checked pipeline from source text to model. The `nibli-kr→nibli-semantics` compiler seam that the proofs stop at is now **conformance-gated** (the structural + metamorphic seam gate above), narrowing that gap without closing it: a full machine-checked front-end and the non-core `ProofRule` variants (Exists/Forall/Count/Compute/Modal/EqualitySubstitution) remain natural extensions; the soundness-critical core is proved.
 
@@ -93,7 +110,7 @@ The proofs are model-level (the perfect model is *characterized* by axioms, not 
 
 **Scope:** Untensed only. `Past(equals(a, b))` is stored but does not activate the equivalence index. Tensed equality is future work.
 
-**Implementation:** Union-Find in `KnowledgeBaseInner` with path compression and union-by-size. Equivalence classes rebuilt from the surviving identity facts on retraction.
+**Implementation:** Union-Find in `KnowledgeBaseInner` with path compression and union-by-size, plus an undirected evidence graph keyed by the actual stored bare `equals` facts. Proof traces find a deterministic path through that graph and cite each real equality edge; they never invent a direct edge merely because two terms share a representative. Both indexes are rebuilt from the surviving identity facts on retraction.
 
 ## Predicate Validation
 

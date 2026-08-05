@@ -1015,9 +1015,26 @@ pub(super) struct RuleIdentity {
     forward: bool,
 }
 
+/// Stable citation of one executable rule produced by an asserted buffer.
+///
+/// One assertion may lower to multiple rules (for example, DNF branches), so
+/// the durable assertion id alone is not enough.  The local ordinal is reset
+/// for each buffer and incremented at every `register_rule` attempt, including
+/// an attempt whose semantic identity is already registered.  Replaying the
+/// same buffer under the same assertion id therefore reconstructs the same
+/// source ids while duplicate assertions remain separately citable.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct RuleSourceId {
+    pub(super) assertion_id: u64,
+    pub(super) local_ordinal: u32,
+}
+
 #[derive(Clone)]
 struct RuleIdentityEntry {
-    identity: RuleIdentity,
+    identity: Arc<RuleIdentity>,
+    /// Every active asserted rule source with this full semantic identity.
+    /// Kept sorted and duplicate-free for deterministic proof output.
+    sources: Vec<RuleSourceId>,
     /// Assertion-side metadata, deliberately outside executable-rule identity.
     /// A description universal may need to add its xorlo presupposition even
     /// when an alpha-equivalent prenex rule already registered the executable
@@ -1169,43 +1186,79 @@ impl Default for RuleIdentityIndex {
 impl RuleIdentityIndex {
     pub(super) fn contains(&self, identity: &RuleIdentity) -> bool {
         let digest = (self.digest)(identity);
-        self.buckets
-            .get(&digest)
-            .is_some_and(|bucket| bucket.iter().any(|known| &known.identity == identity))
+        self.buckets.get(&digest).is_some_and(|bucket| {
+            bucket
+                .iter()
+                .any(|known| known.identity.as_ref() == identity)
+        })
     }
 
-    /// Claim the description-universal existential-import side effect for an
-    /// already-known executable rule. Returns true exactly once per canonical
-    /// identity between rebuilds.
-    pub(super) fn claim_existential_import(&mut self, identity: &RuleIdentity) -> bool {
+    /// If the semantic identity already exists, attach this assertion's rule
+    /// source and claim any description-universal import side effect.  Returns
+    /// the interned full identity plus whether this call must mint the import.
+    /// `None` means this is a genuinely new executable identity.
+    pub(super) fn register_existing_source(
+        &mut self,
+        identity: &RuleIdentity,
+        source: Option<RuleSourceId>,
+        requests_existential_import: bool,
+    ) -> Option<(Arc<RuleIdentity>, bool)> {
         let digest = (self.digest)(identity);
-        let Some(entry) = self
-            .buckets
-            .get_mut(&digest)
-            .and_then(|bucket| bucket.iter_mut().find(|known| &known.identity == identity))
-        else {
-            return false;
-        };
-        if entry.existential_imported {
-            false
-        } else {
-            entry.existential_imported = true;
-            true
+        let entry = self.buckets.get_mut(&digest).and_then(|bucket| {
+            bucket
+                .iter_mut()
+                .find(|known| known.identity.as_ref() == identity)
+        })?;
+
+        if let Some(source) = source
+            && !entry.sources.contains(&source)
+        {
+            entry.sources.push(source);
+            entry.sources.sort_unstable();
         }
+
+        let existential_import_required =
+            requests_existential_import && !entry.existential_imported;
+        if existential_import_required {
+            entry.existential_imported = true;
+        }
+        Some((Arc::clone(&entry.identity), existential_import_required))
     }
 
-    pub(super) fn insert(&mut self, identity: RuleIdentity, existential_imported: bool) -> bool {
+    pub(super) fn insert(
+        &mut self,
+        identity: RuleIdentity,
+        existential_imported: bool,
+        source: Option<RuleSourceId>,
+    ) -> Option<Arc<RuleIdentity>> {
         let digest = (self.digest)(&identity);
         let bucket = self.buckets.entry(digest).or_default();
-        if bucket.iter().any(|known| known.identity == identity) {
-            false
+        if bucket
+            .iter()
+            .any(|known| known.identity.as_ref() == &identity)
+        {
+            None
         } else {
+            let identity = Arc::new(identity);
+            let sources = source.into_iter().collect();
             bucket.push(RuleIdentityEntry {
-                identity,
+                identity: Arc::clone(&identity),
+                sources,
                 existential_imported,
             });
-            true
+            Some(identity)
         }
+    }
+
+    /// Active, durable sources for a full semantic rule identity.
+    pub(super) fn source_ids(&self, identity: &RuleIdentity) -> Option<&[RuleSourceId]> {
+        let digest = (self.digest)(identity);
+        self.buckets.get(&digest).and_then(|bucket| {
+            bucket
+                .iter()
+                .find(|known| known.identity.as_ref() == identity)
+                .map(|known| known.sources.as_slice())
+        })
     }
 
     pub(super) fn clear(&mut self) {
@@ -1227,10 +1280,39 @@ impl RuleIdentityIndex {
     }
 }
 
+/// Why a content-identical [`StoredFact`] is present in the truth store.
+///
+/// Origin is deliberately a sidecar rather than part of `StoredFact` identity:
+/// duplicate assertions and multiple derivations support one logical tuple,
+/// and making support participate in equality would break lookup, unification,
+/// materialisation, and the argument-position index.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) enum StoredFactOrigin {
+    /// A ground leaf emitted directly by one active user/KB assertion record.
+    Assertion { assertion_id: u64 },
+    /// A conclusion eagerly inserted by a positive forward rule.  The actual
+    /// substituted premises are retained so proof construction never has to
+    /// mislabel the tuple as an axiom or depend on a later depth-limited search.
+    ForwardDerived {
+        rule_identity: Arc<RuleIdentity>,
+        premises: Vec<StoredFact>,
+    },
+    /// A fact minted by the explicitly enabled existential-import profile.
+    /// This is licensed by a particular asserted rule, but is not itself a
+    /// directly asserted ground fact.
+    Presupposition { rule_source: RuleSourceId },
+    /// An unattributed in-crate insertion (currently test/support code only).
+    /// Proof rendering must never present this as a user assertion.
+    Internal,
+}
+
 /// Records the structure of a compiled universal rule for backward-chaining provenance.
 /// Templates use bare pattern variables (e.g., `x__v0`) instead of bound values.
 #[derive(Clone)]
 pub(super) struct UniversalRuleRecord {
+    /// Full collision-safe semantic identity.  Human labels and mutable
+    /// execution settings are not identity boundaries.
+    pub(super) identity: Arc<RuleIdentity>,
     /// Human-readable label, e.g. "dog → animal"
     pub(super) label: String,
     /// Condition templates (with PatternVar terms for structural unification).
@@ -1286,6 +1368,11 @@ pub(super) struct KnowledgeBaseInner {
     pub(super) skolem_fn_registry: Vec<SkolemFnEntry>,
     /// Pluggable fact store (in-memory or persistent).
     pub(super) fact_store: Box<dyn crate::fact_store::FactStore>,
+    /// Multi-valued support for each content-identical tuple in `fact_store`.
+    /// Every stored fact has a non-empty entry and no entry exists without its
+    /// fact. Duplicate assertions therefore remain separately citable while the
+    /// hot truth/index store stays set-valued.
+    pub(super) fact_origins: HashMap<StoredFact, Vec<StoredFactOrigin>>,
     /// Compiled universal rule templates indexed by conclusion predicate name.
     /// Each predicate name maps to the rules whose conclusion templates mention it.
     /// Arc-wrapped so the backward-chain read path can borrow rules without cloning.
@@ -1319,6 +1406,11 @@ pub(super) struct KnowledgeBaseInner {
     pub(super) equivalence_parent: HashMap<GroundTerm, GroundTerm>,
     /// Reverse index: canonical representative → all members of its class.
     pub(super) equivalence_classes: HashMap<GroundTerm, Vec<GroundTerm>>,
+    /// Directly asserted equality evidence, retained as an undirected adjacency
+    /// graph of the actual `equals(a,b)` facts. Union-find answers equivalence
+    /// quickly but destroys the path that licensed it; proof construction uses
+    /// this graph to recover real (possibly transitive) equality children.
+    pub(super) equality_adjacency: HashMap<GroundTerm, Vec<(GroundTerm, StoredFact)>>,
     /// Predicate signature registry: tracks arity + source for each predicate.
     /// Populated lazily on first assertion. Warns on arity mismatch.
     pub(super) predicate_registry: HashMap<String, PredicateSignature>,
@@ -1335,6 +1427,9 @@ pub(super) struct KnowledgeBaseInner {
     /// The current assertion's fact_registry ID (set during process_assertion).
     /// Used by compile_forall_to_rule to record rule sources.
     pub(super) current_assertion_id: Option<u64>,
+    /// Per-buffer rule-source ordinal. Reset with the Skolem binder scope and
+    /// incremented for every registration attempt, including duplicates.
+    pub(super) current_rule_ordinal: u32,
     /// Depth counter for forward chaining recursion. Prevents infinite loops.
     pub(super) forward_depth: usize,
     /// Sort hierarchy: sort_name → set of parent sort names (transitive).
@@ -1530,6 +1625,7 @@ impl Clone for KnowledgeBaseInner {
             known_rules: self.known_rules.clone(),
             skolem_fn_registry: self.skolem_fn_registry.clone(),
             fact_store: self.fact_store.clone_box(),
+            fact_origins: self.fact_origins.clone(),
             universal_rules: self.universal_rules.clone(),
             fact_counter: self.fact_counter,
             fact_registry: self.fact_registry.clone(),
@@ -1541,11 +1637,13 @@ impl Clone for KnowledgeBaseInner {
             pred_dep_graph: self.pred_dep_graph.clone(),
             equivalence_parent: self.equivalence_parent.clone(),
             equivalence_classes: self.equivalence_classes.clone(),
+            equality_adjacency: self.equality_adjacency.clone(),
             predicate_registry: self.predicate_registry.clone(),
             integrity_constraints: self.integrity_constraints.clone(),
             arg_position_index: self.arg_position_index.clone(),
             rule_source_map: self.rule_source_map.clone(),
             current_assertion_id: None,
+            current_rule_ordinal: 0,
             forward_depth: 0,
             sort_hierarchy: self.sort_hierarchy.clone(),
             entity_sorts: self.entity_sorts.clone(),
@@ -1586,6 +1684,7 @@ impl KnowledgeBaseInner {
             known_rules: RuleIdentityIndex::default(),
             skolem_fn_registry: Vec::new(),
             fact_store: Box::new(crate::fact_store::InMemoryFactStore::new()),
+            fact_origins: HashMap::new(),
             universal_rules: HashMap::new(),
             fact_counter: 0,
             fact_registry: HashMap::new(),
@@ -1597,11 +1696,13 @@ impl KnowledgeBaseInner {
             pred_dep_graph: HashMap::new(),
             equivalence_parent: HashMap::new(),
             equivalence_classes: HashMap::new(),
+            equality_adjacency: HashMap::new(),
             predicate_registry: HashMap::new(),
             integrity_constraints: Vec::new(),
             arg_position_index: HashMap::new(),
             rule_source_map: HashMap::new(),
             current_assertion_id: None,
+            current_rule_ordinal: 0,
             forward_depth: 0,
             sort_hierarchy: HashMap::new(),
             entity_sorts: HashMap::new(),
@@ -1644,6 +1745,7 @@ impl KnowledgeBaseInner {
         self.known_rules.clear();
         self.skolem_fn_registry.clear();
         self.fact_store.clear();
+        self.fact_origins.clear();
         self.universal_rules.clear();
         self.fact_counter = 0;
         self.fact_registry.clear();
@@ -1654,10 +1756,12 @@ impl KnowledgeBaseInner {
         self.pred_dep_graph.clear();
         self.equivalence_parent.clear();
         self.equivalence_classes.clear();
+        self.equality_adjacency.clear();
         self.predicate_registry.clear();
         self.arg_position_index.clear();
         self.rule_source_map.clear();
         self.current_assertion_id = None;
+        self.current_rule_ordinal = 0;
         self.forward_depth = 0;
         self.negative_facts.clear();
         self.disjunctive_constraints.clear();
@@ -1702,6 +1806,45 @@ impl KnowledgeBaseInner {
 
     pub(super) fn begin_skolem_scope(&mut self) {
         self.skolem_local_counter = 0;
+        self.current_rule_ordinal = 0;
+    }
+
+    /// Mint the stable source id for the next rule registration attempt in the
+    /// current asserted buffer. Internal-only callers have no assertion source
+    /// and return `None`; no synthetic user id is fabricated for them.
+    pub(super) fn next_rule_source_id(&mut self) -> Result<Option<RuleSourceId>, String> {
+        let Some(assertion_id) = self.current_assertion_id else {
+            return Ok(None);
+        };
+        let local_ordinal = self.current_rule_ordinal;
+        self.current_rule_ordinal = self.current_rule_ordinal.checked_add(1).ok_or_else(|| {
+            format!("assertion #{assertion_id} exhausted the per-buffer rule-source ordinal space")
+        })?;
+        Ok(Some(RuleSourceId {
+            assertion_id,
+            local_ordinal,
+        }))
+    }
+
+    /// All active supports for an exact stored tuple.
+    pub(super) fn fact_origins_for(&self, fact: &StoredFact) -> &[StoredFactOrigin] {
+        self.fact_origins
+            .get(fact)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Full content/support consistency check used by invariant tests and
+    /// debug assertions at lifecycle boundaries (not on the insertion hot path,
+    /// where a full scan would make corpus loading quadratic).
+    pub(super) fn fact_origin_invariant_holds(&self) -> bool {
+        self.fact_store
+            .all_facts()
+            .all(|fact| !self.fact_origins_for(fact).is_empty())
+            && self
+                .fact_origins
+                .iter()
+                .all(|(fact, origins)| !origins.is_empty() && self.fact_store.contains(fact))
     }
 
     pub(super) fn fresh_skolem(&mut self, sort: SkolemSort, origin: SkolemOrigin) -> SkolemSymbol {
@@ -1895,6 +2038,86 @@ pub(super) fn union_terms(inner: &mut KnowledgeBaseInner, a: &GroundTerm, b: &Gr
         .entry(winner.clone())
         .or_insert_with(|| vec![winner.clone()]);
     winner_class.extend(loser_class);
+}
+
+/// Register one directly sourced (`Assertion` or `Internal`), bare equality in
+/// both union-find and the evidence-preserving adjacency graph. Keep this
+/// separate from generic fact insertion: forward-derived or presupposed
+/// `equals` facts have never changed
+/// the engine's equivalence classes, and broadening that semantic boundary is
+/// not part of provenance tracking.
+pub(super) fn record_direct_equality_fact(inner: &mut KnowledgeBaseInner, fact: &StoredFact) {
+    let StoredFact::Bare(gf) = fact else {
+        return;
+    };
+    if gf.relation != nibli_types::relations::IDENTITY || gf.args.len() != 2 {
+        return;
+    }
+
+    let left = gf.args[0].clone();
+    let right = gf.args[1].clone();
+    union_terms(inner, &left, &right);
+
+    let mut add_edge = |from: GroundTerm, to: GroundTerm| {
+        let edges = inner.equality_adjacency.entry(from).or_default();
+        if !edges
+            .iter()
+            .any(|(neighbor, evidence)| neighbor == &to && evidence == fact)
+        {
+            edges.push((to, fact.clone()));
+        }
+    };
+    add_edge(left.clone(), right.clone());
+    add_edge(right, left);
+}
+
+/// Recover a deterministic path of actual directly sourced equality facts.
+/// Union-find can answer whether two terms are equivalent, but path compression
+/// and union-by-size erase the evidence chain.  Proof construction uses this
+/// adjacency path and traces every returned fact through the ordinary origin
+/// sidecar; it must never synthesize an unsupported endpoint equality.
+pub(super) fn equality_path_facts(
+    inner: &KnowledgeBaseInner,
+    from: &GroundTerm,
+    to: &GroundTerm,
+) -> Option<Vec<StoredFact>> {
+    if from == to {
+        return Some(Vec::new());
+    }
+
+    let mut queue = std::collections::VecDeque::from([from.clone()]);
+    let mut visited = HashSet::from([from.clone()]);
+    let mut parent: HashMap<GroundTerm, (GroundTerm, StoredFact)> = HashMap::new();
+
+    while let Some(current) = queue.pop_front() {
+        let Some(edges) = inner.equality_adjacency.get(&current) else {
+            continue;
+        };
+        // Assertion/replay order is already stable by fact id.  Sort by the
+        // structural neighboring term as an additional guard against any future
+        // caller that records the same accepted edges in a different order.
+        let mut ordered: Vec<&(GroundTerm, StoredFact)> = edges.iter().collect();
+        ordered.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (neighbor, evidence) in ordered {
+            if !visited.insert(neighbor.clone()) {
+                continue;
+            }
+            parent.insert(neighbor.clone(), (current.clone(), evidence.clone()));
+            if neighbor == to {
+                let mut path = Vec::new();
+                let mut cursor = to.clone();
+                while &cursor != from {
+                    let (previous, edge) = parent.get(&cursor)?.clone();
+                    path.push(edge);
+                    cursor = previous;
+                }
+                path.reverse();
+                return Some(path);
+            }
+            queue.push_back(neighbor.clone());
+        }
+    }
+    None
 }
 
 /// Get all members of a term's equivalence class (readonly).
@@ -2417,13 +2640,14 @@ fn generalize_event_args(
     StoredFact::with_tense_from(GroundFact::new(gf.relation.clone(), args), fact)
 }
 
-/// Does a negative template group hold against the ASSERTED positive store?
+/// Does a negative template group hold against the positive truth store?
 /// True when a single consistent binding of the group's pattern variables (the
 /// generalized event arguments) satisfies EVERY template — requiring the whole
 /// group to share one event binding prevents false positives from unrelated
 /// events that merely share a predicate. Same-tense matching only (the
-/// `StoredFact` wrapper must agree, via `unify_facts`); only directly asserted
-/// facts are consulted (derived facts are out of scope by design).
+/// `StoredFact` wrapper must agree, via `unify_facts`). Direct assertions and
+/// eagerly stored forward conclusions are consulted; backward-only derivations
+/// are out of scope by design.
 pub(super) fn negative_group_holds(
     templates: &[StoredFact],
     store: &dyn crate::fact_store::FactStore,
@@ -2790,12 +3014,6 @@ pub(super) fn process_assertion(
             let mut pending_declarations: Vec<String> = Vec::new();
             let mut pending_admits: Vec<String> = Vec::new();
             for fact in &typed_leaves {
-                // Intercept `du` facts for equality equivalence indexing.
-                if let StoredFact::Bare(gf) = fact {
-                    if gf.relation == nibli_types::relations::IDENTITY && gf.args.len() == 2 {
-                        union_terms(inner, &gf.args[0], &gf.args[1]);
-                    }
-                }
                 // Intercept the `derived_only("<relation>")` META-DECLARATION and
                 // record it. The declaration itself still stores like any fact, so
                 // it survives `:export`, buffer replay, and is queryable — the
@@ -3134,7 +3352,7 @@ pub(crate) fn is_non_indexable_relation(rel: &str) -> bool {
 /// firing-time analog of `collect_entailment_candidates`, driven by the group's
 /// `StoredFact` condition TEMPLATES rather than a buffer sub-tree. Returns the
 /// smallest superset of events that could satisfy the inner existential: index
-/// hits (events at the var position of an asserted fact of the relation,
+/// hits (events at the var position of a stored fact of the relation,
 /// equivalence-expanded) ∪ rule-derivable witnesses. Soundness: a witness `ev`
 /// satisfying ALL conditions satisfies the anchor condition too, so it is in the
 /// anchor's candidate set — narrowing never drops a real witness (so it never
