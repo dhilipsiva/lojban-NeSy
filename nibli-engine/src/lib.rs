@@ -133,7 +133,11 @@ impl NibliEngine {
     /// it, external predicates (e.g. `tenfa`/`dugri`) return an error; built-in
     /// arithmetic (pilji/sumji/dilcu) works regardless. Replaces the old
     /// thread-local registration that the multithreaded server could not use.
-    /// See `nibli_reason::KnowledgeBase::set_compute_dispatch` for the trust boundary.
+    /// This is the native embedder's admission-policy boundary: an `Ok(bool)` is
+    /// trusted for the current proof-local check, while an error becomes
+    /// `UNKNOWN (backend-unavailable)`. The current proof schema does not retain
+    /// backend identity, wire transcripts, freshness data, or policy receipts.
+    /// See `nibli_reason::KnowledgeBase::set_compute_dispatch`.
     pub fn set_compute_dispatch(
         &self,
         eval: fn(&str, &[EngineLogicalTerm]) -> Result<bool, String>,
@@ -151,8 +155,11 @@ impl NibliEngine {
     /// isolation preserved). The address is stored per-thread; in the
     /// multithreaded server each `spawn_blocking` worker connects lazily and
     /// reuses its connection. Register the external predicate names separately
-    /// via `register_compute_predicate`. Trust boundary: the backend is a
-    /// plaintext, unauthenticated peer in the trusted computing base.
+    /// via `register_compute_predicate`. Trust boundary: this stock client is
+    /// deliberately plaintext and unauthenticated, with no identity, integrity,
+    /// request binding, freshness/replay, revocation, version, or audit metadata.
+    /// Use `set_compute_dispatch` (or a custom component host) when a deployment
+    /// requires stronger admission; `addr` is routing, not authentication.
     pub fn enable_compute_backend(&self, addr: &str) {
         compute_client::set_addr(addr);
         self.core.kb().set_compute_dispatch(

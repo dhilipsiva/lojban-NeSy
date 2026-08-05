@@ -355,6 +355,14 @@ interface logic-types {
 /// cannot disagree with its verdict. An error therefore remains
 /// `backend-unavailable` even after an earlier query succeeded.
 ///
+/// This import is the host's admission boundary. It carries no peer identity,
+/// signature, request id, protocol/backend version, timestamp/nonce, replay or
+/// revocation state, or admission receipt; the guest trusts `ok(bool)` for the
+/// current check. The stock nibli-host implementation uses deliberately
+/// plaintext, unauthenticated JSONL/TCP. A custom host may enforce stronger
+/// policy before returning, but the current proof schema does not carry that
+/// policy's metadata.
+///
 /// Supports single evaluation, batch evaluation (amortises WASM boundary
 /// crossings and TCP round trips), and membership queries (for ∀/∃ over
 /// computed predicates).

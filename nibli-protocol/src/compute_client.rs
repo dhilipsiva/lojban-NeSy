@@ -15,8 +15,13 @@
 //! `nibli_types::logic::LogicalTerm` for the engine) into [`BackendArg`], so this
 //! module depends on neither.
 //!
-//! Trust boundary: the backend is a plaintext, unauthenticated peer in the
-//! trusted computing base — see `nibli_reason::set_compute_dispatch` / book Ch 17.
+//! Admission policy: the stock peer is deliberately low-assurance. This client
+//! provides plaintext, unauthenticated TCP with no peer identity, confidentiality,
+//! cryptographic integrity or request binding, protocol/backend version, freshness,
+//! replay/expiry/revocation check, or audit receipt. Scalar replies bind to the next
+//! line and batch replies bind by order; any parseable Boolean is trusted. Deployments
+//! that need stronger admission must replace this client at the native dispatch or
+//! component-host boundary. See the workspace README and GUARANTEES.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -154,8 +159,9 @@ impl BackendClient {
         Ok(())
     }
 
-    /// Dispatch a single predicate; on a connection-level error, drop and retry once.
-    /// `args` are pre-converted by the caller.
+    /// Dispatch a single predicate. On any failed attempt, drop the connection and
+    /// retry once; the first write may already have executed, so backends must be
+    /// pure/idempotent. `args` are pre-converted by the caller.
     pub fn dispatch(&mut self, relation: &str, args: &[BackendArg]) -> Result<bool, String> {
         if self.addr.is_none() {
             return Err(format!("Unknown compute predicate: {}", relation));
@@ -299,7 +305,9 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_success() {
+    fn stock_dispatch_accepts_plain_unauthenticated_boolean() {
+        // Policy pin: the stock low-assurance wire format requires no identity,
+        // signature, nonce, version, or admission envelope around the Boolean.
         let mut c = client_at(&mock_server(r#"{"result": true}"#));
         let args = vec![
             BackendArg::Number(8.0),

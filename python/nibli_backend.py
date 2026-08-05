@@ -17,6 +17,11 @@ Usage:
   python3 python/nibli_backend.py --host 0.0.0.0   # listen on all interfaces
 
 Extend by adding entries to the HANDLERS dict.
+
+Security: this reference server has no authentication, encryption, request
+binding, or replay protection. Its loopback default is deliberate. Binding it
+to a non-loopback address is appropriate only on an isolated/trusted network or
+behind a secured transport boundary supplied by the operator.
 """
 
 import argparse
@@ -200,7 +205,14 @@ def serve(host, port):
 
 def main():
     parser = argparse.ArgumentParser(description="Nibli Compute Backend — Python Reference Server")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind address (default: 127.0.0.1; non-loopback exposes the "
+            "unauthenticated protocol)"
+        ),
+    )
     parser.add_argument("--port", type=int, default=5555, help="Listen port (default: 5555)")
     args = parser.parse_args()
 

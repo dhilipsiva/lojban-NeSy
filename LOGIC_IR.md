@@ -191,7 +191,11 @@ repeated identical external checks but never survives to the next query. A backe
 always `Unknown(BackendUnavailable)`, even
 after an earlier success or when an ordinary fact has the same tuple. The backend remains a
 trusted evidence source for the current proof step, as disclosed in README's "What
-zero-hallucination means here". Compiled KR and hand-built flat buffers share this contract.
+zero-hallucination means here". The IR is transport-neutral: the stock host/native
+JSONL/TCP client is deliberately unauthenticated, while a custom native dispatcher or
+component host may enforce admission before returning a Boolean. No backend identity,
+version, timestamp/nonce, or admission receipt is represented in `ComputeNode` or the
+current proof schema. Compiled KR and hand-built flat buffers share this contract.
 
 ### What `NotNode` means
 

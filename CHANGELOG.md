@@ -15,6 +15,16 @@ here first.
 
 ### Changed
 
+- **The stock external-compute transport remains explicitly low-assurance:**
+  `nibli-host` and `NibliEngine::enable_compute_backend` continue to use plaintext,
+  unauthenticated JSON Lines over TCP. The protocol has no peer identity,
+  confidentiality, integrity or request binding, version negotiation, freshness,
+  replay/expiry/revocation checks, or admission receipt; a parseable Boolean received
+  in stream order is trusted as proof-local evidence. This is an accepted deployment
+  profile, not a high-assurance guarantee. Native embedders can install policy in
+  `set_compute_dispatch`, and component hosts can implement the imported
+  `compute-backend` interface; the stock CLI has no authentication toggle, and the
+  current proof schema cannot carry policy receipts.
 - **Proof facts carry structural source provenance; WIT is
   `nibli:engine@0.10.0`:** the truth store now has a replay-derived support
   sidecar instead of treating set membership as proof of user assertion.

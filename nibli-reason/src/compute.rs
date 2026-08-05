@@ -396,8 +396,9 @@ pub(super) fn resolve_args_for_dispatch(
 /// Forward a single predicate to the operator-configured external backend.
 ///
 /// The caller trusts a successful reply for the current compute step. It never
-/// inserts or caches the reply in the logical KB. The channel is unauthenticated
-/// — see the trust-boundary note on `KnowledgeBase::set_compute_dispatch`.
+/// inserts or caches the reply in the logical KB. The stock TCP dispatcher is
+/// unauthenticated; a custom dispatcher owns any stronger admission policy — see
+/// the trust-boundary note on `KnowledgeBase::set_compute_dispatch`.
 pub(super) fn dispatch_to_backend(
     inner: &KnowledgeBaseInner,
     rel: &str,

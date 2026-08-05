@@ -88,6 +88,15 @@ All four are `QueryResult` variants in the engine itself, not host conventions â
 
 Results from the **external compute backend** (`exponential`, `logarithm`, or predicates you register) are **trusted evidence for the current `ComputeCheck`**, not stored premises. Built-in arithmetic (`product` / `sum` / `quotient`) follows the same proof-local lifecycle: no compute result enters the fact store or registry, receives an id, changes the domain, survives replay, or triggers forward chaining. Compute atoms are query-only; assertions and rules containing executable compute are rejected before an id is allocated, while quoted abstraction content remains opaque. Each top-level query recomputes or redispatches; repeated identical external checks may share a transient within-query memo only to keep the verdict and proof consistent. A backend error is always `UNKNOWN (backend-unavailable)`, even after an earlier successful query or when an ordinary fact has the same tuple. Any conclusion that uses a successful external check is only as sound as that oracle.
 
+The stock external-compute path is deliberately low-assurance: plaintext,
+unauthenticated JSON Lines over TCP, with no identity, integrity, request
+binding, version, freshness/replay, revocation, or audit receipt. Any parseable
+Boolean received in stream order is trusted, so a valid forged, replayed, stale,
+or mismatched reply is not detectable. Stronger admission belongs in a custom
+native dispatcher, custom component host, or external secured transport; the
+stock `:backend` setting only selects an address. See
+[WASM, host & compute](../developer/wasm-host-compute.md#the-compute-backend).
+
 ## Where the full story lives
 
 - [GUARANTEES.md](https://github.com/dhilipsiva/nibli/blob/main/GUARANTEES.md) â€” differential oracles (Vampire / clingo), Lean proofs, determinism, mutation baseline.

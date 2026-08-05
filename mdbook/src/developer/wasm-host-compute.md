@@ -91,10 +91,22 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   `rel_tol 1e-9, abs_tol 0` — `0.3 = 0.1 + 0.2` is TRUE. The comparison
   predicate `num_equal` is exact `==`. Non-finite operands yield
   `UNKNOWN (non-finite)`.
-- **Trust boundary (disclosed):** an external reply is trusted evidence for the
-  current `ComputeCheck`. The backend is part of the trusted computing base for
-  that proof step — a plaintext, unauthenticated peer; run it on localhost or a
-  segment you control.
+- **Admission policy (explicitly low-assurance):** an external reply is trusted
+  evidence for the current `ComputeCheck`. The stock client is plaintext and
+  unauthenticated, with no peer identity, confidentiality, integrity or
+  request/response ID, protocol/backend/schema version, nonce/timestamp,
+  freshness/expiry, replay/revocation check, or admission receipt. Scalar
+  replies bind to the next line and batch replies bind by input order. Any
+  parseable Boolean is trusted, so a valid forged, replayed, stale, reordered,
+  or revoked-peer reply is not detectable. Use the stock path only on loopback
+  or a segment whose backend and path the operator accepts as TCB.
+- **Custom admission:** native embedders can replace the client with
+  `NibliEngine::set_compute_dispatch`; component embedders can implement the WIT
+  `compute-backend` import; an operator can also supply an external secured
+  transport. The stock `nibli-host` has no admission plug-in—`:backend` and
+  `NIBLI_COMPUTE_ADDR` select only an address. A rejected custom call becomes
+  `UNKNOWN (backend-unavailable)`, and the current proof schema cannot carry an
+  identity, wire transcript, timestamp/nonce, or policy receipt.
 - **Proof-local lifecycle:** built-in and external results are never inserted
   into the typed fact store or assertion registry. They receive no fact id, do
   not appear in `:facts`, cannot be retracted, never change the quantifier
@@ -115,9 +127,13 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   fails closed as `UNKNOWN (backend-unavailable)` before the host callback runs.
   A user constant whose literal text is `sk_0` is not internal and is forwarded.
 - **Client behavior:** lazy connect, reused connection (idle reap after 300 s,
-  read timeout 10 s, write 5 s — `NIBLI_BACKEND_*` env overrides), retry-once
-  on connection errors, and a batch path that pipelines all requests in one
-  burst to amortize WASM-boundary and TCP round trips.
+  read timeout 10 s, write 5 s — `NIBLI_BACKEND_*` env overrides), and a batch
+  path that pipelines requests and associates replies by order. Scalar dispatch
+  drops the connection and retries once after any failed attempt; batch dispatch
+  retries the whole batch after a connect/write/read failure. Because a first
+  write or partial batch may already have executed, stock backends must be pure
+  and idempotent; custom scalar/batch dispatchers must also agree on ordering and
+  cardinality.
 
 The reference server is `python/nibli_backend.py` (`just backend`, port 5555):
 handlers `product`, `sum`, `quotient`, `exponential`, `logarithm` in a

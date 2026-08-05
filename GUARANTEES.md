@@ -190,6 +190,35 @@ The proof-local lifecycle does not remove the trust boundary. An external
 derivation depends on that `ComputeCheck` is sound only relative to the backend.
 The backend is therefore part of the trusted computing base for that proof step.
 
+### External Compute Admission Policy
+
+The stock `nibli-host` and `NibliEngine::enable_compute_backend` transport is an
+explicitly accepted **low-assurance** profile: plaintext, unauthenticated JSON
+Lines over TCP. It has no peer identity, confidentiality, cryptographic
+integrity or request/response binding, protocol/backend/schema version,
+freshness/expiry, replay/revocation detection, or admission receipt. Replies are
+associated by stream position—scalar with the next line, batch by input order—and
+any parseable Boolean from the connected peer is trusted. Consequently Nibli
+does **not** detect a validly encoded response that is forged, replayed, stale,
+mismatched, or supplied by a revoked peer.
+
+An unconfigured backend, connection or timeout failure, malformed response, or
+explicit backend error is non-definitive and becomes
+`Unknown(BackendUnavailable)`; that availability behavior is not an
+authentication guarantee. The reference server binds loopback by default, and
+the stock transport should be used only where the operator accepts the peer and
+path as TCB.
+
+Admission is an embedder boundary. Native callers may replace the stock client
+through `NibliEngine::set_compute_dispatch` (or the lower-level session/KB
+equivalent), and a component host may implement the imported `compute-backend`
+interface with its own policy. The stock CLI address setting is not a policy
+hook. A custom dispatcher can reject before returning a Boolean, but rejection
+currently collapses to `Unknown(BackendUnavailable)`, and proof/export identifies
+the backend `ComputeCheck` without carrying backend identity, version, exact wire
+exchange, timestamp/nonce, or an admission decision. Audit requirements for
+those fields require a host/API/proof-schema extension.
+
 ## Hypothetical Reasoning
 
 **Mechanism:** `KnowledgeBase::with_assumptions(assumptions, callback)` creates a temporary clone of the KB, asserts assumptions into the clone, runs the callback, and discards the clone. The original KB is untouched.

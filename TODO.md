@@ -131,22 +131,6 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ---
 
-## Proof provenance / compute assurance
-
-- **Define a high-assurance compute admission policy.** Today a backend reply crosses a
-  plaintext JSONL/TCP seam and is accepted as trusted evidence for the current
-  `ComputeCheck`. The proof-local lifecycle prevents it from becoming a stored premise,
-  but there is no authenticated request/response binding, backend/schema version,
-  freshness/expiry/revocation policy, or auditable response provenance. Decide whether v0.1 remains
-  explicitly low-assurance or add an opt-in policy that verifies identity/integrity and
-  records the exact request, response, backend version, timestamp/nonce, and admission
-  decision before accepting the result. **Exit:** tampered, replayed, stale, mismatched, unavailable,
-  and revoked responses have fail-closed tests; proof/export surfaces identify oracle
-  checks; protocol and host docs state the residual TCB. Ripple: Chapters 2, 16, 21 and
-  Appendices C/E/H.
-
----
-
 ## Reasoning / evaluation
 
 - **Make numeric comparisons in rules compositional or reject the ambiguous

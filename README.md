@@ -441,6 +441,30 @@ just run-with-backend
 
 > **Trust boundary.** An external predicate is a **trusted oracle**, not something Nibli proves. Its reply decides the current `ComputeCheck`, so the backend (and whoever operates it) is part of the trusted computing base for any proof that uses that step. Nibli does not independently verify the answer; a proof that passes through `exponential`/`logarithm` is sound only relative to that oracle.
 
+### External compute admission policy
+
+The stock `nibli-host` and `NibliEngine::enable_compute_backend` path is
+deliberately **low-assurance**: plaintext, unauthenticated JSON Lines over TCP.
+The wire protocol has no peer identity, confidentiality, cryptographic integrity
+or request/response identifier, protocol/backend/schema version, nonce or
+timestamp, freshness/expiry, replay/revocation check, or admission audit record.
+A parseable `{"result": true|false}` received in stream order is trusted for that
+proof-local check. A validly encoded reply that is forged, replayed, stale,
+reordered, or supplied by a revoked peer is not detectable. Only an unconfigured
+backend, connection/timeout failure, parse failure, or explicit backend error
+becomes `UNKNOWN (backend-unavailable)`; this is not authentication.
+
+Use the stock path only when the operator accepts the backend and network path as
+part of the TCB—normally loopback or a controlled segment. Deployments needing
+stronger admission can install a native `NibliEngine::set_compute_dispatch`
+adapter, implement the WIT `compute-backend` import in a custom component host,
+or provide an external secured transport. The stock `:backend` /
+`NIBLI_COMPUTE_ADDR` configuration changes only the address; it has no TLS,
+signature, or policy plug-in. The current proof schema identifies the backend
+`ComputeCheck` but cannot carry backend identity, wire transcripts, timestamps,
+nonces, or admission receipts. `nibli-auth` authorizes application actions; it
+does not authenticate this compute socket.
+
 > **Compute results are proof-local and query-only.** Built-in and external results are evidence for the current derivation only. They are never inserted into the typed fact store or fact registry, receive no fact id, do not appear in `:facts`, cannot be retracted, never join the quantifier domain, are not persisted or replayed, and trigger no forward chaining. Assertion ingress rejects executable compute atoms—including rule guards and conclusions—before allocating an id; opaque abstraction content remains quoted. Each top-level query recomputes locally or redispatches to the backend. Repeated identical external checks may share only a transient within-query memo so the verdict and proof cannot disagree; normal KR queries and raw `ComputeNode` buffers have the same lifecycle.
 
 Configure with `NIBLI_COMPUTE_ADDR=host:port` or `:backend host:port` in the REPL. Connection is lazy (connects on first dispatch) with auto-reconnect. The browser UI has no TCP, so external predicates resolve only in the `nibli-host` REPL; built-in arithmetic still works everywhere.

@@ -1327,11 +1327,14 @@ impl KnowledgeBase {
     /// (pilji/sumji/dilcu) is evaluated locally first; registered calls whose
     /// arguments are not locally evaluable are forwarded to `eval`/`batch_eval`.
     ///
-    /// TRUST BOUNDARY: a backend verdict is trusted as the result of that compute
-    /// step, so a malicious or MITM backend can still make a proof wrong. It is
+    /// TRUST BOUNDARY: `Ok(bool)` is trusted as the result of that compute step,
+    /// so a malicious or compromised dispatcher can make a proof wrong. It is
     /// query-local: never inserted into the logical fact store or assertion
     /// registry, never cached across queries, and never reused during an outage.
-    /// Run the backend on localhost or a network segment you control.
+    /// The caller owns authentication, integrity, freshness, revocation, and audit
+    /// policy before returning that Boolean. An `Err` becomes
+    /// `UNKNOWN (backend-unavailable)`; the current proof schema records no policy
+    /// receipt or backend identity.
     pub fn set_compute_dispatch(
         &self,
         eval: crate::compute::EvalFn,

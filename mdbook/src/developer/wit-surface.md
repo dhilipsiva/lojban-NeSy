@@ -72,6 +72,14 @@ Results are query-local. Neither `evaluate` nor `evaluate-batch` creates a KB
 fact, fact id, registry row, or replay entry, and a later backend error is
 `UNKNOWN (backend-unavailable)` even if the same request succeeded earlier.
 
+This import is also the component's admission boundary. The WIT contract is
+transport-neutral and carries relation, arguments, and Boolean/error results—not
+peer identity, signatures, request IDs, versions, timestamps/nonces, or policy
+receipts. The component trusts an `ok(bool)` from its host. The stock
+`nibli-host` implementation forwards over deliberately unauthenticated JSONL/TCP;
+a custom host may authenticate or otherwise admit calls before returning, but
+its policy metadata is outside the current proof schema.
+
 ### `engine` (export) — the `session` resource
 
 | Method | Contract |
