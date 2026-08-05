@@ -2,73 +2,56 @@
 
 The **agentic English→KB formalizer engine** for the Transparency Triad
 (`fanva` = Lojban "translate" — the crate name predates THE FLIP). An LLM
-formalizes English into the KB language (**nibli KR** by default; legacy Lojban
-behind the same `Language` seam); the real nibli compilers verify; errors are
-fed back until the KB text is valid. Surfaced inside `nibli-ui` as the
-**Formalize** mode (this crate holds no UI). "Formalize", never "compile": the
-LLM step is interpretive and sits outside the reasoning firewall, behind the
-deterministic gates below.
+formalizes English into **nibli KR**; the real Nibli compiler verifies every
+candidate and feeds deterministic errors back until the KB text is valid.
+Surfaced inside `nibli-ui` as **Formalize** mode (this crate holds no UI).
+"Formalize", never "compile": the LLM step is interpretive and sits outside
+the reasoning firewall, behind the deterministic gates below.
 
 ## The loop
 
-An LLM drafts KB text — in legacy Lojban mode it may call jbotci's
-dictionary/grammar tools *while drafting* — and every candidate must then clear
-a three-gate, fail-fast, **local** firewall before it is accepted:
+Every candidate must clear a four-gate, fail-fast, local firewall:
 
-- **nibli KR** (default): `nibli_kr::parse_checked` (grammar + fail-closed name
-  resolution) → `nibli-semantics` (semantics/arity) → the **render round-trip gate**
-  (the candidate's canonical `nibli_kr::render` re-spelling must re-compile to
-  the SAME `LogicBuffer` — nibli-kr's fixpoint contract as a per-candidate
-  drift-catcher; pure Rust, runs native + wasm).
-- **Lojban** (legacy): `nibli-kr::parse_checked` → `nibli-semantics` → the official
-  **camxes** parser (wasm-only JS-interop; skipped on native / without the
-  shim).
+1. `nibli_kr::parse_checked` — grammar and fail-closed name resolution.
+2. `nibli_semantics::compile_from_ast` — semantics and arity.
+3. The render round-trip gate — the canonical `nibli_kr::render` re-spelling
+   must recompile to the same `LogicBuffer` (pure Rust, native and WASM).
+4. The KB-assertability gate — query-only `exactly N` / `no` formulas in
+   asserted position are rejected instead of being presented as persistent
+   cardinality constraints. Opaque `fact { ... }` / `event { ... }` content
+   remains quoted. If an exact source claim cannot be represented by explicit,
+   source-supported ordinary facts, it stays an explicit unsupported failure;
+   it is never silently omitted, weakened, or fabricated around.
 
-A rejection feeds the compiler's own message back (`gates::feedback_for`) and
-the LLM retries, bounded by `max_attempts` with an oscillation guard. A
-gate-clean candidate then faces the **semantic verification turn**
-(`verify.rs`): a fresh-context judge reads the engine's own IR-level
-back-translation of each KB line and a MISMATCH retries through the same loop
-— best-effort advisory, fail-open. This is the **formalization** step
-(`agent::translate_agentic`): it runs before the KB text is shown, and is
-separate from the engine's own front-end→nibli-semantics→nibli-reason compile that `nibli-ui`
-runs later, at query time.
+A rejection feeds the gate's own message back through `gates::feedback_for`.
+The LLM retries up to `max_attempts`, with an oscillation guard. A gate-clean
+candidate then faces the semantic verification turn (`verify.rs`): a fresh
+context judge reads the engine's IR-level back-translation of each KB line.
+A mismatch retries through the same loop; verifier transport or parse failure
+is best-effort/fail-open. This runs before the KB text is shown and is separate
+from the engine's later nibli-kr → nibli-semantics → nibli-reason execution.
 
 ```mermaid
 flowchart TD
-    src(["English source"]) --> disc{"legacy Lojban mode with<br/>jbotci enabled + proxy reachable?"}
-    disc -->|"no / unreachable / nibli KR mode"| deg["no tools · run degraded<br/>(local gates only)"]
-    disc -->|yes| have["discover jbotci tools once<br/>dictionary · grammar · morphology"]
-    deg --> loop
-    have --> loop
-
-    loop{"attempt n ≤ max_attempts?"} -->|"no · cap reached"| exh["Exhausted<br/>best effort + last error"]
-    loop -->|yes| gen
-
-    subgraph turn["LLM turn — run_llm_tool_loop, up to max_tool_steps"]
-      direction TB
-      gen["LLM proposes candidate KB text"] --> tcq{"model called<br/>a jbotci tool?"}
-      tcq -->|"yes · optional tool-use (Lojban mode)"| mcp["MCP call via the proxy<br/>vlacku · cukta · gentufa · vlasei · …<br/>result fed back to the model"]
-      mcp --> gen
-    end
-
-    tcq -->|no| clean["clean_lojban_output → candidate"]
-
-    clean -->|"per non-comment KB line"| g1{"gate 1 · front-end<br/>nibli-kr (default) / nibli-kr (legacy)<br/>parse_checked — grammar"}
-    g1 -->|ok| g2{"gate 2 · nibli-semantics<br/>compile_from_ast — semantics / arity"}
-    g2 -->|ok| g3{"gate 3 · per language<br/>nibli KR: render round-trip (native+wasm)<br/>Lojban: camxes official_gate (wasm-only)"}
-    g3 -->|ok| ver{"semantic verification turn<br/>fresh-context judge reads the<br/>IR back-translation (advisory)"}
-    ver -->|MATCH / fail-open| ok["Success<br/>validated KB text → KB tab<br/>(nibli-ui compiles the FOL later)"]
+    src(["English source"]) --> loop{"attempt n ≤ max_attempts?"}
+    loop -->|"no · cap reached"| exh["Exhausted<br/>best effort + last error"]
+    loop -->|yes| gen["LLM proposes candidate KB text"]
+    gen --> clean["clean_output"]
+    clean -->|"per non-comment KB line"| g1{"gate 1 · nibli-kr<br/>grammar + names"}
+    g1 -->|ok| g2{"gate 2 · nibli-semantics<br/>semantics + arity"}
+    g2 -->|ok| g3{"gate 3 · render round-trip<br/>same LogicBuffer"}
+    g3 -->|ok| g4{"gate 4 · KB assertability<br/>reject outer exactly N / no"}
+    g4 -->|ok| ver{"semantic verification turn<br/>IR back-translation (advisory)"}
+    ver -->|"MATCH / fail-open"| ok["Success<br/>validated KB text → KB tab"]
 
     g1 -->|reject| osc
     g2 -->|reject| osc
     g3 -->|reject| osc
+    g4 -->|reject| osc
     ver -->|MISMATCH| osc
-
-    osc{"candidate same<br/>as previous attempt?"} -->|"yes · oscillation"| exh
+    osc{"same candidate<br/>as previous attempt?"} -->|"yes · oscillation"| exh
     osc -->|"no · append feedback_for"| loop
-
-    gen -.->|"provider / network / auth error"| cf["ChatFailed<br/>transport error, not an invalid KB"]
+    gen -.->|"provider / network / auth error"| cf["ChatFailed<br/>transport error"]
 
     classDef good fill:#1a7f37,stroke:#116329,color:#fff;
     classDef warn fill:#9a6700,stroke:#7d4e00,color:#fff;
@@ -78,17 +61,14 @@ flowchart TD
     class cf bad;
 ```
 
-Gates 1–3 are `gates::local_gates` + `gates::validate`, all keyed on
-`nibli_types::lang::Language`. jbotci (`vlacku`/`cukta`/`tersmu`/`gentufa`) is
-**Lojban-only tooling**, optional even there — reached only through an
-app-owned proxy — and used as LLM tools + the tersmu meaning view, never as a
-required gate. No proxy (or nibli KR mode) ⇒ local gates only, fully serverless.
+The compiler and round-trip portion is `gates::local_gates`; the full
+assertion-authoring contract is `gates::validate` / `gates::validate_kb`.
 
 ## Test discipline
 
-- Local gates (both languages, incl. the round-trip gate) + provider/agent
-  logic + the verification turn: native `cargo test -p nibli-formalize --lib`
-  (`just test-formalize`) with mocked `chat()` / MCP; the two shipped system
-  prompts are pinned by gate-validity guard tests over their few-shots.
-- MCP client (gloo-net) + the camxes `official_gate` (JS-interop): wasm-only,
-  covered by `wasm-pack test` (`just test-formalize-wasm`).
+- Native `cargo test -p nibli-formalize --lib` (`just test-formalize`) covers
+  local gates, the exact-count assertion guard, provider/agent behavior,
+  bounded history, prompt grounding, and the semantic verification turn with
+  mocked `chat()`.
+- The shipped system prompt's examples and prose snippets are compiled by
+  guard tests so prompting guidance cannot silently drift from the grammar.

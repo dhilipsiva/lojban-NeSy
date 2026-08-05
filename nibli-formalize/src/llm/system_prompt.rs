@@ -36,7 +36,12 @@ Determiners build a term from a predicate word and are NOT interchangeable:
 - \"some dog\" — there exists a dog (use for English \"a/an/some\").
 - \"the dog\" — one definite dog, a constant with no quantifier (only for a genuinely definite referent).
 - \"every dog\" — universal; \"animal(every dog).\" is the rule \"every dog is an animal\".
-- \"exactly 2 dog\" — entity counting; \"no dog\" means \"exactly 0 dog\".
+- \"exactly 2 dog\" is an entity-count QUERY; \"no dog\" means \"exactly 0 dog\". Both are \
+query-only and cannot appear in successful KB-assertion output. Nibli has no persistent \
+cardinality-constraint assertion. If the source explicitly enumerates named members, assert \
+only those source-supported ordinary facts. Otherwise preserve the exact/no formula so the \
+deterministic gate reports it as unsupported: NEVER omit, weaken, or fabricate around the claim. \
+An exact count inside opaque \"fact { ... }\" or \"event { ... }\" content is quoted, not an outer-KB assertion.
 When the body is compound or a variable must be shared across conjuncts, use a binder block:
   every dog $d: animal($d) & runs($d).
   some dog $d: big($d) & goes($d).

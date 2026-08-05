@@ -1180,6 +1180,7 @@ impl Repl {
             ":help" | ":h" => {
                 println!("  <text>              Assert KR text as fact");
                 println!("  ? <text>            Query (collapsed macro-logical proof)");
+                println!("    exactly N / no are query-only; use the ? route");
                 println!("  :proof-verbose <text> Query (full role-level proof trace)");
                 println!("  ?? <text>           Find witnesses (answer variables)");
                 println!("  :debug <text>       Show compiled logic tree");

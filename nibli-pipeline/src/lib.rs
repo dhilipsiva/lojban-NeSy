@@ -442,7 +442,8 @@ impl GuestSession for Session {
     /// stay one compound fact, matching the native surfaces). Returns one
     /// (id, buffer) pair per asserted root so a persisting host can store the
     /// compiled FACT itself and replay it recompile-free via
-    /// `assert-buffer-with-id`.
+    /// `assert-buffer-with-id`. Exact counts in asserted position (outside
+    /// opaque quoted content) are query-only and fail before an id is allocated.
     fn assert_text(
         &self,
         input: String,
@@ -454,7 +455,8 @@ impl GuestSession for Session {
     }
 
     /// Recompile-free replay: assert an already-compiled buffer (as returned
-    /// by `assert-text`) under a caller-chosen id.
+    /// by `assert-text`) under a caller-chosen id. Legacy CountNodes in asserted
+    /// position fail closed before the caller-chosen id advances live state.
     fn assert_buffer_with_id(
         &self,
         buffer: logic::LogicBuffer,

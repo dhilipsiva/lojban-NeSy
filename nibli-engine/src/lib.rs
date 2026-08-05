@@ -230,6 +230,8 @@ impl NibliEngine {
     }
 
     /// Validate KR text without asserting — returns Ok if it parses and compiles.
+    /// This is intentionally compile-only: a CountNode is valid query IR even
+    /// though `assert_text` will reject it as query-only.
     pub fn validate(&self, text: &str) -> Result<(), String> {
         self.compile_text(text)
             .map(|_| ())
@@ -255,14 +257,17 @@ impl NibliEngine {
     /// Persist one compiled root and install it in the live KB under the same
     /// source id. The durable registry and KB counters are both consulted so
     /// even a caller that used the exposed lower-level KB cannot cause reuse.
-    /// Persistence happens first; a reasoning rejection deletes that row before
-    /// the error is returned, so reopen cannot resurrect a failed assertion.
+    /// Pure assertion preflight happens before serialization, id lookup, or a
+    /// durable write. After that, persistence happens before reasoning; a later
+    /// reasoning rejection deletes that row before the error is returned, so
+    /// reopen cannot resurrect a failed assertion.
     fn persist_and_assert(
         &self,
         store: &mut NibliStore,
         buffer: logic::LogicBuffer,
         label: String,
     ) -> Result<u64, EngineError> {
+        self.core.kb().validate_assertion(&buffer)?;
         let payload = postcard::to_allocvec(&buffer)
             .map_err(|e| EngineError::Reasoning(format!("Serialize error: {e}")))?;
         let durable_id = store
@@ -302,7 +307,10 @@ impl NibliEngine {
     /// A bare-`.i` multi-sentence text becomes N INDEPENDENT facts — one per root —
     /// each with its own id, store record, and retraction (connectives compile to a
     /// single root and stay one fact). Returns the minted ids in root order. A
-    /// single-sentence text yields exactly one id.
+    /// single-sentence text yields exactly one id. Exact-count formulas in
+    /// asserted position (outside opaque quoted content) are query-only. The
+    /// whole compiled input is preflighted before any independently retractable
+    /// root receives an id or durable row.
     pub fn assert_text(&self, text: &str) -> Result<Vec<u64>, EngineError> {
         let mut store = self.store.try_borrow_mut().map_err(|_| {
             EngineError::Reasoning("Store error: persistence state is already borrowed".to_string())
@@ -322,6 +330,7 @@ impl NibliEngine {
         // live KB share one collision-free id space, so the per-root loop runs
         // here with persistence in the middle.
         let buf = self.compile_text(text)?;
+        self.core.kb().validate_assertion(&buf)?;
         let label = text.to_string();
         let parts = buf.split_roots();
         let mut ids = Vec::with_capacity(parts.len());

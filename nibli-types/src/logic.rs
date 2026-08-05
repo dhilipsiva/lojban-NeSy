@@ -81,7 +81,9 @@ pub enum LogicNode {
     ObligatoryNode(u32),
     /// Deontic permission wrapper (e'e/curmi). Payload: inner-node-id.
     PermittedNode(u32),
-    /// Exactly N entities satisfy the body. Fields: (variable-name, count, body-node-id).
+    /// Exact count over the current domain. Query-only in asserted position;
+    /// it may also occur as uninterpreted content inside an opaque abstraction.
+    /// Fields: (variable-name, count, body-node-id).
     CountNode((String, u32, u32)),
 }
 

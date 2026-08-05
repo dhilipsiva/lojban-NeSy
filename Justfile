@@ -136,6 +136,28 @@ smoke-host-split: build-wasm build-host
         rm -rf "$dir"; \
         echo 'PASS: nibli KR statements split into independent, per-statement-retractable, buffer-replayed facts; conjunctions stay whole'
 
+# Count assertion boundary through the real WIT component + persistent host:
+# a later count root rejects the whole call before a durable/live id exists;
+# exact-zero/one remain current-model queries; ordinary facts persist/replay.
+smoke-host-count-query-only: build-wasm build-host
+    @echo "Smoke-testing gasnu query-only exact counts (atomic assert + replay)..."
+    @dir=$(mktemp -d); db="$dir/nibli-count.redb"; \
+        out1=$(printf 'person(Adam). big(exactly 1 dog).\n:facts\n? person(Adam).\n? big(no dog).\ndog(Bel) & big(Bel).\n? big(exactly 1 dog).\n:facts\n' \
+            | NIBLI_DB_PATH="$db" NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$out1"; \
+        echo "$out1" | grep -qF 'query-only and cannot be asserted' || { echo 'FAIL: outer count assertion was not rejected clearly'; rm -rf "$dir"; exit 1; }; \
+        echo "$out1" | grep -qF '[Facts] Knowledge base is empty.' || { echo 'FAIL: mixed rejected call left a partial fact or row'; rm -rf "$dir"; exit 1; }; \
+        echo "$out1" | grep -qF '[Fact #0] Asserted.' || { echo 'FAIL: rejection consumed the first id'; rm -rf "$dir"; exit 1; }; \
+        verdicts=$(echo "$out1" | grep -F '[Query]' | tr '\n' ' '); \
+        [ "$verdicts" = '[Query] FALSE [Query] TRUE [Query] TRUE ' ] || { echo "FAIL: expected person FALSE, zero TRUE, one TRUE; got: $verdicts"; rm -rf "$dir"; exit 1; }; \
+        out2=$(printf '? big(exactly 1 dog).\n:facts\n' \
+            | NIBLI_DB_PATH="$db" NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$out2"; \
+        echo "$out2" | grep -qF '[Query] TRUE' || { echo 'FAIL: ordinary supporting fact did not replay'; rm -rf "$dir"; exit 1; }; \
+        echo "$out2" | grep -qF '[Facts] 1 active fact(s):' || { echo 'FAIL: rejected count call wrote a durable row'; rm -rf "$dir"; exit 1; }; \
+        rm -rf "$dir"; \
+        echo 'PASS: exact counts are query-only and mixed assertion rejection is atomic across WIT + persistence'
+
 # Schema v2→v3 migration smoke: a legacy `StoredAssertion::Text` row (which the host can
 # no longer WRITE) is recompiled once on open into a `Buffer` row via `compile-debug`,
 # replays to the right verdict, and the DB is stamped v3 (a second run does NOT
@@ -410,6 +432,11 @@ test-engine:
 test-host:
     cargo test -p nibli-host
 
+# Run the batch assertion validator's reporter contract. nibli is bin-only for
+# this target, so the workspace `test` recipe (`cargo test --lib`) skips it.
+test-validate:
+    cargo test -p nibli --bin nibli-validate
+
 # Run nibli-ui's native tests (the shipped-examples guard: every example KB line
 # + preset query compiles through the nibli KR front-end; dual-mode with fallback
 # vocab-skips, queries never skip). nibli-ui is a bin-only crate, so the
@@ -456,11 +483,11 @@ test-persistence-replay:
     cargo test -p nibli-engine --test integration persistent_engine_honors_store_retractions_after_reopen -- --nocapture --test-threads=1
 
 # Run every test suite (unit + integration + Python + store)
-test-all: test test-engine test-store test-backend
+test-all: test test-engine test-store test-backend test-validate
 
 # CI gate for the hardened runtime surface (fast; native only — no WASM build).
 # For the WASM behavioral smokes too, run `just ci-all`.
-ci: fmt-check release-check clippy-runtime test test-engine test-host test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-grammar-parity verify-doc-fences verify-book-vocab
+ci: fmt-check release-check clippy-runtime test test-engine test-host test-validate test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-grammar-parity verify-doc-fences verify-book-vocab
 
 # WASM behavioral gate (pre-push, NOT part of `ci` — needs the WASM build, like
 # verify-book-capture). Bundles the gasnu smokes; each depends on
@@ -468,7 +495,7 @@ ci: fmt-check release-check clippy-runtime test test-engine test-host test-ui te
 # them all: fuel exhaustion + post-trap recovery + journal replay
 # (trap-recovery), plus the script transcript, persist-replay, NAF-note,
 # :debug round-trip, and the determinism corpus.
-ci-wasm: smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
+ci-wasm: smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-count-query-only smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
 
 # Three-way determinism, WASMTIME leg: the shared determinism-corpus.nibli must produce
 # exactly its pinned annotations through the lasna component under gasnu. The
@@ -506,7 +533,7 @@ test-formalize:
 # behavioral smokes. `ci` alone does not exercise the WASM component.
 ci-all: ci ci-wasm
 
-# Build the nibli-validate binary (batch Lojban validation via stdin)
+# Build the nibli-validate binary (batch KR assertion validation via stdin)
 build-validate:
     cargo build -p nibli --bin nibli-validate {{cargo_profile_flag}}
 

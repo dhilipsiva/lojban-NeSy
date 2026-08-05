@@ -143,6 +143,7 @@ fn main() {
                     ":help" | ":h" => {
                         println!("  <text>              Assert KR text as fact");
                         println!("  ? <text>            Query with proof trace");
+                        println!("    exactly N / no are query-only; use the ? route");
                         println!("  ?? <text>           Find witnesses (answer variables)");
                         println!("  :debug <text>       Show compiled logic tree");
                         println!("  :load <filepath>    Load a .nibli file (assert each line)");

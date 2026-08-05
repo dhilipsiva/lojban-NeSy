@@ -26,9 +26,13 @@ eats(Adam).
 
 The UI may show a decorative `?` next to the query box — it is **not** part of the text sent to the engine. Verdicts are `TRUE` / `FALSE` / `UNKNOWN` (see [guarantees](guarantees.md)).
 
+Exact-count forms (`exactly N` and `no`) belong here in the query box, not in
+the KR knowledge-base pane. They report the current KB snapshot; the engine has
+no persistent cardinality-constraint assertion.
+
 ## Formalize (optional)
 
-**Formalize** (not “compile”) is a bring-your-own-key LLM step from the Source tab. The key stays in tab memory only; the request goes from your browser to the provider you choose. Drafts are checked by the real nibli-kr + nibli-semantics + render round-trip gates before they land in the KR pane. Formalize sits **outside** the deterministic reasoning core — always review the KR and back-translation.
+**Formalize** (not “compile”) is a bring-your-own-key LLM step from the Source tab. The key stays in tab memory only; the request goes from your browser to the provider you choose. Drafts are checked by the real nibli-kr + nibli-semantics + render round-trip gates, plus a KB-assertability guard that rejects query-only exact counts, before they land in the KR pane. Formalize sits **outside** the deterministic reasoning core — always review the KR and back-translation.
 
 ## Example knowledge bases (preset hooks)
 

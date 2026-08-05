@@ -196,13 +196,7 @@ fn test_count_mismatch() {
 }
 
 #[test]
-fn retract_count_quantified_fact_removes_witnesses() {
-    // `Count(x, 2, gerku(x, _))` generates count-1 = 1 extra Skolem dog and
-    // asserts gerku(sk) for it. Retracting the count assertion must remove that
-    // generated witness — pre-fix a flat CountNode buffer took the incremental
-    // path (has_skolems matched only Exists/ForAll), leaking the witness fact +
-    // entity. Now CountNode routes to rebuild, which excludes the retracted
-    // assertion and never regenerates its witnesses.
+fn raw_count_assertions_reject_before_state_or_id_mutation() {
     let kb = new_kb();
     let mut nodes = Vec::new();
     let body = pred(
@@ -211,24 +205,168 @@ fn retract_count_quantified_fact_removes_witnesses() {
         vec![LogicalTerm::Variable("x".into()), LogicalTerm::Unspecified],
     );
     let root = count(&mut nodes, "x", 2, body);
-    let id = assert_id(
-        &kb,
-        LogicBuffer {
-            nodes,
-            roots: vec![root],
-        },
-        "count",
-    );
-    assert!(
-        kb.count_witnesses(make_find_query("gerku")).unwrap() >= 1,
-        "the count assertion should have generated a witness dog"
-    );
+    let count_buffer = LogicBuffer {
+        nodes,
+        roots: vec![root],
+    };
 
-    kb.retract_fact_inner(id).unwrap();
+    let error = kb
+        .assert_fact_inner(count_buffer.clone(), "count".to_string())
+        .expect_err("CountNode must be query-only at raw assertion ingress");
+    assert!(
+        error.contains("query-only") && error.contains("cannot be asserted"),
+        "the rejection must explain the contract: {error}"
+    );
     assert_eq!(
         kb.count_witnesses(make_find_query("gerku")).unwrap(),
         0,
-        "count-generated witnesses must not survive retraction"
+        "a rejected count must mint no entity or fact"
+    );
+    assert!(kb.list_facts_inner().unwrap().is_empty());
+    assert_eq!(kb.next_fact_id().unwrap(), 0, "no id may be consumed");
+
+    let replay_error = kb
+        .assert_fact_with_id(count_buffer, "legacy count".to_string(), 41)
+        .expect_err("preassigned/replay CountNode must fail closed");
+    assert!(replay_error.contains("query-only"), "{replay_error}");
+    assert_eq!(
+        kb.next_fact_id().unwrap(),
+        0,
+        "a rejected preassigned id must not advance the allocator"
+    );
+
+    let id = assert_id(&kb, make_assertion("alis", "gerku"), "ordinary");
+    assert_eq!(id, 0, "the first real assertion retains the first id");
+    assert!(query(&kb, make_query("alis", "gerku")));
+}
+
+#[test]
+fn asserted_count_classifier_respects_roots_opacity_and_cycles() {
+    let nested = LogicBuffer {
+        nodes: vec![
+            LogicNode::Predicate(("gerku".to_string(), Vec::new())),
+            LogicNode::CountNode(("x".to_string(), 1, 0)),
+            LogicNode::NotNode(1),
+        ],
+        roots: vec![2],
+    };
+    assert!(contains_asserted_count_node(&nested));
+
+    let mut ordinary_root = nested.clone();
+    ordinary_root.roots = vec![0];
+    assert!(
+        !contains_asserted_count_node(&ordinary_root),
+        "a sibling root's shared-arena count is unreachable and inert"
+    );
+
+    let opaque = LogicBuffer {
+        nodes: vec![
+            LogicNode::Predicate(("gerku".to_string(), Vec::new())),
+            LogicNode::CountNode(("x".to_string(), 1, 0)),
+            LogicNode::Predicate((
+                format!(
+                    "{}test",
+                    nibli_types::abstraction::ABSTRACTION_MARKER_PREFIX
+                ),
+                vec![LogicalTerm::Constant("content".to_string())],
+            )),
+            LogicNode::AndNode((2, 1)),
+        ],
+        roots: vec![3],
+    };
+    assert!(
+        !contains_asserted_count_node(&opaque),
+        "a count inside opaque abstraction content is not asserted"
+    );
+
+    let cyclic = LogicBuffer {
+        nodes: vec![LogicNode::NotNode(0)],
+        roots: vec![0],
+    };
+    assert!(
+        !contains_asserted_count_node(&cyclic),
+        "untrusted cyclic buffers must terminate without inventing a count"
+    );
+}
+
+#[test]
+fn count_assumptions_are_rejected_without_mutating_the_real_kb() {
+    let kb = new_kb();
+    assert_buf(&kb, make_assertion("alis", "gerku"));
+
+    let mut nodes = Vec::new();
+    let body = pred(
+        &mut nodes,
+        "gerku",
+        vec![LogicalTerm::Variable("x".into()), LogicalTerm::Unspecified],
+    );
+    let root = count(&mut nodes, "x", 1, body);
+    let count_buffer = LogicBuffer {
+        nodes,
+        roots: vec![root],
+    };
+
+    let error = kb
+        .with_assumptions(&[count_buffer], |_| ())
+        .expect_err("an exact-count assumption is still an assertion into the snapshot");
+    assert!(error.to_string().contains("query-only"), "{error}");
+    assert!(
+        query(&kb, make_query("alis", "gerku")),
+        "failed hypothetical must leave the real KB unchanged"
+    );
+}
+
+#[test]
+fn count_content_inside_an_opaque_abstraction_does_not_join_the_outer_domain() {
+    let kb = new_kb();
+
+    // Valid v1 abstraction identity: event-kind + Predicate("p", []).
+    let mut key = vec![0xa0, 0x10];
+    key.extend_from_slice(&1_u64.to_be_bytes());
+    key.push(b'p');
+    key.extend_from_slice(&0_u64.to_be_bytes());
+    let marker_relation = nibli_types::abstraction::encode_v1(&key);
+
+    let nodes = vec![
+        LogicNode::Predicate((
+            "dog".to_string(),
+            vec![
+                LogicalTerm::Constant("Hidden".to_string()),
+                LogicalTerm::Number(42.0),
+            ],
+        )),
+        LogicNode::CountNode(("x".to_string(), 1, 0)),
+        LogicNode::Predicate((
+            marker_relation,
+            vec![LogicalTerm::Constant("OpaqueRef".to_string())],
+        )),
+        LogicNode::AndNode((2, 1)),
+    ];
+    kb.assert_fact_inner(
+        LogicBuffer {
+            nodes,
+            roots: vec![3],
+        },
+        "opaque count content".to_string(),
+    )
+    .expect("quoted count content must remain assertable");
+
+    let inner = kb.inner.borrow();
+    assert!(
+        inner
+            .known_entities
+            .contains(&GroundTerm::Constant("OpaqueRef".to_string())),
+        "the abstraction referent is outer-KB content"
+    );
+    assert!(
+        !inner
+            .known_entities
+            .contains(&GroundTerm::Constant("Hidden".to_string())),
+        "a quoted constant must not enter the outer quantifier domain"
+    );
+    assert!(
+        !inner.known_numbers.contains(&42.0_f64.to_bits()),
+        "a quoted number must not enter the outer quantifier domain"
     );
 }
 

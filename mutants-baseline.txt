@@ -78,7 +78,6 @@ nibli-reason/src/rules.rs: replace >= with < in assert_typed_fact
 # ── Category C: STRATEGY/REDUNDANCY-EQUIVALENT — every branch computes the same verdict: index and candidate-selection heuristics (anchor tie-breaks, smallest-set picks, non-indexable/decidability fast paths with authoritative downstream evaluation, find_var_position extraction fallback, rule-bucket sort, Cow fast-paths), union-find rank/orientation choices, predicate-cache lifecycle, DNF/du resource-cap boundaries (cost or Unknown only, never a flip), NAF depth-accounting off-by-ones, cycle-key under-collapse, du equivalence-shortcut layers redundant with assert/query-time canonicalization, skolem-fn dep-chain duplication that stays injective through the single builder
 nibli-reason/src/kb.rs: delete ! in find_var_position
 nibli-reason/src/kb.rs: delete match arm (Cow::Borrowed(_), Cow::Borrowed(_)) in substitute_term
-nibli-reason/src/kb.rs: delete match arm LogicNode::AndNode((l, r)) | LogicNode::OrNode((l, r)) in contains_count_node
 nibli-reason/src/kb.rs: delete match arm LogicNode::FutureNode(inner_id) in collect_mandatory_anchors
 nibli-reason/src/kb.rs: delete match arm LogicNode::ObligatoryNode(inner_id) | LogicNode::PermittedNode(inner_id) in collect_mandatory_anchors
 nibli-reason/src/kb.rs: delete match arm LogicNode::PastNode(inner_id) in collect_mandatory_anchors
@@ -127,7 +126,6 @@ nibli-reason/src/reasoning.rs: replace condition_is_index_decidable -> bool with
 nibli-reason/src/reasoning.rs: replace sort_rule_bucket with ()
 nibli-reason/src/reasoning.rs: replace typed_fact_is_asserted_with_equivalence -> Option<StoredFact> with None
 nibli-reason/src/reasoning.rs: replace || with && in stored_fact_contains_var::term_contains_var
-nibli-reason/src/rules.rs: delete ! in generate_count_extra_witnesses
 nibli-reason/src/rules.rs: replace - with / in build_skolem_fn_term
 nibli-reason/src/rules.rs: replace > with == in dnf_of_node
 nibli-reason/src/rules.rs: replace > with >= in dnf_of_node
@@ -141,7 +139,6 @@ nibli-semantics/src/semantic/helpers.rs: replace < with <= in SemanticCompiler::
 nibli-reason/src/kb.rs: delete match arm GroundTerm::Number(bits) in GroundTerm::as_f64
 nibli-reason/src/kb.rs: delete match arm LogicNode::AndNode((l, r)) in tensed_body_hides_conditional
 nibli-reason/src/kb.rs: delete match arm LogicNode::ExistsNode((_, body)) in tensed_body_hides_conditional
-nibli-reason/src/kb.rs: delete match arm LogicNode::NotNode(n) | LogicNode::ExistsNode((_, n)) | LogicNode::ForAllNode((_, n)) | LogicNode::PastNode(n) | LogicNode::PresentNode(n) | LogicNode::FutureNode(n) | LogicNode::ObligatoryNode(n) | LogicNode::PermittedNode(n) in contains_count_node
 nibli-reason/src/kb.rs: delete match arm LogicNode::PastNode(n) | LogicNode::PresentNode(n) | LogicNode::FutureNode(n) | LogicNode::ObligatoryNode(n) | LogicNode::PermittedNode(n) in negation_body_purely_representable
 nibli-reason/src/kb.rs: delete match arm LogicNode::PastNode(n) | LogicNode::PresentNode(n) | LogicNode::FutureNode(n) | LogicNode::ObligatoryNode(n) | LogicNode::PermittedNode(n) in tensed_body_hides_conditional
 nibli-reason/src/kb.rs: replace == with != in asserted_numeric_comparison
@@ -156,7 +153,6 @@ nibli-reason/src/kb.rs: replace match guard subs.contains_key(v.as_str()) with t
 nibli-reason/src/kb.rs: replace match guard subs.contains_key(v.as_str()) with true in record_negative_conjuncts
 nibli-reason/src/kb.rs: replace match guard subs.contains_key(v.as_str()) with true in register_ground_material_conditional
 nibli-reason/src/kb.rs: replace match guard subs.contains_key(v.as_str()) with true in root_reduces_to_negation
-nibli-reason/src/kb.rs: replace || with && in contains_count_node
 nibli-reason/src/kb.rs: replace || with && in tensed_body_hides_conditional
 nibli-reason/src/reasoning.rs: delete ! in <impl Iterator for TypedMultiCartesian<'a>>::next
 nibli-reason/src/reasoning.rs: delete ! in check_formula_holds_core

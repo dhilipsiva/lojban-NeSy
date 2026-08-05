@@ -102,3 +102,38 @@ fn determinism_corpus_v8() {
         "determinism corpus too small: {checked} queries"
     );
 }
+
+#[wasm_bindgen_test]
+fn exact_count_assertions_fail_closed_on_the_v8_wrapper() {
+    let session = Session::new();
+    assert!(
+        session.assert_text("big(exactly 1 dog).").is_err(),
+        "the JavaScript assertion wrapper must reject query-only count formulas"
+    );
+
+    let facts: serde_json::Value =
+        serde_json::from_str(&session.list_facts().expect("list facts")).expect("facts JSON");
+    assert_eq!(facts.as_array().expect("facts array").len(), 0);
+
+    let zero: serde_json::Value = serde_json::from_str(
+        &session
+            .query_with_proof("big(no dog).")
+            .expect("exact-zero query"),
+    )
+    .expect("query JSON");
+    assert_eq!(zero["status"], "TRUE");
+
+    assert_eq!(
+        session
+            .assert_text("dog(Adam) & big(Adam).")
+            .expect("ordinary assertion"),
+        vec![0]
+    );
+    let one: serde_json::Value = serde_json::from_str(
+        &session
+            .query_with_proof("big(exactly 1 dog).")
+            .expect("exact-one query"),
+    )
+    .expect("query JSON");
+    assert_eq!(one["status"], "TRUE");
+}

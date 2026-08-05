@@ -694,9 +694,11 @@ struct OutputEntry {
 /// `OutputEntry`. The compile chain is the SHARED `nibli_session::CoreSession`
 /// (the same core the native engine and both wasm surfaces wrap — fail-closed;
 /// the `NibliError` Display carries the `[Syntax Error]` / `[Semantic Error]`
-/// prefixes the output log classifies on). The per-root assert loop stays
-/// UI-side: a failed root records the first error but keeps asserting the
-/// remaining roots (the KbStatusBar's per-line tolerance).
+/// prefixes the output log classifies on). Each compiled source line gets the
+/// pure structural assertion preflight before its per-root loop, so a later
+/// count/flavor rejection cannot leave earlier roots live. Other root-local
+/// reasoning errors retain the existing per-root behavior. A failed source line
+/// is recorded and later lines still run (the KbStatusBar's per-line tolerance).
 fn run_query(kb_text: &str, query_text: &str) -> OutputEntry {
     let session = nibli_session::CoreSession::new();
     let existential_import = session.is_existential_import();
@@ -719,6 +721,18 @@ fn run_query(kb_text: &str, query_text: &str) -> OutputEntry {
         let notes: Vec<String> = linter.lint(line).into_iter().map(|n| n.message).collect();
         match session.compile_text(line) {
             Ok(buf) => {
+                if let Err(e) = session.kb().validate_assertion(&buf) {
+                    errors += 1;
+                    line_results.push(LineResult {
+                        line_number,
+                        text: line.to_string(),
+                        success: false,
+                        fact_id: None,
+                        error: Some(e.to_string()),
+                        notes,
+                    });
+                    continue;
+                }
                 // Each bare-`.i` sentence becomes its OWN fact (connectives stay
                 // whole — they compile to a single root). `asserted` counts facts,
                 // so `A .i B` reads "2 asserted". One `LineResult` per source line
@@ -1480,6 +1494,35 @@ mod semantic_profile_tests {
         let output = run_query("animal(every dog).", "dog(some dog).");
         assert!(!output.existential_import);
         assert_eq!(output.result, "FALSE");
+    }
+
+    #[test]
+    fn mixed_line_count_rejection_is_atomic_but_later_lines_still_load() {
+        let output = run_query(
+            "person(Adam). big(exactly 1 dog).\nperson(Bel).",
+            "person(Adam).",
+        );
+        assert_eq!(
+            output.result, "FALSE",
+            "the ordinary root before the rejected count must not land"
+        );
+
+        let status = output.kb_status.expect("KB status");
+        assert_eq!(status.asserted, 1, "only the later valid line is asserted");
+        assert_eq!(status.errors, 1);
+        assert!(!status.line_results[0].success);
+        assert_eq!(status.line_results[0].fact_id, None);
+        assert!(
+            status.line_results[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("query-only"))
+        );
+        assert_eq!(
+            status.line_results[1].fact_id,
+            Some(0),
+            "the rejected line must not consume the first id"
+        );
     }
 }
 

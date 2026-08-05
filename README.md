@@ -33,7 +33,7 @@ The guarantee is **soundness relative to what you asserted**, not omniscience �
 
 nibli KR is a strict predicate-call surface for first-order claims: intuitive to read, but every semantic distinction stays visible in the spelling (the anti-silent-mistranslation design rule). One statement per line, ending with a period. Unknown predicate words are a **compile error**, never a guess — names resolve through the committed English corpus (a four-figure set of strongly-typed predicate entries, every place named), fail-closed; `a+b` compounds resolve only via committed compound entries.
 
-| nibli KR | Reads as |
+| nibli KR / REPL input | Reads as |
 |-------|----------|
 | `dog(Adam).` | Adam is a dog |
 | `animal(every dog).` | every dog is an animal (a rule) |
@@ -43,7 +43,7 @@ nibli KR is a strict predicate-call surface for first-order claims: intuitive to
 | `goes(Adam, destination: some market).` | named argument places, Python-style |
 | `beautiful(every person where ~cat).` | rule with a negated restrictor (negation-as-failure) |
 | `Kim = Adam.` | identity — Kim and Adam are the same individual |
-| `red(exactly 2 red).` | exact-count claim |
+| `? red(exactly 2 red).` | REPL exact-count query over the current KB (`?` selects the query route; it is not KR grammar and the formula is not a persistent constraint) |
 | `runs(some [big dog]).` | tanru — juxtaposed modifier, `[ ]` groups explicitly: a big-dog kind of runner (productive, unlike the fail-closed `a+b` compounds) |
 | `desires(desired: every teaches, desirer: event { studies() }).` | event abstraction |
 | `all $x: dangerous($x) & uses(Adam, $x) -> warns($x).` | explicit prenex rule with variables |
@@ -332,6 +332,12 @@ Query results use a four-valued contract: `TRUE`, `FALSE`, `UNKNOWN` (with reaso
 
 You query by **stating the proposition you want checked**, not by asking a question. `? animal(Adam).` reads *"is `Adam is an animal` entailed?"* — and the verdict *is* the answer. The engine has no interrogative form: state `animal(Adam).` ("Adam is an animal"), never "Is Adam an animal?". The `?` prefix marks the line as a query; it is not a question mark on the claim.
 
+`exactly N` and `no` are query-only. For example, `? big(exactly 2 dog).`
+counts the current matching entity classes; entering the same formula as a bare
+assertion fails before a fact id is allocated. Nibli does not store persistent
+cardinality constraints, and `exactly 0` is not a prohibition. Assert ordinary
+facts, then re-run the count after additions, equality changes, or retractions.
+
 Within one connected statement, a repeated named variable is one witness for both
 assertion and query: `bite($x, Bel) & bite($x, Dana).` requires the same biter in
 both clauses. Use different names for independent witnesses. Reusing one free name
@@ -389,7 +395,7 @@ To build a release bundle (`just build-ui`) or self-host, see [`DEPLOY.md`](DEPL
 
 The three tabs are **Source** (plain English), **nibli KR** (the formal encoding), and **Back-translation** (the structure-exposing gloss). The reasoning is fully local; the **only** optional network call is **Formalize** on the Source tab — a *bring-your-own-key* LLM request sent **directly from your browser** to a provider you choose (Anthropic, OpenAI, OpenRouter, Google Gemini, or any OpenAI-compatible/local endpoint). Configure it via the gear button: the API key is held **in that tab's memory only** — never persisted to storage and never routed through any nibli server (there is none), and it is erased on tab close/reload.
 
-Formalize runs the **agentic formalizer** (`nibli-formalize`) — "formalize", not "compile": the LLM step is interpretive and sits *outside* the reasoning firewall, behind deterministic gates. The LLM's draft is validated by the *real compilers* — the nibli-kr front-end (grammar + fail-closed name resolution) + nibli-semantics (semantics) + a canonical render **round-trip** check — and any compiler error is fed back for the model to self-correct, so what lands in the nibli KR tab already passes those gates. It is still a *draft* — you review the nibli KR (and its back-translation) before the deterministic engine reasons over it, and you can skip Formalize entirely and type nibli KR directly.
+Formalize runs the **agentic formalizer** (`nibli-formalize`) — "formalize", not "compile": the LLM step is interpretive and sits *outside* the reasoning firewall, behind deterministic gates. The LLM's draft is validated by the *real compilers* — the nibli-kr front-end (grammar + fail-closed name resolution) + nibli-semantics (semantics) + a canonical render **round-trip** check — plus the KB-assertability guard that rejects query-only exact counts. Any gate error is fed back for the model to self-correct, so what lands in the nibli KR tab already passes those gates. It is still a *draft* — you review the nibli KR (and its back-translation) before the deterministic engine reasons over it, and you can skip Formalize entirely and type nibli KR directly.
 
 The header has an **example** dropdown that loads a preloaded knowledge base into the triad — book case studies **Syllogism** (Ch 18), **GDPR compliance** (Ch 19), and **Drug interactions** (Ch 20), plus an optional extra playground corpus when shipped. In an example the KB source is read-only, Formalize is disabled, and the query box becomes a dropdown of that example's preset queries (selecting one runs it immediately). The default, **Custom**, is the editable mode. Book-facing corpora include the committed `gdpr.nibli` and `drug-interactions.nibli` files the engine's regression tests pin.
 

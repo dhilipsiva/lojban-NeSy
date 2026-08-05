@@ -65,28 +65,8 @@ pub(super) fn collect_exists_for_skolem(
         LogicNode::NotNode(inner) => {
             collect_exists_for_skolem(buffer, *inner, subs, enclosing_universals, kb);
         }
-        LogicNode::CountNode((v, count, body)) => {
-            if *count > 0 && !subs.contains_key(v.as_str()) {
-                if enclosing_universals.is_empty() {
-                    let sort = if v.starts_with("_ev") {
-                        SkolemSort::Event
-                    } else {
-                        SkolemSort::Individual
-                    };
-                    let symbol = kb.fresh_skolem(sort, SkolemOrigin::Generated);
-                    subs.insert(v.clone(), GroundTerm::Skolem(symbol));
-                } else {
-                    let sort = if v.starts_with("_ev") {
-                        SkolemSort::Event
-                    } else {
-                        SkolemSort::Individual
-                    };
-                    let symbol = kb.fresh_skolem(sort, SkolemOrigin::Generated);
-                    subs.insert(v.clone(), GroundTerm::SkolemPlaceholder(symbol));
-                }
-            }
-            collect_exists_for_skolem(buffer, *body, subs, enclosing_universals, kb);
-        }
+        // CountNode is query-only and rejected before assertion processing.
+        LogicNode::CountNode(_) => {}
         LogicNode::Predicate(_) | LogicNode::ComputeNode(_) => {}
         LogicNode::PastNode(inner)
         | LogicNode::PresentNode(inner)
@@ -511,7 +491,17 @@ pub(super) fn collect_and_note_constants(
                 }
             }
         }
-        LogicNode::AndNode((l, r)) | LogicNode::OrNode((l, r)) => {
+        LogicNode::AndNode((l, r)) => {
+            collect_and_note_constants(buffer, *l, inner);
+            // Match ground-fact/negation opacity: in
+            // `And(__abs_<identity>(referent), quoted_body)`, only the marker
+            // participates in the outer KB. Constants and numbers inside the
+            // quoted body must not silently enlarge the outer quantifier domain.
+            if !is_abstraction_marker(buffer, *l) {
+                collect_and_note_constants(buffer, *r, inner);
+            }
+        }
+        LogicNode::OrNode((l, r)) => {
             collect_and_note_constants(buffer, *l, inner);
             collect_and_note_constants(buffer, *r, inner);
         }
@@ -1833,85 +1823,6 @@ pub(super) fn compile_forall_to_rule(
     Ok(())
 }
 
-pub(super) fn generate_count_extra_witnesses(
-    buffer: &LogicBuffer,
-    node_id: u32,
-    skolem_subs: &HashMap<String, GroundTerm>,
-    inner: &mut KnowledgeBaseInner,
-) {
-    let Ok(node) = get_node(buffer, node_id) else {
-        return;
-    };
-    match node {
-        LogicNode::CountNode((v, count, body)) => {
-            if *count > 1 {
-                for _ in 1..*count {
-                    let extra_sk =
-                        inner.fresh_skolem(SkolemSort::Individual, SkolemOrigin::Generated);
-                    inner.note_entity(GroundTerm::Skolem(extra_sk));
-
-                    let mut typed_extra_subs: HashMap<String, GroundTerm> = skolem_subs
-                        .iter()
-                        .filter(|(_, gt)| !is_skdep(gt))
-                        .map(|(k, gt)| (k.clone(), gt.clone()))
-                        .collect();
-                    typed_extra_subs.insert(v.clone(), GroundTerm::Skolem(extra_sk));
-
-                    // FRESH event/description constants for THIS witness: the
-                    // body's existentials must not share events with witness 1
-                    // (same-event role facts for different subjects would
-                    // corrupt the decomposition).
-                    let mut body_exists = HashSet::new();
-                    collect_condition_exists(buffer, *body, &mut body_exists);
-                    for var in &body_exists {
-                        let sort = if var.starts_with("_ev") {
-                            SkolemSort::Event
-                        } else {
-                            SkolemSort::Individual
-                        };
-                        let ev_sk = inner.fresh_skolem(sort, SkolemOrigin::Generated);
-                        if var.starts_with("_ev") {
-                            inner.note_event_entity(GroundTerm::Skolem(ev_sk));
-                        } else {
-                            inner.note_entity(GroundTerm::Skolem(ev_sk));
-                        }
-                        typed_extra_subs.insert(var.clone(), GroundTerm::Skolem(ev_sk));
-                    }
-
-                    // Materialize the full body (restrictor ∧ main), not a
-                    // single leaf — the body is a conjunction of event
-                    // decompositions (`build_stored_fact_from_node` returns
-                    // None for And, which silently dropped every extra
-                    // witness before the count-assert semantics landed).
-                    let mut facts = Vec::new();
-                    collect_ground_facts(buffer, *body, &typed_extra_subs, None, &mut facts);
-                    for fact in facts {
-                        assert_typed_fact(fact, inner);
-                    }
-                }
-            }
-            generate_count_extra_witnesses(buffer, *body, skolem_subs, inner);
-        }
-        LogicNode::AndNode((l, r)) | LogicNode::OrNode((l, r)) => {
-            generate_count_extra_witnesses(buffer, *l, skolem_subs, inner);
-            generate_count_extra_witnesses(buffer, *r, skolem_subs, inner);
-        }
-        LogicNode::NotNode(inner_node)
-        | LogicNode::ExistsNode((_, inner_node))
-        | LogicNode::ForAllNode((_, inner_node)) => {
-            generate_count_extra_witnesses(buffer, *inner_node, skolem_subs, inner);
-        }
-        LogicNode::PastNode(inner_node)
-        | LogicNode::PresentNode(inner_node)
-        | LogicNode::FutureNode(inner_node)
-        | LogicNode::ObligatoryNode(inner_node)
-        | LogicNode::PermittedNode(inner_node) => {
-            generate_count_extra_witnesses(buffer, *inner_node, skolem_subs, inner);
-        }
-        LogicNode::Predicate(_) | LogicNode::ComputeNode(_) => {}
-    }
-}
-
 /// Convert a LogicalTerm + substitutions to a GroundTerm.
 /// `subs` maps variable names to GroundTerm values directly — no string parsing needed.
 pub(super) fn build_ground_term(
@@ -2033,17 +1944,6 @@ pub(super) fn collect_ground_facts(
         }
         LogicNode::PermittedNode(inner) => {
             collect_ground_facts(buffer, *inner, subs, Some("Permitted"), out);
-        }
-        LogicNode::CountNode((v, _, body)) => {
-            // Exact-count ASSERTION (`PA lo X cu Y`): materialize the FIRST
-            // witness's body facts — Phase 1 bound `v` to a fresh witness for
-            // count > 0 (extra witnesses are minted by
-            // `generate_count_extra_witnesses`). Count 0 binds nothing and
-            // materializes nothing: under CWA "no X are Y" already holds
-            // unless contradicted (GUARANTEES §Aggregation).
-            if subs.contains_key(v.as_str()) {
-                collect_ground_facts(buffer, *body, subs, tense, out);
-            }
         }
         _ => {
             if let Some(fact) = build_stored_fact_from_node(buffer, node_id, subs, tense) {

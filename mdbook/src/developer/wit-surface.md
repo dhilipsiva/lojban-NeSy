@@ -32,6 +32,10 @@ The IR and verdict types ([Pipeline & IR](pipeline-and-ir.md)):
   `nibli_types::logic` exactly — kebab-case names, identical declaration order
   (the component-model discriminant is positional).
 - `logic-buffer { nodes, roots }`.
+- `count-node` remains part of the shared formula IR for query/proof input.
+  Assertion and replay methods reject it in asserted position, while opaque
+  abstraction content remains quoted; the WIT has no persistent
+  cardinality-constraint type.
 - `query-result`: `true` | `false` | `unknown(unknown-reason)` |
   `resource-exceeded(resource-kind)`, with `unknown-reason` ∈ {`cycle-cut`,
   `incomplete-knowledge`, `naf-dependent`, `backend-unavailable`,
@@ -66,13 +70,13 @@ answers built-in arithmetic locally and forwards the rest over TCP
 | Method | Contract |
 |--------|----------|
 | `constructor()` | Fresh KB |
-| `assert-text(input)` | → `list<(fact-id, logic-buffer)>` — multi-statement input splits into one independent fact per root (a connective stays one compound fact); each pair carries the compiled buffer so a persisting host can replay without recompiling |
+| `assert-text(input)` | → `list<(fact-id, logic-buffer)>` — multi-statement input splits into one independent fact per root (a connective stays one compound fact); each pair carries the compiled buffer so a persisting host can replay without recompiling. A `CountNode` in asserted position fails as query-only before an id is allocated; opaque quoted content remains inert |
 | `query-text(input)` | → `query-result` |
 | `query-text-with-proof(input)` | → `(query-result, proof-trace)` |
 | `query-find-text(input)` | → witness binding sets |
 | `compile-debug(input)` | Compile without asserting; the host renders the buffer |
 | `assert-fact(relation, args)` / `assert-fact-with-id(…)` | Ground fact, bypassing text parsing; the `-with-id` form takes a caller-chosen id for restart replay |
-| `assert-buffer-with-id(buffer, label, id)` | **The** recompile-free replay primitive (the legacy `assert-text-with-id` was removed at 0.5.0 with store schema v3) |
+| `assert-buffer-with-id(buffer, label, id)` | **The** recompile-free replay primitive (the legacy `assert-text-with-id` was removed at 0.5.0 with store schema v3). Legacy count-assertion rows fail closed rather than regenerating witnesses |
 | `retract-fact(id)` / `list-facts()` / `reset-kb()` | KB management |
 | `register-compute-predicate(name)` | Marks a relation for compute dispatch |
 | `set-strict(bool)` | Off = permissive warn-and-insert; on = arity/integrity violations reject atomically |

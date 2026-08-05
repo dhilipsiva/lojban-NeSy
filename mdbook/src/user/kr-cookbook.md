@@ -6,7 +6,7 @@ nibli KR is a strict predicate-call surface: one statement per line, ending with
 
 ## Common patterns
 
-| nibli KR | Reads as |
+| nibli KR / REPL input | Reads as |
 |----------|----------|
 | `dog(Adam).` | Adam is a dog |
 | `animal(every dog).` | every dog is an animal (a rule) |
@@ -16,8 +16,12 @@ nibli KR is a strict predicate-call surface: one statement per line, ending with
 | `goes(Adam, destination: some market).` | named argument places |
 | `beautiful(every person where ~cat).` | rule with a negated restrictor (NAF) |
 | `Kim = Adam.` | identity |
-| `red(exactly 2 red).` | exact-count claim |
+| `? red(exactly 2 red).` | REPL exact-count query over the current KB (`?` selects the query route; it is not KR grammar) |
 | `all $x: dangerous($x) & uses(Adam, $x) -> warns($x).` | prenex rule with variables |
+
+`exactly N` and `no` compile as count formulas only for querying. They cannot
+be asserted as persistent cardinality constraints; assert ordinary facts and
+re-query the current count.
 
 ## Predicates and places
 

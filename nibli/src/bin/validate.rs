@@ -1,16 +1,12 @@
 //! nibli-validate — batch validation via stdin.
 //!
-//! Reads one KR statement per line from stdin. (The `--lang`/`NIBLI_LANG`
-//! selector retired with the Lojban front-end at THE DROP; the flag is no
-//! longer accepted and the env var is ignored. Former Lojban callers pin the
-//! env var). For each line, runs the selected front-end and nibli-semantics (compile to
-//! FOL). Outputs one JSON object per line to stdout:
+//! Reads one KR statement per line from stdin. For each line, runs the KR
+//! front-end, nibli-semantics, and engine assertion ingress in a fresh KB.
+//! This validates assertable KB input,
+//! not every formula that is legal as a query: query-only `exactly N` / `no`
+//! formulas are rejected. Outputs one JSON object per line to stdout:
 //!   {"line":"...","valid":true}
 //!   {"line":"...","valid":false,"error":"parse error: ..."}
-//!
-//! Lojban callers (book/tools/verify_book.py via the `verify-book` recipe's
-//! NIBLI_LANG=lojban env, python/generate_training_data.py and
-//! python/nibli_model.py via explicit `--lang lojban`) pin their language.
 
 use nibli_engine::NibliEngine;
 use std::io::{self, BufRead};
@@ -35,11 +31,8 @@ fn main() -> ExitCode {
             continue;
         }
 
-        // Validate parse + compile in a fresh KB. `reset()` clears all mutable
-        // state, so per-line reuse is equivalent to a fresh engine.
-        engine.reset();
-        match engine.assert_text(trimmed) {
-            Ok(_fact_id) => {
+        match validate_statement(&engine, trimmed) {
+            Ok(()) => {
                 let escaped_line = escape_json(trimmed);
                 println!(r#"{{"line":"{}","valid":true}}"#, escaped_line);
             }
@@ -57,6 +50,16 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Validate parse + compile + assertability in a fresh KB. `reset()` clears all
+/// mutable state, so per-line reuse is equivalent to a fresh engine.
+fn validate_statement(engine: &NibliEngine, statement: &str) -> Result<(), String> {
+    engine.reset();
+    engine
+        .assert_text(statement)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 /// Escape a string for embedding in JSON.
 fn escape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -71,4 +74,28 @@ fn escape_json(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reporter_validates_kb_assertability_not_just_formula_compilation() {
+        let engine = NibliEngine::new();
+        validate_statement(&engine, "dog(Adam).").expect("ordinary fact");
+
+        for statement in ["big(exactly 1 dog).", "big(no dog)."] {
+            let error = validate_statement(&engine, statement)
+                .expect_err("an outer count is query-only, even though it compiles");
+            assert!(error.contains("query-only"), "{statement}: {error}");
+            assert!(
+                engine.list_facts().unwrap().is_empty(),
+                "the rejected candidate must leave the fresh validator KB empty"
+            );
+        }
+
+        validate_statement(&engine, "believe(me, fact { big(exactly 1 dog) }).")
+            .expect("a count in opaque quoted content is assertable");
+    }
 }

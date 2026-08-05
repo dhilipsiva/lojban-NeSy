@@ -87,7 +87,9 @@ interface logic-types {
         obligatory-node(u32),
         /// Deontic permission wrapper (may). Payload: inner-node-id.
         permitted-node(u32),
-        /// Exactly N entities satisfy the body: Count(variable-name, count, body-node-id)
+        /// Exactly N entities satisfy the current body. Query-only in asserted
+        /// position; it may occur as quoted opaque-abstraction content.
+        /// Fields: Count(variable-name, count, body-node-id).
         count-node(tuple<string, u32, u32>),
     }
 
@@ -374,6 +376,9 @@ interface engine {
         /// asserted root, in root order: the id for later retraction, the
         /// root's compiled buffer so a persisting host can store the FACT
         /// itself (recompile-free replay via `assert-buffer-with-id`).
+        /// A count-node in asserted position (outside opaque quoted content)
+        /// is rejected before a fact id is allocated; this API does not install
+        /// cardinality constraints.
         assert-text: func(input: string) -> result<list<tuple<fact-id, logic-buffer>>, nibli-error>;
         /// Query whether KR text is entailed.
         query-text: func(input: string) -> result<query-result, nibli-error>;
@@ -398,7 +403,9 @@ interface engine {
         /// Assert an already-compiled logic buffer under a CALLER-CHOSEN fact
         /// id — the recompile-free replay primitive for hosts that persist the
         /// per-root buffers `assert-text` returns. `label` is the fact's
-        /// display label (the original source text).
+        /// display label (the original source text). A count-node in asserted
+        /// position fails closed, including during legacy-row replay; quoted
+        /// opaque-abstraction content remains inert.
         assert-buffer-with-id: func(buffer: logic-buffer, label: string, id: fact-id) -> result<_, nibli-error>;
         /// Retract a previously asserted fact by its ID.
         retract-fact: func(id: fact-id) -> result<_, nibli-error>;

@@ -5,6 +5,9 @@
 #   - nibli_kr::render fixpoint tests (render∘parse compiles to the same
 #     LogicBuffer; render is text-idempotent)
 #   - the future fuzz_nibli_kr seed and the nibli-verify battery.
+# This is a COMPILER/FORMULA acceptance corpus, not a loadable assertion KB.
+# CountNode rows (`exactly N` / `no`) are query bodies: they must parse, render,
+# and compile here, but assertion ingress is expected to reject them.
 # Every word is FALLBACK-SAFE (CI builds without dictionary-en.json).
 
 person(Adam).

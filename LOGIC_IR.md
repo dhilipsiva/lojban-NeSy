@@ -70,10 +70,16 @@ WASM component boundary unchanged. Structural guarantees:
 | `ForAllNode` | `(String, u32)` | ∀ variable-name over the body node |
 | `PastNode` / `PresentNode` / `FutureNode` | `u32` | Tense wrappers (`pu`/`ca`/`ba`) around the inner node |
 | `ObligatoryNode` / `PermittedNode` | `u32` | Deontic wrappers (`ei`/`e'e`) around the inner node |
-| `CountNode` | `(String, u32, u32)` | "Exactly N": (variable-name, **count**, body node id) |
+| `CountNode` | `(String, u32, u32)` | Query-only "Exactly N": (variable-name, **count**, body node id) |
 
 ⚠ `CountNode`'s **middle field is a count, not a node index** — the only place a `u32` in a
 payload is not an index into `nodes`.
+
+`CountNode` is a formula/IR shape, not a persistent constraint record. Query
+entry points evaluate it against the current closed domain; assertion,
+assumption, and preassigned/replay entry points reject any asserted count before
+allocating an id or mutating the KB. Opaque abstraction bodies are quoted
+content and are not traversed by this assertion check.
 
 There are deliberately no `Biconditional`/`Xor` node kinds: the compiler's internal tree IR has
 them, but the flattener expands `A ↔ B` to `(¬A ∨ B) ∧ (¬B ∨ A)` and `A ⊕ B` to
@@ -109,7 +115,7 @@ contract, not accident:
 - **Quantifiers.** `some dog` → `Exists(v, And(restrictor, body))` — plain veridical
   existential quantification. `every dog` (description universal) →
   `ForAll(v, Or(Not(restrictor), body))` — the material-implication arrow (`every the dog` is
-  the same shape over an opaque `the_domain_<name>` restrictor). `exactly N dog` (exact count) →
+  the same shape over an opaque `the_domain_<name>` restrictor). Query-only `exactly N dog` (exact count) →
   `CountNode(v, N, And(restrictor, body))`. Prenex `all $x: BODY` → nested `ForAll`
   wrapping the compiled body **directly** — no restrictor, no arrow — so a `ForAllNode` body is
   the implication shape for description universals but not for prenex ones. Free `$x`
@@ -161,8 +167,9 @@ contract, not accident:
   unary `the_domain_<name>` restrictor atom; and abstraction *type* predicates
   (`event`/`fact`/`property`/`amount`/`concept`) and `__abs_` markers are flat
   unary. Main-predication claims are always event-decomposed.
-- **Queries compile identically to assertions.** The divergence between asserting and querying
-  is entirely post-buffer.
+- **Queries compile identically to assertions.** The divergence is post-buffer:
+  `CountNode` formulas in asserted position are valid queries but fail closed at assertion
+  ingress because the store has no durable cardinality-constraint semantics.
 
 ### Compute predicates
 
@@ -214,6 +221,9 @@ fragment filter scans source tokens for exactly this reason). Scope details live
   schema because generated terms now contain structural Skolem ids. That mirror is not
   authoritative: startup erases and rebuilds it from the `LogicBuffer` registry, which is
   what restores rules, domain/equality indexes, source provenance, and retraction state.
+  An older active registry row containing an asserted `CountNode` now aborts
+  replay with its fact id and remains on disk for explicit repair/re-import; it
+  is never silently dropped or reinterpreted as witness generation.
 - **WIT** ([wit/world.wit](wit/world.wit), package `nibli:engine@0.9.0`) declares the same types
   for the WASM component boundary: kebab-case variant names (`for-all-node` ↔ `ForAllNode`),
   identical declaration order (the component-model discriminant is positional). The
@@ -240,7 +250,9 @@ exactly like surface text (with the flat-`equals` exception).
 `query_entailment_with_proof(buffer)`, `query_find(buffer)` (witness bindings),
 `count_witnesses(buffer)`, `aggregate(buffer, var, op)`, `with_assumptions(&[buffer], f)`
 (hypothetical reasoning on a clone), `retract_fact(id)`, plus
-`set_compute_dispatch(eval, batch_eval)` for wiring a compute backend.
+`set_compute_dispatch(eval, batch_eval)` for wiring a compute backend. `CountNode`
+is accepted by the query methods and rejected by `assert_fact` and
+`with_assumptions`.
 
 **The three packaged surfaces**, for integrators who want "does this KB entail that claim"
 without touching the IR:

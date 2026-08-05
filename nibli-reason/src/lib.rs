@@ -77,8 +77,8 @@ pub fn transform_compute_nodes(buf: &mut LogicBuffer, compute_preds: &HashSet<St
 }
 
 pub mod kb;
-pub use kb::KnowledgeBase;
 pub(crate) use kb::*;
+pub use kb::{KnowledgeBase, contains_asserted_count_node};
 
 /// One predicate's row in [`KnowledgeBase::stratification_report`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -123,10 +123,12 @@ impl KnowledgeBase {
 
     /// Assert FOL facts from a logic buffer into the knowledge base.
     /// Stores the buffer in the fact registry and returns a unique fact ID.
+    /// CountNodes in asserted position (outside opaque quoted content) are
+    /// query-only and fail before id allocation.
     fn assert_fact_inner(&self, mut logic: LogicBuffer, label: String) -> Result<u64, String> {
         // Validate before minting an id or borrowing/mutating the KB. The same
         // guard also lives in process_assertion so rebuild replay cannot bypass it.
-        validate_single_flavor_paths(&logic)?;
+        validate_assertion_buffer(&logic)?;
         let mut inner = self.inner.borrow_mut();
         let id = inner.fresh_fact_id()?;
         inner.current_assertion_id = Some(id);
@@ -162,7 +164,9 @@ impl KnowledgeBase {
     }
 
     /// Assert a fact with a pre-assigned ID. Used for replay from persistent store.
-    /// Advances the internal counter past the given ID.
+    /// Advances the internal counter past the given ID. A CountNode in asserted
+    /// position fails before the counter advances, so legacy count assertions
+    /// fail closed.
     pub fn assert_fact_with_id(
         &self,
         mut logic: LogicBuffer,
@@ -170,7 +174,7 @@ impl KnowledgeBase {
         id: u64,
     ) -> Result<(), String> {
         // A persisted/pre-assigned row must fail before advancing the live id counter.
-        validate_single_flavor_paths(&logic)?;
+        validate_assertion_buffer(&logic)?;
         let mut inner = self.inner.borrow_mut();
         if inner.fact_registry.contains_key(&id) {
             return Err(format!(
@@ -221,7 +225,7 @@ impl KnowledgeBase {
     /// (`known_entities`/`known_descriptions`/`known_numbers`) are insert-only;
     /// precise un-noting needs cross-record reference counting PLUS the witness
     /// entities minted outside record buffers (existential-import
-    /// presuppositions, count extra witnesses), so a retracted flat
+    /// presuppositions), so a retracted flat
     /// `Adam = Bel.` left both names as quantifier-domain members and a bare
     /// `all $x: p($x).` reported a counterexample the store no longer contained
     /// (22/200 sequences diverged the moment the retraction differential gained
@@ -1144,7 +1148,16 @@ impl KnowledgeBase {
         })
     }
 
+    /// Run the pure assertion-side structural preflight without allocating an id
+    /// or mutating the knowledge base. Multi-root surfaces use this before
+    /// installing any independently retractable root.
+    pub fn validate_assertion(&self, logic: &LogicBuffer) -> Result<(), NibliError> {
+        validate_assertion_buffer(logic).map_err(NibliError::Reasoning)
+    }
+
     /// Assert a compiled FOL formula into the knowledge base. Returns the fact ID.
+    /// Exact-count formulas in asserted position are query-only and cannot be
+    /// installed as constraints; opaque abstraction content remains quoted.
     pub fn assert_fact(&self, logic: LogicBuffer, label: String) -> Result<u64, NibliError> {
         // The assert IS the reasoning stage: by the time this runs the buffer has
         // already passed nibli-semantics, so every failure here (stratification, fail-closed
@@ -1158,7 +1171,8 @@ impl KnowledgeBase {
     /// Clones the KB, asserts all assumptions into the clone, runs the callback,
     /// and discards the clone. The original KB is untouched.
     ///
-    /// Supports multiple independent hypotheticals (each gets its own snapshot)
+    /// Assumptions use assertion semantics, so a CountNode is rejected rather
+    /// than treated as a temporary cardinality constraint. Supports multiple independent hypotheticals (each gets its own snapshot)
     /// and nesting (the callback receives a `&KnowledgeBase` with `with_assumptions`).
     pub fn with_assumptions<F, R>(&self, assumptions: &[LogicBuffer], f: F) -> Result<R, NibliError>
     where

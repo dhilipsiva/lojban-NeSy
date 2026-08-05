@@ -140,8 +140,8 @@ their spellings are deliberately non-interchangeable:**
 | `the dog` | `le gerku` | `Description("dog")` — a *constant-like term*, no quantifier. **Trap for English speakers** — see lint L1, §12 |
 | `every dog` | `ro lo gerku` | `ForAll(v, Or(Not(restrictor), matrix))` — **the rule shape** (becomes a `UniversalRuleRecord` at assert) |
 | `every the dog` | `ro le gerku` | ∀ over the opaque `the_domain_dog` restrictor |
-| `exactly 2 dog` | `re lo gerku` | `Count{v, 2, And(restrictor, matrix)}` — entity-level counting (du-classes collapsed; an imported witness counts when legacy import is ON) |
-| `no dog` | `no lo gerku` | sugar for `exactly 0 dog` |
+| `exactly 2 dog` | `re lo gerku` | `Count{v, 2, And(restrictor, matrix)}` — entity-level **query** counting (du-classes collapsed; an imported witness counts when legacy import is ON); not assertable |
+| `no dog` | `no lo gerku` | query-only sugar for `exactly 0 dog`; never a stored prohibition |
 
 **Disclosed engine semantic — existential import (Lojban's xorlo rule):** the default
 profile is **clean-core (existential import OFF)**. Asserting `animal(every dog).` adds the universal rule
@@ -164,9 +164,15 @@ Determiner phrases appear **in argument position** (`animal(every dog).`) or as 
 ```nibli-kr
 every dog $d: animal($d) & runs($d).       # ro lo gerku cu … (one rule, shared binder)
 some dog $d: big($d) & goes($d).           # shared existential witness across conjuncts
-exactly 2 dog $d: big($d) & goes($d).      # one Count over the shared binder
 every the dog $d: goes($d).                # rule over the opaque definite domain
 the dog $d: big($d) & goes($d).            # definite LET-BINDING sugar (see below)
+```
+
+The exact-count block form remains available for queries and lowers to one
+`CountNode` over the shared binder:
+
+```text
+? exactly 2 dog $d: big($d) & goes($d).
 ```
 
 The block form also dissolves `gi'e`'s constant-head restriction safely: sharing a
@@ -405,7 +411,12 @@ Queries **are** claims — nibli's model is unchanged: you *state a proposition*
 `TRUE`/`FALSE`/`UNKNOWN`. The identical statement grammar is used for assert and query;
 the host (REPL/API/UI) decides which pipeline a statement enters. There is no
 interrogative form (`xu` remains a parse error in the Lojban front-end and has no nibli KR
-equivalent). A claim containing `?` run as a query returns `[Find]` bindings:
+equivalent). One runtime distinction is explicit and fail-closed: any reachable
+`exactly N`/`no` `CountNode` is query-only. Assertion ingress rejects it before
+allocating a fact id or changing the KB because Nibli has no persistent cardinality
+constraint; assert ordinary facts and query their current count. A count inside opaque
+`fact { … }`/`event { … }` content remains quoted rather than asserted. A claim
+containing `?` run as a query returns `[Find]` bindings:
 
 ```nibli-kr
 eats(Adam).                   # asserted: a fact — queried: an entailment check
@@ -683,7 +694,7 @@ These *look* Lojban-flavored but are load-bearing engine semantics, and v2 keeps
   the former FALSE). Only identically-padded predications match: `goes(me, Paris)` ≡
   `goes(me, destination: Paris)`, since the named form routes to the same place.
 - **`=` (du) union-find equality**; **stratified NAF + CWA** (with assert-time
-  stratification rejection); **`exactly N`/`no` CountNode counting** — with no
+  stratification rejection); **query-only `exactly N`/`no` CountNode counting** — with no
   special witness-exclusion clause (clean-core mints none; explicit legacy imports
   count like other logical entities); **abstraction opacity
   markers** (`__abs_` versioned lossless identity); **tense + deontic wrappers**; the **`via` modal
@@ -852,8 +863,13 @@ all $x: dangerous($x) & uses(Adam, $x) -> warns($x).
                                                  # ro da zo'u ganai ge da ckape gi la .adam. cu pilno da gi da kajde
 Kim = Adam.                                      # la .kim. cu du la .adam.
 past dog(Dan).                                   # pu la .dan. cu gerku
-red(exactly 2 red).                              # re lo xunre cu xunre
 permitted(every tends(some data)).               # ro lo kurji be lo datni cu se curmi
+```
+
+The corresponding count is stated only on a query surface:
+
+```text
+? red(exactly 2 red).                            # re lo xunre cu xunre
 ```
 
 ---

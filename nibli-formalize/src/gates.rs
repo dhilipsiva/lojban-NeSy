@@ -4,7 +4,9 @@
 //! nibli-semantics → the RENDER ROUND-TRIP gate (the drift-catcher: the candidate's
 //! canonical re-spelling must compile to the SAME `LogicBuffer` — nibli-kr's
 //! pinned fixpoint contract, `nibli-kr/src/render.rs`; AstBuffer equality is
-//! deliberately NOT the contract there). The round-trip gate is pure Rust,
+//! deliberately NOT the contract there). The KB-authoring entry point then
+//! rejects CountNodes in asserted position (opaque quoted content is inert).
+//! The round-trip gate is pure Rust,
 //! so it runs on native AND wasm. (The legacy Lojban chain — gerna + the
 //! wasm-only camxes gate — retired with the Lojban front-end.)
 
@@ -18,7 +20,8 @@ pub enum GateError {
     /// The front-end rejected the grammar (nibli-kr's parse/resolve errors —
     /// including fail-closed dictionary-unknown aliases).
     Syntax(String),
-    /// nibli-semantics rejected the semantics/arity (`NibliError::Semantic`).
+    /// nibli-semantics rejected the semantics/arity (`NibliError::Semantic`),
+    /// or the compiled formula is not assertable as KB content.
     Semantic(String),
     /// The render round-trip gate: the candidate compiles, but its canonical
     /// re-spelling (`nibli_kr::render`) fails to re-parse or compiles to a
@@ -103,14 +106,28 @@ fn nibli_kr_round_trip(
     Ok(())
 }
 
-/// The full validation gate the agent calls — [`local_gates`]; the round-trip
-/// gate inside it is the third gate on every target.
+/// The full assertion-authoring gate the agent calls. Exact-count formulas
+/// remain valid compiler/query input, but Formalize produces KB assertions, so
+/// it must reject a `CountNode` in asserted position before returning text the
+/// engine cannot assert. Opaque quoted content is deliberately ignored.
 pub fn validate(candidate: &str) -> Result<LogicBuffer, GateError> {
-    local_gates(candidate)
+    let buf = local_gates(candidate)?;
+    if nibli_reason::contains_asserted_count_node(&buf) {
+        return Err(GateError::Semantic(
+            "exact-count formulas (exactly N and no) are query-only and cannot be \
+             emitted as knowledge-base assertions. Nibli has no persistent cardinality-constraint \
+             assertion. Assert only ordinary facts explicitly supported by the source; otherwise \
+             the exact claim is unsupported and must not be omitted, weakened to some, or \
+             fabricated around."
+                .to_string(),
+        ));
+    }
+    Ok(buf)
 }
 
 /// Validate a multi-line KB the way `nibli-ui` uses it: each non-empty,
-/// non-comment line must pass the gates on its own. Returns the first failing
+/// non-comment line must pass the compiler, round-trip, and assertion-intent
+/// gates on its own. Returns the first failing
 /// line's error, tagged with its KB line number so the LLM can locate it. A
 /// single-line candidate is simply validated as one statement, so this also
 /// covers the single-sentence case.
@@ -160,8 +177,8 @@ pub fn feedback_for(err: &GateError) -> String {
     let (what, tool) = match err {
         GateError::Syntax(_) => ("is not valid nibli KR", "nibli-kr compiler"),
         GateError::Semantic(_) => (
-            "parses but failed semantic compilation (e.g. a predicate got the wrong number of arguments)",
-            "nibli-semantics compiler",
+            "parses but failed semantic/assertability checks (e.g. a predicate got the wrong number of arguments, or a query-only form was used as a KB assertion)",
+            "semantic gate",
         ),
         GateError::RoundTrip(_) => (
             "compiles but is not canonical nibli KR (its canonical re-spelling does not compile to the same logic)",
@@ -221,9 +238,26 @@ mod tests {
             "red(exactly 2 red).",
             "~eats(Adam).",
         ] {
-            validate(s)
+            local_gates(s)
                 .unwrap_or_else(|e| panic!("round-trip gate rejected shipped shape {s:?}: {e:?}"));
         }
+    }
+
+    #[test]
+    fn exact_count_compiles_for_queries_but_is_rejected_as_formalized_kb_output() {
+        local_gates("red(exactly 2 red).")
+            .expect("the compiler/query surface must retain CountNode");
+
+        for candidate in ["red(exactly 2 red).", "red(no red)."] {
+            let err = validate(candidate)
+                .expect_err("Formalize must not emit a query-only count as a KB assertion");
+            assert!(matches!(err, GateError::Semantic(_)), "{err:?}");
+            assert!(err.message().contains("query-only"), "{err:?}");
+            assert!(err.message().contains("must not be omitted"), "{err:?}");
+        }
+
+        validate("believe(me, fact { red(exactly 2 red) }).")
+            .expect("a count in opaque quoted content is not a KB constraint");
     }
 
     #[test]

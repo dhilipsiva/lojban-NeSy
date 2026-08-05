@@ -52,6 +52,17 @@ and rebuild. A compute call that would expose an internal witness to the
 string-only backend protocol fails closed as `UNKNOWN (backend-unavailable)`; an
 equal-looking user constant still dispatches normally.
 
+## Exact counts are observations, not constraints
+
+`exactly N` and `no` are query-only formulas over the current closed domain.
+They count identity-equivalence classes and disclose any legacy
+existential-import contribution in the proof. Assertion ingress rejects them
+before allocating a fact id: Nibli does not persist or enforce cardinality
+constraints, and `exactly 0` is never a stored prohibition. Assert ordinary
+facts, then re-query after additions, equality changes, or retractions. Counts
+inside opaque `fact { … }` or `event { … }` content remain quoted content and
+do not constrain the outer KB.
+
 ## Four-valued outcomes
 
 How to read a query result (product README wording):

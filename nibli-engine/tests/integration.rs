@@ -1258,14 +1258,14 @@ fn object_position_existential_import_no_phantom_entity() {
 
 #[test]
 fn object_position_count_object_fails_closed() {
-    // An exact-count object (`ci lo mlatu` = "exactly three cats") is NOT a
-    // universal, so it is not prenex-peeled; the Count consequent fails closed.
+    // An exact-count object is still a CountNode inside the asserted rule and
+    // therefore query-only; nesting cannot bypass the assertion boundary.
     let engine = fresh_engine();
     let err = engine
         .assert_text("friend(every dog, exactly 3 cat).")
         .expect_err("an exact-count object position must be rejected");
     assert!(
-        err.to_string().contains("not a flat predicate") || err.to_string().contains("Rejecting"),
+        err.to_string().contains("query-only") && err.to_string().contains("cannot be asserted"),
         "expected a fail-closed rejection, got: {err}"
     );
 }
@@ -1672,61 +1672,107 @@ fn tensed_negation_is_flavor_exact() {
 }
 
 #[test]
-fn count_block_lowering_matches_term_position_behavior() {
-    // The BLOCK spelling `exactly 2 dog $d: big($d).` lowers to the same
-    // Count shape as `big(exactly 2 dog).` (seam-pinned), so it inherits the
-    // 2026-07-02 count-assertion semantics: two fresh witnesses materialize,
-    // each satisfying restrictor and body.
-    let engine = engine_with_facts(&["exactly 2 dog $d: big($d)."]);
-    for q in ["big(some dog).", "dog($da).", "big(exactly 2 dog)."] {
-        assert_true(
-            &engine.query_holds(q).unwrap(),
-            "count-block assertion must materialize satisfying witnesses",
-        );
+fn exact_count_assertions_are_query_only_in_every_import_profile() {
+    for import_enabled in [false, true] {
+        for statement in [
+            "big(exactly 1 dog).",
+            "big(no dog).",
+            "exactly 2 dog $d: big($d).",
+            "past big(exactly 1 dog).",
+            "person(Adam) & big(exactly 1 dog).",
+            "all $x: dog($x) -> big(exactly 1 dog).",
+        ] {
+            let engine = fresh_engine();
+            engine.set_existential_import(import_enabled).unwrap();
+            let error = engine
+                .assert_text(statement)
+                .expect_err("every asserted CountNode must fail closed");
+            assert!(
+                error.to_string().contains("query-only")
+                    && error.to_string().contains("cannot be asserted"),
+                "{statement} under import={import_enabled}: {error}"
+            );
+            assert!(
+                engine.list_facts().unwrap().is_empty(),
+                "rejection must be atomic for {statement}"
+            );
+            assert_false(
+                &engine.query_holds("person(Adam).").unwrap(),
+                "a sibling conjunct must not half-land",
+            );
+            assert_eq!(
+                engine.assert_text("person(Adam).").unwrap(),
+                vec![0],
+                "a rejected count must not consume an assertion id"
+            );
+        }
     }
-    assert_false(
-        &engine.query_holds("big(exactly 3 dog).").unwrap(),
-        "exactly 3 must be FALSE after a 2-witness count block",
-    );
 }
 
 #[test]
-fn count_assertion_materializes_witnesses() {
-    // DECIDED 2026-07-02 (GUARANTEES §Aggregation): an exact-count ASSERTION
-    // materializes PA distinct fresh witnesses satisfying the restrictor and
-    // body — so the assertion is SELF-DERIVABLE and composes with CWA. (This
-    // pin previously asserted the opposite: count assertions were accepted
-    // but verdict-inert, deriving nothing at all.)
-    let engine = engine_with_facts(&["big(exactly 1 dog)."]);
-    for q in [
-        "big(exactly 1 dog).",
-        "dog($da).",
-        "big($da).",
-        "big(some dog).",
-    ] {
-        assert_true(
-            &engine.query_holds(q).unwrap(),
-            "a count assertion materializes its witness",
-        );
-    }
-    assert_false(
-        &engine.query_holds("big(exactly 2 dog).").unwrap(),
-        "exactly-one stays exactly one",
+fn exact_count_queries_observe_current_facts_and_provenance() {
+    let engine = fresh_engine();
+    assert_true(
+        &engine.query_holds("big(no dog).").unwrap(),
+        "zero is true in the initially empty current model",
     );
 
-    // count > 1: DISTINCT witnesses with DISTINCT events.
-    let engine2 = engine_with_facts(&["small(exactly 2 cat)."]);
+    let rejected = engine
+        .assert_text("big(no dog).")
+        .expect_err("zero is a query too, never a stored prohibition");
+    assert!(rejected.to_string().contains("query-only"), "{rejected}");
+
+    let adam = engine
+        .assert_text("dog(Adam) & big(Adam).")
+        .expect("ordinary matching facts remain assertable")[0];
     assert_true(
-        &engine2.query_holds("small(exactly 2 cat).").unwrap(),
-        "exactly-two materializes two distinct witnesses",
+        &engine.query_holds("big(exactly 1 dog).").unwrap(),
+        "one explicit matching entity makes the snapshot count one",
     );
+    assert_false(&engine.query_holds("big(no dog).").unwrap(), "zero flips");
+
+    let (one, _, proof_json) = engine.query_text_with_proof("big(exactly 1 dog).").unwrap();
+    assert_true(&one, "proof query must agree");
+    let proof = nibli_protocol::proof_trace_from_json(&proof_json).unwrap();
+    assert!(proof.steps.iter().any(|step| matches!(
+        &step.rule,
+        nibli_protocol::ProofRule::CountResult {
+            expected: 1,
+            actual: 1,
+            existential_imported: 0,
+        }
+    )));
+
+    let adam_duplicate = engine
+        .assert_text("dog(Adam) & big(Adam).")
+        .expect("duplicate derivations do not create another entity")[0];
+    assert_true(
+        &engine.query_holds("big(exactly 1 dog).").unwrap(),
+        "duplicate facts for one entity still count once",
+    );
+
+    let bel = engine
+        .assert_text("dog(Bel) & big(Bel).")
+        .expect("a second explicit entity is allowed; no hidden constraint exists")[0];
     assert_false(
-        &engine2.query_holds("small(exactly 1 cat).").unwrap(),
-        "two witnesses are not one",
+        &engine.query_holds("big(exactly 1 dog).").unwrap(),
+        "the current count changes from one to two",
     );
     assert_true(
-        &engine2.query_holds("cat($da).").unwrap(),
-        "the witnesses satisfy the restrictor",
+        &engine.query_holds("big(exactly 2 dog).").unwrap(),
+        "the new snapshot reports two",
+    );
+
+    engine.retract_fact(bel).unwrap();
+    assert_true(
+        &engine.query_holds("big(exactly 1 dog).").unwrap(),
+        "retracting the second supporting assertion restores one",
+    );
+    engine.retract_fact(adam).unwrap();
+    engine.retract_fact(adam_duplicate).unwrap();
+    assert_true(
+        &engine.query_holds("big(no dog).").unwrap(),
+        "retraction restores zero",
     );
 }
 
@@ -1900,13 +1946,17 @@ fn find_witnesses_collapse_equals_and_events() {
 }
 
 #[test]
-fn zero_count_assertion_mints_no_witness() {
-    // `no lo gerku cu barda` (exactly zero): no witness may be minted — a
-    // phantom member would corrupt the domain and the closed-world verdicts.
-    let engine = engine_with_facts(&["big(no dog)."]);
+fn count_inside_opaque_abstraction_is_content_not_an_assertion() {
+    let engine = engine_with_facts(&["believe(me, fact { big(exactly 1 dog) })."]);
+    assert_true(
+        &engine
+            .query_holds("believe(me, fact { big(exactly 1 dog) }).")
+            .unwrap(),
+        "the opaque proposition itself remains assertable and queryable",
+    );
     assert_false(
         &engine.query_holds("dog($da).").unwrap(),
-        "a zero-count assertion must not mint a witness",
+        "quoted exact-count content must not mint a dog in the outer KB",
     );
 }
 
@@ -2174,13 +2224,15 @@ fn exact_count_collapses_equals_classes() {
     // counting is ENTITY-level — two du-merged names for one entity count as
     // ONE. (This pin previously asserted the opposite, uncollapsed behavior;
     // the decision flipped it deliberately.)
-    let engine = engine_with_facts(&[
-        "dog(Adam).",
-        "dog(Karl).",
-        "animal(Adam).",
-        "animal(Karl).",
-        "Adam = Karl.",
-    ]);
+    let engine = engine_with_facts(&["dog(Adam).", "dog(Karl).", "animal(Adam).", "animal(Karl)."]);
+    engine
+        .assert_text("dog(Adam).")
+        .expect("a duplicate name/fact must not change entity cardinality");
+    assert_true(
+        &engine.query_holds("animal(exactly 2 dog).").unwrap(),
+        "two distinct entities count as two before identity collapse",
+    );
+    let equality_id = engine.assert_text("Adam = Karl.").unwrap()[0];
     assert_true(
         &engine.query_holds("animal(exactly 1 dog).").unwrap(),
         "collapsed: the merged entity counts as ONE",
@@ -2188,6 +2240,11 @@ fn exact_count_collapses_equals_classes() {
     assert_false(
         &engine.query_holds("animal(exactly 2 dog).").unwrap(),
         "collapsed: two names for one entity do NOT count as two",
+    );
+    engine.retract_fact(equality_id).unwrap();
+    assert_true(
+        &engine.query_holds("animal(exactly 2 dog).").unwrap(),
+        "retracting the identity link restores two equivalence classes",
     );
 }
 
@@ -3165,6 +3222,103 @@ fn rejected_persistent_assertion_is_deleted_before_reopen() {
         assert_true(
             &reopened.query_holds("person(Adam).").unwrap(),
             "later successful state must replay",
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn rejected_persistent_count_leaves_no_row_and_quoted_count_reopens() {
+    let path = temp_db_path("persistent_count_query_only");
+    cleanup(&path);
+
+    {
+        let engine = fresh_open(&path, "persistent engine should open");
+        let error = engine
+            .assert_text("person(Adam). big(exactly 1 dog).")
+            .expect_err("a later count root must reject the whole persistent call");
+        assert!(error.to_string().contains("query-only"), "{error}");
+        assert!(
+            engine.list_facts().unwrap().is_empty(),
+            "the ordinary first root must not land before the later rejection"
+        );
+    }
+    {
+        let store = NibliStore::open(&path, "local".into()).expect("store should reopen");
+        assert!(
+            store.all_active_facts().unwrap().is_empty(),
+            "preflight must prevent every row in the rejected call from being written"
+        );
+    }
+    {
+        let engine = fresh_open(&path, "clean registry should replay");
+        assert_eq!(
+            engine.assert_text("dog(Adam) & big(Adam).").unwrap(),
+            vec![0],
+            "rejection must not consume the durable or live id"
+        );
+        assert_true(
+            &engine.query_holds("big(exactly 1 dog).").unwrap(),
+            "ordinary facts support the query before reopen",
+        );
+        assert_eq!(
+            engine
+                .assert_text("believe(me, fact { big(exactly 1 dog) }).")
+                .unwrap(),
+            vec![1],
+            "the same CountNode remains legal as opaque quoted content"
+        );
+    }
+    {
+        let reopened = fresh_open(&path, "ordinary facts should replay");
+        assert_true(
+            &reopened.query_holds("big(exactly 1 dog).").unwrap(),
+            "the same snapshot count must hold after reopen",
+        );
+        assert_true(
+            &reopened
+                .query_holds("believe(me, fact { big(exactly 1 dog) }).")
+                .unwrap(),
+            "opaque quoted count content must replay without becoming a constraint",
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn legacy_persisted_count_buffer_fails_replay_without_deleting_the_row() {
+    let path = temp_db_path("legacy_count_assertion");
+    cleanup(&path);
+
+    let compiler = fresh_engine();
+    let count = compiler
+        .compile_debug("big(exactly 1 dog).")
+        .expect("count query syntax must still compile");
+    let payload = postcard::to_allocvec(&count).expect("fixture should serialize");
+    {
+        let mut store = NibliStore::open(&path, "local".into()).expect("store should open");
+        store
+            .insert_fact(7, "legacy count assertion".into(), payload)
+            .expect("legacy fixture should persist");
+    }
+
+    let error = match NibliEngine::open(&path) {
+        Ok(_) => panic!("a legacy count assertion must not regenerate witnesses"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("Replay error (fact 7)")
+            && error.contains("query-only")
+            && error.contains("cannot be asserted"),
+        "replay failure must identify the row and migration contract: {error}"
+    );
+    {
+        let store = NibliStore::open(&path, "local".into()).expect("store should reopen");
+        assert!(
+            store.get_fact(7).unwrap().is_some(),
+            "failed replay is non-destructive; the operator must repair/re-import explicitly"
         );
     }
 

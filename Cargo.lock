@@ -2953,15 +2953,13 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "gloo-net",
- "js-sys",
  "nibli-kr",
  "nibli-lexicon",
+ "nibli-reason",
  "nibli-render",
  "nibli-semantics",
  "nibli-types",
  "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-test",
 ]
 
 [[package]]

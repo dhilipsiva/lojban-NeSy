@@ -187,9 +187,13 @@ impl CoreSession {
     /// single root and stay one compound fact). The full input text is each
     /// root's label. Returns one `(id, compiled-sub-buffer)` pair per root so
     /// a persisting caller can store the FACT itself and replay it
-    /// recompile-free; callers that only need ids map the pairs down.
+    /// recompile-free; callers that only need ids map the pairs down. Reachable
+    /// exact-count formulas in asserted position (outside opaque quoted
+    /// content) are query-only; the whole compiled input is preflighted so a
+    /// later rejected root cannot leave earlier roots live.
     pub fn assert_text(&self, text: &str) -> Result<Vec<(u64, LogicBuffer)>, NibliError> {
         let buf = self.compile_text(text)?;
+        self.kb.validate_assertion(&buf)?;
         let mut out = Vec::new();
         for sub in buf.split_roots() {
             let id = self.kb.assert_fact(sub.clone(), text.to_string())?;
@@ -436,6 +440,24 @@ mod tests {
             count_exists(&dependent, dependent.roots[0], "$w"),
             1,
             "the conclusion's repeated witness must be one existential inside the universal"
+        );
+    }
+
+    #[test]
+    fn multi_root_count_rejection_happens_before_any_root_or_id_lands() {
+        let session = CoreSession::new();
+        let error = session
+            .assert_text("person(Adam). big(exactly 1 dog).")
+            .expect_err("a later query-only count must reject the whole call");
+        assert!(error.to_string().contains("query-only"), "{error}");
+        assert!(
+            session.list_facts().unwrap().is_empty(),
+            "the ordinary first root must not land before rejection"
+        );
+        assert_eq!(
+            session.kb().next_fact_id().unwrap(),
+            0,
+            "the rejected call must not consume an id"
         );
     }
 }

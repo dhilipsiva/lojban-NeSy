@@ -15,6 +15,17 @@ here first.
 
 ### Changed
 
+- **Exact-count formulas are query-only:** `exactly N` and `no` remain
+  compiler/IR/query/proof features, but assertion, assumption, and
+  preassigned/replay entry points now reject a `CountNode` in asserted position before
+  allocating an id or mutating the KB. The former behavior minted witnesses
+  without persisting a cardinality invariant (and `exactly 0` stored no
+  prohibition), so it could falsify itself or drift after later mutations.
+  Authors now assert ordinary facts and query the current count. Counts inside
+  opaque abstraction bodies remain quoted content. Legacy persisted count
+  assertions fail replay non-destructively. This is a breaking assertion
+  semantics change during 0.x; the grammar, IR, WIT variants, renderer, and
+  query-result/proof shapes are unchanged.
 - **WIT `nibli:engine@0.9.0` exposes generated-witness provenance:**
   `witness-origin` gains `generated-witness`, so find bindings and existential
   proof steps distinguish opaque reasoner-minted witnesses from user constants

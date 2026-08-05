@@ -111,17 +111,23 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   book validator, reference checker, capture checker, and two byte-idempotence passes
   before removing this residual with the `book-todo` workflow.
 
-- **Stop presenting generative exact-count assertions as persistent cardinality
-  constraints.** A top-level `big(exactly 1 dog).` currently creates one fresh matching
-  witness (`nibli-reason/src/rules.rs`:1783-1834); it does not register an invariant.
-  A later matching assertion can make the original count false, and `exactly 0` stores no
-  prohibition at all. Choose one explicit contract: persist/enforce an atomic cardinality
-  constraint (including zero), reject count assertions and retain counts as queries, or
-  introduce separately named generative syntax. **Exit:** sequences for exactly-one then a
-  second match, zero then a match, duplicate/equality-collapsed entities, retraction,
-  rebuild/reopen, proof provenance, and import on/off are pinned through the KR surface;
-  the renderer/spec/Chapters 4 and 8 plus Appendices A/B/E stop calling witness generation
-  an exact-cardinality assertion.
+- **Synchronize the manuscript with query-only exact-count semantics (engine
+  decision complete 2026-08-05; book-repo work only).** The engine no longer
+  generates witnesses for an asserted `CountNode`: every assertion, assumption,
+  and preassigned/replay ingress rejects `exactly N`/`no` in asserted position before
+  allocating an id or mutating state. Counts remain valid queries over the current
+  closed domain, collapse equality classes, include explicitly enabled legacy-import
+  witnesses with structured `CountResult` provenance, and may change after facts,
+  equality links, import-profile changes, or retractions. `exactly 0` is a query,
+  never a stored prohibition. Counts inside opaque abstractions are quoted content,
+  not outer-KB constraints. Legacy persisted count-assertion rows fail replay
+  non-destructively. Root specs/docs and Formalize's assertion-authoring guard are
+  synchronized; do not reintroduce the retired generative reading. Update Chapters
+  4 and 8 plus Appendices A/B/E and any renderer/capture exposition to present
+  exact counts only on query surfaces; rewrite examples that currently load them as
+  KB statements. Run the book validator, reference checker, capture checker, and
+  two byte-idempotence passes before removing this residual with the `book-todo`
+  workflow.
 
 ---
 

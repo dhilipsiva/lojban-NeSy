@@ -49,9 +49,11 @@ impl Session {
         Ok(())
     }
 
-    /// Parse one Lojban assertion, compile to FOL, assert. A bare-`.i`
+    /// Parse one KR assertion, compile to FOL, assert. A bare-`.i`
     /// multi-sentence text becomes N INDEPENDENT facts (one per root; connectives
-    /// stay whole); returns the minted fact ids in root order.
+    /// stay whole); returns the minted fact ids in root order. Exact-count
+    /// formulas in asserted position (outside opaque quoted content) are
+    /// query-only and fail before id allocation.
     pub fn assert_text(&self, text: &str) -> Result<Vec<u64>, JsError> {
         let pairs = self
             .core
@@ -244,6 +246,25 @@ mod tests {
 
         session.set_existential_import(false).unwrap();
         assert_eq!(status(&session, "dog(some dog)."), "FALSE");
+    }
+
+    #[test]
+    fn exact_count_is_query_only_in_the_browser_session_core() {
+        let session = Session::new();
+        assert!(
+            session.core.assert_text("big(exactly 1 dog).").is_err(),
+            "the browser's shared assertion core must preserve the query-only guard"
+        );
+        let facts: serde_json::Value =
+            serde_json::from_str(&session.list_facts().unwrap()).unwrap();
+        assert_eq!(facts.as_array().unwrap().len(), 0);
+        assert_eq!(status(&session, "big(no dog)."), "TRUE");
+
+        assert_eq!(
+            session.assert_text("dog(Adam) & big(Adam).").unwrap(),
+            vec![0]
+        );
+        assert_eq!(status(&session, "big(exactly 1 dog)."), "TRUE");
     }
 
     #[test]

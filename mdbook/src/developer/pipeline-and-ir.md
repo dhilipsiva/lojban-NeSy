@@ -27,7 +27,12 @@ The one WASM boundary is host ↔ `nibli-pipeline`, and only `LogicBuffer`
 and the Lean proofs operate on or below the IR.
 
 Queries and assertions use the **same compiler** — there is no separate query
-syntax at the IR level; divergence is entirely post-buffer.
+syntax at the IR level; divergence is entirely post-buffer. In particular,
+`CountNode` is evaluated only by query entry points when it occurs in asserted
+position. Assertion and preassigned/replay entry points reject that use before
+mutation because the store has no persistent cardinality-constraint
+representation. A CountNode inside an opaque abstraction body remains quoted
+content and is not evaluated against the outer KB.
 
 ### CoreSession — the one compile chain
 
@@ -99,7 +104,7 @@ These shapes are contract, not accident — pinned by the seam-conformance gate
   with `Unspecified` so role predicates stay arity-consistent.
 - **Quantifier shapes.** `some dog` → `Exists(v, And(restrictor, body))`;
   `every dog` → `ForAll(v, Or(Not(restrictor), body))` (the implication
-  arrow); `exactly N` → `CountNode`. Prenex `all $x: …` wraps the body
+  arrow); query-only `exactly N` → `CountNode`. Prenex `all $x: …` wraps the body
   **directly** — no restrictor, no arrow.
 - **Flavor-exact ordinary-predicate rule literals.** `PastNode` / `PresentNode` / `FutureNode`
   remain attached to the antecedent or conclusion they wrap. Bare rule
@@ -139,7 +144,7 @@ property, carried on the verdict side by `ProofTrace.naf_dependent` and
 |----------|-----|
 | Text → IR | `NibliEngine::compile_debug` (native), `compile-debug` (WIT), or `nibli_semantics::compile_from_ast` (+ `transform_compute_nodes`) |
 | A programmatic ground fact | `nibli_semantics::compile_injected_fact(relation, args)` — decomposes and pads exactly like surface text |
-| Reason over a buffer (BYO-IR) | `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact` |
+| Reason over a buffer (BYO-IR) | `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact`. A `CountNode` in asserted position is query-only; it is rejected by `assert_fact` and as an assumption, while opaque quoted content remains inert |
 | A packaged surface | `nibli_engine::NibliEngine` (native), the nibli-wasm `Session` (browser JS), or the `nibli-pipeline` component ([WIT surface](wit-surface.md)) |
 
 ## Stable vs internal
