@@ -41,6 +41,8 @@ fn with_sub<T>(
 thread_local! {
     static GLOBAL_CANDIDATE_CARTESIAN_STEPS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    static RULE_EVENT_SEARCH_LEAF_ATTEMPTS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -53,10 +55,26 @@ pub(super) fn global_candidate_cartesian_steps() -> usize {
     GLOBAL_CANDIDATE_CARTESIAN_STEPS.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+pub(super) fn reset_rule_event_search_leaf_attempts() {
+    RULE_EVENT_SEARCH_LEAF_ATTEMPTS.with(|steps| steps.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn rule_event_search_leaf_attempts() -> usize {
+    RULE_EVENT_SEARCH_LEAF_ATTEMPTS.with(std::cell::Cell::get)
+}
+
 #[inline]
 fn note_global_candidate_cartesian_step() {
     #[cfg(test)]
     GLOBAL_CANDIDATE_CARTESIAN_STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
+#[inline]
+fn note_rule_event_search_leaf_attempt() {
+    #[cfg(test)]
+    RULE_EVENT_SEARCH_LEAF_ATTEMPTS.with(|steps| steps.set(steps.get() + 1));
 }
 
 /// Build the full candidate vector for unbound event variable search:
@@ -114,16 +132,49 @@ fn fact_has_unbound_pattern_var(fact: &StoredFact) -> bool {
         .any(|a| matches!(a, GroundTerm::PatternVar(_)))
 }
 
-/// Index-anchored join binding. After a rule's event variables are bound, a
-/// condition like `fanta_x1(ev_f, x__v0)` has a GROUND anchor arg (the bound
-/// event) and an unbound individual pattern var. Look the matching asserted fact
-/// up in `arg_position_index` and bind the individual var to it — instead of
-/// enumerating those vars over a `members^k` domain cartesian. Runs to a
-/// fixpoint so a var bound from one condition (the shared `di`) propagates to the
-/// next (`se-katna(di, de)` becomes ground). Binds only on a UNIQUE index match
-/// (deterministic — event role atoms have one fact per event), so it never
-/// guesses; non-unique conditions are left for the downstream ground check.
-/// Returns the names of vars newly bound, so the caller removes them per combo.
+/// A rule-backed decomposed role remains functional at a fixed event only when every
+/// rule that can derive it mints the role's first argument as a fresh event witness.
+/// A hand-built flat rule that reuses an arbitrary event variable is therefore never
+/// eligible for the direct-index binding shortcut.
+fn relation_rule_heads_mint_events(relation: &str, inner: &KnowledgeBaseInner) -> bool {
+    let Some(rules) = inner.universal_rules.get(relation) else {
+        return false;
+    };
+    let mut saw_conclusion = false;
+    for conclusion in rules
+        .iter()
+        .flat_map(|rule| rule.typed_conclusions.iter())
+        .filter(|conclusion| conclusion.relation() == relation)
+    {
+        saw_conclusion = true;
+        if !conclusion
+            .inner()
+            .args
+            .first()
+            .is_some_and(is_event_skolem_term)
+        {
+            return false;
+        }
+    }
+    saw_conclusion
+}
+
+/// Index-anchored join binding. After one or more rule event variables are bound,
+/// a fully event-bound condition such as `fanta_x1(ev_f, x__v0)` has a GROUND
+/// event anchor and an unbound individual pattern var. Look the matching asserted
+/// fact up in `arg_position_index` and bind the individual var to it — instead of
+/// enumerating those vars over a `members^k` domain cartesian. Conditions with an
+/// unbound `ev__` stay untouched; binding from them would choose an individual
+/// before the event that justifies it. Runs to a fixpoint so a var bound from one
+/// role propagates into the next event's candidate anchors. Negated conditions are
+/// never binding sources. An ordinary relation must be EDB-only; a decomposed role
+/// relation may also be rule-backed because its paired base atom fixes the event
+/// identity, and a rule-head event Skolem structurally determines all of that head's
+/// roles. Equality disables the shortcut. Binds only on a UNIQUE exact index match,
+/// so it never guesses; non-unique conditions are left for the downstream ground
+/// check.
+/// Returns the names of vars newly bound, so a failed search branch can restore
+/// its parent bindings.
 fn bind_join_vars_from_index(
     rule: &UniversalRuleRecord,
     bindings: &mut HashMap<String, GroundTerm>,
@@ -132,9 +183,42 @@ fn bind_join_vars_from_index(
     let mut newly_bound: Vec<String> = Vec::new();
     loop {
         let mut changed = false;
-        for ct in &rule.typed_conditions {
+        for (condition_idx, ct) in rule.typed_conditions.iter().enumerate() {
+            if rule.negated_condition_indices.contains(&condition_idx) {
+                continue;
+            }
             let cs = substitute_fact(ct, bindings);
             let gf = cs.inner();
+            let surface_relation = crate::materialize::surface_relation(&gf.relation);
+            let paired_functional_role = inner.equivalence_parent.is_empty()
+                && surface_relation != gf.relation
+                && gf.args.len() == 2
+                && gf.args.first().is_some_and(is_event_skolem_term)
+                && relation_rule_heads_mint_events(&gf.relation, inner)
+                && rule
+                    .typed_conditions
+                    .iter()
+                    .enumerate()
+                    .any(|(peer_idx, peer)| {
+                        if rule.negated_condition_indices.contains(&peer_idx)
+                            || peer.relation() != surface_relation
+                        {
+                            return false;
+                        }
+                        let peer = substitute_fact(peer, bindings);
+                        std::mem::discriminant(&peer) == std::mem::discriminant(&cs)
+                            && peer.inner().args.as_slice() == &gf.args[..1]
+                    });
+            if !condition_is_index_decidable(&gf.relation, inner) && !paired_functional_role {
+                continue;
+            }
+            if gf
+                .args
+                .iter()
+                .any(|a| matches!(a, GroundTerm::PatternVar(s) if s.starts_with("ev__")))
+            {
+                continue;
+            }
             let Some(anchor_pos) = gf
                 .args
                 .iter()
@@ -2251,6 +2335,340 @@ fn filter_event_candidates(
         .collect()
 }
 
+enum EventBindingSearch {
+    Found,
+    Exhausted(Option<QueryResult>),
+}
+
+/// Complete candidate set for one still-unbound rule event under the bindings
+/// established by earlier join steps. Positive single-event conditions are
+/// mandatory anchors; conditions containing another still-unbound event cannot
+/// constrain this step yet. Recursive predicates conservatively keep every
+/// non-definitive candidate, exactly like the former pre-Cartesian filter.
+#[allow(clippy::too_many_arguments)]
+fn event_candidates_under_bindings(
+    rule: &UniversalRuleRecord,
+    ev_var: &str,
+    event_vars: &[String],
+    bindings: &HashMap<String, GroundTerm>,
+    inner: &KnowledgeBaseInner,
+    depth: usize,
+    visited: &mut HashSet<StoredFact>,
+    candidates_slot: &mut Option<Vec<GroundTerm>>,
+) -> Vec<GroundTerm> {
+    let single_var_cond_indices: Vec<usize> = rule
+        .typed_conditions
+        .iter()
+        .enumerate()
+        .filter(|(_, condition)| {
+            stored_fact_contains_var(condition, ev_var)
+                && event_vars.iter().all(|other| {
+                    other == ev_var
+                        || bindings.contains_key(other.as_str())
+                        || !stored_fact_contains_var(condition, other)
+                })
+        })
+        .map(|(idx, _)| idx)
+        .collect();
+
+    if single_var_cond_indices.is_empty() {
+        return ensure_candidates(candidates_slot, inner).to_vec();
+    }
+
+    // Negated conditions cannot anchor: a witness for `~P(ev)` need not occur in
+    // P's extension. Every positive condition is substituted with the individual
+    // and earlier-event bindings accumulated by the left-deep join.
+    let positive_conditions: Vec<StoredFact> = single_var_cond_indices
+        .iter()
+        .copied()
+        .filter(|idx| !rule.negated_condition_indices.contains(idx))
+        .map(|idx| substitute_fact(&rule.typed_conditions[idx], bindings))
+        .collect();
+    let candidates = collect_group_event_candidates(&positive_conditions, ev_var, inner)
+        .unwrap_or_else(|| ensure_candidates(candidates_slot, inner).to_vec());
+    filter_event_candidates(
+        rule,
+        ev_var,
+        bindings,
+        &single_var_cond_indices,
+        &candidates,
+        inner,
+        depth,
+        visited,
+    )
+}
+
+/// Cheap, semantics-neutral priority for the next event in a left-deep rule join.
+///
+/// Candidate generation can include rule-derived Skolem families, so doing it for
+/// *every* remaining event merely to discover the narrowest vector recreates the
+/// eager-product cost this join is meant to avoid. Rank instead from already-ground
+/// sibling arguments and their direct index buckets, then generate candidates only
+/// for the selected event. The rank changes search order, never the candidate set.
+fn event_join_priority(
+    rule: &UniversalRuleRecord,
+    ev_var: &str,
+    event_vars: &[String],
+    bindings: &HashMap<String, GroundTerm>,
+    inner: &KnowledgeBaseInner,
+) -> (bool, usize, usize) {
+    fn is_selective_ground(term: &GroundTerm) -> bool {
+        match term {
+            GroundTerm::PatternVar(_)
+            | GroundTerm::SkolemPlaceholder(_)
+            | GroundTerm::Unspecified => false,
+            GroundTerm::SkolemFn(_, dependency) => is_selective_ground(dependency),
+            GroundTerm::DepPair(left, right) => {
+                is_selective_ground(left) && is_selective_ground(right)
+            }
+            _ => true,
+        }
+    }
+
+    // Equality expansion deliberately disables sibling filtering in the exact
+    // candidate collector. Do not pretend those siblings are selective here.
+    if !inner.equivalence_parent.is_empty() {
+        return (false, 0, usize::MAX);
+    }
+
+    let mut impossible = false;
+    let mut best_grounded = 0usize;
+    let mut best_indexed = usize::MAX;
+
+    for (idx, condition) in rule.typed_conditions.iter().enumerate() {
+        if rule.negated_condition_indices.contains(&idx)
+            || !stored_fact_contains_var(condition, ev_var)
+            || event_vars.iter().any(|other| {
+                other != ev_var
+                    && !bindings.contains_key(other.as_str())
+                    && stored_fact_contains_var(condition, other)
+            })
+        {
+            continue;
+        }
+
+        let substituted = substitute_fact(condition, bindings);
+        let fact = substituted.inner();
+        if is_non_indexable_relation(&fact.relation) {
+            continue;
+        }
+        let event_positions: Vec<usize> = fact
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| matches!(arg, GroundTerm::PatternVar(name) if name == ev_var))
+            .map(|(position, _)| position)
+            .collect();
+        if event_positions.len() != 1 {
+            continue;
+        }
+        let event_position = event_positions[0];
+        let grounded_positions: Vec<usize> = fact
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(position, arg)| *position != event_position && is_selective_ground(arg))
+            .map(|(position, _)| position)
+            .collect();
+        if grounded_positions.is_empty() {
+            continue;
+        }
+
+        let smallest_bucket = grounded_positions
+            .iter()
+            .map(|position| {
+                inner
+                    .arg_position_index
+                    .get(&(fact.relation.clone(), *position))
+                    .and_then(|by_value| by_value.get(&fact.args[*position]))
+                    .map_or(0, Vec::len)
+            })
+            .min()
+            .unwrap_or(0);
+        if smallest_bucket == 0 && condition_is_index_decidable(&fact.relation, inner) {
+            impossible = true;
+        }
+
+        // A rule can add witnesses absent from the direct index, so zero is not
+        // an emptiness proof for a rule-derived relation. Keep it as an unknown
+        // (worst) estimate; the exact collector remains authoritative.
+        let indexed_estimate =
+            if smallest_bucket == 0 && inner.universal_rules.contains_key(fact.relation.as_str()) {
+                usize::MAX
+            } else {
+                smallest_bucket
+            };
+        if grounded_positions.len() > best_grounded
+            || (grounded_positions.len() == best_grounded && indexed_estimate < best_indexed)
+        {
+            best_grounded = grounded_positions.len();
+            best_indexed = indexed_estimate;
+        }
+    }
+
+    (impossible, best_grounded, best_indexed)
+}
+
+fn event_priority_is_better(
+    candidate: (bool, usize, usize),
+    current: (bool, usize, usize),
+) -> bool {
+    candidate.0 && !current.0
+        || candidate.0 == current.0
+            && (candidate.1 > current.1 || candidate.1 == current.1 && candidate.2 < current.2)
+}
+
+/// Lazy positive fallback for a rule antecedent that is exactly one projectable
+/// event-decomposed atom. It is attempted only after ordinary event search was
+/// non-definitive, so cheap indexed proofs stay on the backward-chaining path.
+/// A complete materialised extension is an exact verdict; refusal or an
+/// unprojectable/flavoured/multi-atom antecedent returns `None` and preserves the
+/// original search result.
+fn materialized_positive_rule_conditions(
+    rule: &UniversalRuleRecord,
+    bindings: &HashMap<String, GroundTerm>,
+    inner: &KnowledgeBaseInner,
+) -> Option<bool> {
+    if !inner.materialization
+        || !inner.positive_lookup.get()
+        || !rule.negated_condition_indices.is_empty()
+        || !rule.negated_exists_groups.is_empty()
+    {
+        return None;
+    }
+    let (relation, tuple) =
+        crate::materialize::probe_positive_rule_conditions(&rule.typed_conditions, bindings)?;
+    let targets = HashSet::from([relation.clone()]);
+    crate::materialize::ensure_materialized_targets(inner, &targets);
+    let materialized = inner.materialized.borrow();
+    let materialized = materialized.as_ref()?;
+    materialized
+        .is_complete_for(&relation, tuple.len())
+        .then(|| materialized.contains(&relation, &tuple))
+}
+
+/// Deterministic left-deep event join for one rule firing. The former path built
+/// every event's candidates independently, crossed the vectors, and only then
+/// propagated shared role variables. Here each chosen event binds its indexed
+/// roles before the next candidate set is computed. A cheap index estimate chooses
+/// one remaining event before its complete candidate set is generated; original
+/// pattern-variable order breaks ties.
+///
+/// A successful branch deliberately leaves its event and join bindings installed
+/// for the caller's final flavor-exact condition check and proof emission. Every
+/// failed branch restores exactly what it introduced.
+#[allow(clippy::too_many_arguments)]
+fn search_event_bindings(
+    rule: &UniversalRuleRecord,
+    event_vars: &[String],
+    bindings: &mut HashMap<String, GroundTerm>,
+    inner: &KnowledgeBaseInner,
+    depth: usize,
+    visited: &mut HashSet<StoredFact>,
+    candidates_slot: &mut Option<Vec<GroundTerm>>,
+) -> EventBindingSearch {
+    let remaining: Vec<&String> = event_vars
+        .iter()
+        .filter(|event_var| !bindings.contains_key(event_var.as_str()))
+        .collect();
+    if remaining.is_empty() {
+        note_rule_event_search_leaf_attempt();
+        let mut all_hold = true;
+        let mut pending = None;
+        for (idx, condition) in rule.typed_conditions.iter().enumerate() {
+            let substituted = substitute_fact(condition, bindings);
+            let result = check_predicate_in_kb_typed(&substituted, inner, depth + 1, visited);
+            let verdict = if rule.negated_condition_indices.contains(&idx) {
+                negate_result(result)
+            } else {
+                result
+            };
+            if verdict.is_false() {
+                all_hold = false;
+                pending = None;
+                break;
+            }
+            if !verdict.is_true() {
+                all_hold = false;
+                pending = prefer_non_definitive(pending, verdict);
+            }
+        }
+        fold_negated_groups(
+            rule,
+            bindings,
+            inner,
+            candidates_slot,
+            depth,
+            visited,
+            &mut all_hold,
+            &mut pending,
+        );
+        return if all_hold {
+            EventBindingSearch::Found
+        } else {
+            EventBindingSearch::Exhausted(pending)
+        };
+    }
+
+    let mut selected = remaining[0];
+    let mut selected_priority = event_join_priority(rule, selected, event_vars, bindings, inner);
+    for event_var in remaining.into_iter().skip(1) {
+        let priority = event_join_priority(rule, event_var, event_vars, bindings, inner);
+        if event_priority_is_better(priority, selected_priority) {
+            selected = event_var;
+            selected_priority = priority;
+        }
+    }
+    let event_var = selected;
+    let candidates = event_candidates_under_bindings(
+        rule,
+        event_var,
+        event_vars,
+        bindings,
+        inner,
+        depth,
+        visited,
+        candidates_slot,
+    );
+    if candidates.is_empty() {
+        return EventBindingSearch::Exhausted(None);
+    }
+
+    let mut pending = None;
+    for candidate in candidates {
+        if inner
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            break;
+        }
+        bindings.insert(event_var.clone(), candidate);
+        let joined_vars = bind_join_vars_from_index(rule, bindings, inner);
+        match search_event_bindings(
+            rule,
+            event_vars,
+            bindings,
+            inner,
+            depth,
+            visited,
+            candidates_slot,
+        ) {
+            EventBindingSearch::Found => return EventBindingSearch::Found,
+            EventBindingSearch::Exhausted(branch_pending) => {
+                if let Some(result) = branch_pending {
+                    pending = prefer_non_definitive(pending, result);
+                }
+            }
+        }
+        bindings.remove(event_var.as_str());
+        for joined_var in joined_vars {
+            bindings.remove(joined_var.as_str());
+        }
+    }
+    EventBindingSearch::Exhausted(pending)
+}
+
 /// Trace sink: a compile-time switch between the untraced verdict path
 /// (`NoOpSink`) and the proof-recording path (`RecordingSink`), so the single
 /// backward-chain core serves both. `RECORDING` MUST stay an associated `const`
@@ -2415,122 +2833,31 @@ fn process_phase<S: TraceSink>(
                 .collect();
 
             if !unbound_event_vars.is_empty() {
-                let mut per_var_candidates: Vec<Vec<GroundTerm>> = Vec::new();
-                for ev_var in &unbound_event_vars {
-                    let single_var_cond_indices: Vec<usize> = rule
-                        .typed_conditions
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, ct)| {
-                            stored_fact_contains_var(ct, ev_var)
-                                && unbound_event_vars.iter().all(|other| {
-                                    other == ev_var || !stored_fact_contains_var(ct, other)
-                                })
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-
-                    if single_var_cond_indices.is_empty() {
-                        per_var_candidates.push(ensure_candidates(candidates_slot, inner).to_vec());
-                    } else {
-                        // Any satisfying event must occur in every positive condition
-                        // that mentions only this event variable. Build a complete
-                        // relation-scoped superset from the narrowest such anchor before
-                        // falling back to the global domain × Skolem-registry pool.
-                        // Negated conditions cannot anchor: a witness for `~P(ev)` need
-                        // not occur in P's extension.
-                        let positive_conditions: Vec<StoredFact> = single_var_cond_indices
-                            .iter()
-                            .copied()
-                            .filter(|idx| !rule.negated_condition_indices.contains(idx))
-                            .map(|idx| substitute_fact(&rule.typed_conditions[idx], &bindings))
-                            .collect();
-                        let cand =
-                            collect_group_event_candidates(&positive_conditions, ev_var, inner)
-                                .unwrap_or_else(|| {
-                                    ensure_candidates(candidates_slot, inner).to_vec()
-                                });
-                        let filtered = filter_event_candidates(
-                            rule,
-                            ev_var,
-                            &bindings,
-                            &single_var_cond_indices,
-                            &cand,
-                            inner,
-                            depth,
-                            visited,
-                        );
-                        per_var_candidates.push(filtered);
-                    }
-                }
-
-                if per_var_candidates.iter().any(|pvc| pvc.is_empty()) {
-                    continue;
-                }
-
-                let mut found = false;
-                let mut combo_pending = None;
-                for combo in TypedMultiCartesian::new(&per_var_candidates, inner.cancel.clone()) {
-                    for (i, ev_var) in unbound_event_vars.iter().enumerate() {
-                        bindings.insert(ev_var.clone(), combo[i].clone());
-                    }
-                    // Index-anchored join: bind condition-only individual vars
-                    // (e.g. the inhibitor/enzyme of a multi-variable prenex rule)
-                    // from the bound events' role facts, instead of enumerating
-                    // them over a members^k domain cartesian.
-                    let joined_vars = bind_join_vars_from_index(rule, &mut bindings, inner);
-                    let mut all_hold = true;
-                    let mut pending_here = None;
-                    for (idx, ct) in rule.typed_conditions.iter().enumerate() {
-                        let cs = substitute_fact(ct, &bindings);
-                        let result = check_predicate_in_kb_typed(&cs, inner, depth + 1, visited);
-                        let verdict = if rule.negated_condition_indices.contains(&idx) {
-                            negate_result(result)
-                        } else {
-                            result
-                        };
-                        if verdict.is_false() {
-                            all_hold = false;
-                            pending_here = None;
-                            break;
+                if let EventBindingSearch::Exhausted(pending) = search_event_bindings(
+                    rule,
+                    &unbound_event_vars,
+                    &mut bindings,
+                    inner,
+                    depth,
+                    visited,
+                    candidates_slot,
+                ) {
+                    if matches!(
+                        pending,
+                        Some(QueryResult::ResourceExceeded(ResourceKind::Depth))
+                    ) && !S::RECORDING
+                        && let Some(conditions_hold) =
+                            materialized_positive_rule_conditions(rule, &bindings, inner)
+                    {
+                        if conditions_hold {
+                            return Some(None);
                         }
-                        if !verdict.is_true() {
-                            all_hold = false;
-                            pending_here = prefer_non_definitive(pending_here, verdict);
-                        }
+                        continue;
                     }
-                    // Negated-exists groups are flavor-aware: an explicit `past
-                    // ~P` restrictor carries its flavor on the templates, while a
-                    // bare `~P` remains bare.
-                    fold_negated_groups(
-                        rule,
-                        &bindings,
-                        inner,
-                        candidates_slot,
-                        depth,
-                        visited,
-                        &mut all_hold,
-                        &mut pending_here,
-                    );
-                    if all_hold {
-                        found = true;
-                        break;
-                    }
-                    combo_pending = pending_here.or(combo_pending);
-                    for ev_var in &unbound_event_vars {
-                        bindings.remove(ev_var.as_str());
-                    }
-                    for v in &joined_vars {
-                        bindings.remove(v.as_str());
-                    }
-                }
-                if !found {
                     // Merge any pending non-definitive result WITHOUT wiping an
-                    // already-pending one: if combo_pending is None (every combo
-                    // failed definitively), keep best_result intact. Using
-                    // `and_then` here would erase a pending ResourceExceeded into
-                    // None and cache a wrong definitive False.
-                    if let Some(r) = combo_pending {
+                    // already-pending one: if every branch failed definitively,
+                    // keep best_result intact.
+                    if let Some(r) = pending {
                         *best_result = prefer_non_definitive(best_result.take(), r);
                     }
                     continue;
@@ -2697,8 +3024,8 @@ fn try_backward_chain_core<S: TraceSink>(
     }
     let mut best_result = None;
 
-    // Rule facts are flavor-exact. A tensed goal can only match a conclusion
-    // carrying that same explicit tense; a bare rule is bare-only.
+    // Rule facts are flavor-exact. A temporal or deontic goal can only match a
+    // conclusion carrying that same explicit flavor; a bare rule is bare-only.
     if let Some(root) = process_phase(
         fact,
         inner,
@@ -2726,74 +3053,6 @@ pub(super) fn try_backward_chain_typed(
     visited: &mut HashSet<StoredFact>,
 ) -> QueryResult {
     try_backward_chain_core(fact, inner, depth, visited, &mut NoOpSink).0
-}
-
-/// Cartesian product over typed GroundTerm vectors.
-struct TypedMultiCartesian<'a> {
-    sets: &'a [Vec<GroundTerm>],
-    indices: Vec<usize>,
-    done: bool,
-    /// Cooperative cancellation flag: when raised, the product stops yielding so
-    /// a candidates^k backward-chaining blowup terminates promptly. `None` for
-    /// every non-server caller, so iteration is unchanged there.
-    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-}
-
-impl<'a> TypedMultiCartesian<'a> {
-    fn new(
-        sets: &'a [Vec<GroundTerm>],
-        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Self {
-        let done = sets.iter().any(|s| s.is_empty());
-        Self {
-            sets,
-            indices: vec![0; sets.len()],
-            done,
-            cancel,
-        }
-    }
-}
-
-impl<'a> Iterator for TypedMultiCartesian<'a> {
-    type Item = Vec<GroundTerm>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self
-            .cancel
-            .as_ref()
-            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
-        {
-            return None;
-        }
-        if self.done || self.sets.is_empty() {
-            if self.sets.is_empty() && !self.done {
-                self.done = true;
-                return Some(vec![]);
-            }
-            return None;
-        }
-        let combo: Vec<GroundTerm> = self
-            .indices
-            .iter()
-            .enumerate()
-            .map(|(set_idx, &item_idx)| self.sets[set_idx][item_idx].clone())
-            .collect();
-        let mut carry = true;
-        for i in (0..self.sets.len()).rev() {
-            if carry {
-                self.indices[i] += 1;
-                if self.indices[i] >= self.sets[i].len() {
-                    self.indices[i] = 0;
-                } else {
-                    carry = false;
-                }
-            }
-        }
-        if carry {
-            self.done = true;
-        }
-        Some(combo)
-    }
 }
 
 // ─── Typed Traced Backward-Chaining ──────────────────────────────

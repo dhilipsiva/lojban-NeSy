@@ -590,33 +590,7 @@ impl KnowledgeBase {
         {
             materialize::collect_query_relations(logic, &mut targets);
         }
-        if targets.is_empty() {
-            if inner.materialized.borrow().is_none() {
-                *inner.materialized.borrow_mut() = Some(materialize::Materialized::empty());
-            }
-            return false;
-        }
-
-        // A saturation is query-scoped but cached until mutation. Preserve every prior
-        // root, and recompute their UNION when a later query asks for a missing relation.
-        // Merely returning on `is_some()` would make the first query permanently decide
-        // which positive relations can use the materialised fast path.
-        let previous_targets = inner
-            .materialized
-            .borrow()
-            .as_ref()
-            .map(|m| m.requested.clone())
-            .unwrap_or_default();
-        if targets.is_subset(&previous_targets) {
-            return false;
-        }
-        targets.extend(previous_targets);
-
-        let elig = materialize::eligible_relations(&inner);
-        let strata = materialize::compute_strata(&inner.pred_dep_graph);
-        let m = materialize::saturate(&inner, &elig, &strata, &targets);
-        *inner.materialized.borrow_mut() = Some(m);
-        true
+        materialize::ensure_materialized_targets(&inner, &targets)
     }
 
     /// Single-pass entailment check at the current max_chain_depth.

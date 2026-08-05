@@ -817,6 +817,119 @@ fn an_opaque_query_bounds_generic_event_candidate_generation() {
     );
 }
 
+/// Fixture-bound regression for the composed path: the queried opaque projection is
+/// available only after proving its subject through a high-arity event-decomposed rule.
+/// Shared role variables must constrain each next event before the rule search reaches a
+/// complete assignment. At release commit 5cec800 this exact fixture evaluated 61,098
+/// complete assignments; the repaired search evaluates 94, below the checked ceiling.
+#[test]
+fn an_opaque_projection_joins_a_derived_subject_chain_before_cartesian_expansion() {
+    let kb = new_kb();
+    kb.set_materialization(false);
+    for line in [
+        "derived_only(\"fit\").",
+        "derived_only(\"believe\").",
+        "earlier(NoiseA, NoiseB).",
+        "earlier(NoiseC, NoiseD).",
+        "earlier(NoiseE, NoiseF).",
+        "earlier(NoiseG, NoiseH).",
+        "earlier(NoiseI, NoiseJ).",
+        "earlier(NoiseK, NoiseL).",
+        "earlier(NoiseM, NoiseN).",
+        "earlier(NoiseO, NoiseP).",
+        "owns(Goal, LiveA).",
+        "earlier(LiveA, LiveB).",
+        "earlier(LiveB, LiveC).",
+        "earlier(LiveC, LiveD).",
+        "earlier(LiveD, LiveE).",
+        "dog(LiveE).",
+        "all $subject: all $a: all $b: all $c: all $d: all $e: owns($subject, $a) & earlier($a, $b) & earlier($b, $c) & earlier($c, $d) & earlier($d, $e) & dog($e) -> fit($subject).",
+        "all $subject: fit($subject) -> believe($subject, event { eats() }).",
+    ] {
+        assert_buf(&kb, compile_surface(line));
+    }
+
+    crate::kb::reset_entailment_candidate_cartesian_steps();
+    crate::reasoning::reset_global_candidate_cartesian_steps();
+    crate::reasoning::reset_rule_event_search_leaf_attempts();
+    assert_eq!(
+        query_result(
+            &kb,
+            compile_surface("believe(Goal, event { eats() }) & fit(Goal).")
+        ),
+        QueryResult::True,
+        "one query process must prove both derived standing and its opaque projection"
+    );
+    let leaf_attempts = crate::reasoning::rule_event_search_leaf_attempts();
+    assert!(
+        leaf_attempts <= 128,
+        "fixture-bound threshold is at most 128 complete rule-event assignments, got {leaf_attempts}"
+    );
+    let anchor_cartesian_steps = crate::kb::entailment_candidate_cartesian_total_steps();
+    assert!(
+        anchor_cartesian_steps <= 1_024,
+        "fixture-bound ceiling is 1,024 relation-scoped anchor Cartesian visits, got {anchor_cartesian_steps}"
+    );
+    assert_eq!(
+        crate::reasoning::global_candidate_cartesian_steps(),
+        0,
+        "the composed path must not fall back to the global candidate registry"
+    );
+    assert_eq!(
+        kb.materialization_tuple_bind_attempts("earlier"),
+        0,
+        "the composed positive path must remain backward-chained, not globally materialized"
+    );
+}
+
+/// The composed projection must not exhaust every possible subject witness before the
+/// ordinary depth-bounded chainer can report that its one positive antecedent needs a
+/// complete extension. The fallback requests exactly that antecedent's relation cone;
+/// the opaque conclusion, its quoted body, and unrelated path relations stay lazy.
+#[test]
+fn an_opaque_projection_materializes_only_its_depth_bound_subject_cone() {
+    let kb = new_kb();
+    kb.set_max_chain_depth(1);
+    for line in [
+        "derived_only(\"fit\").",
+        "derived_only(\"believe\").",
+        "dog(Goal).",
+        "all $subject: dog($subject) -> animal($subject).",
+        "all $subject: animal($subject) -> fit($subject).",
+        "all $subject: fit($subject) -> believe($subject, event { eats() }).",
+        "earlier(NodeA, NodeB).",
+        "earlier(NodeB, NodeC).",
+        "all $first: all $middle: all $last: earlier($first, $middle) & earlier($middle, $last) -> earlier($first, $last).",
+    ] {
+        assert_buf(&kb, compile_surface(line));
+    }
+
+    assert_eq!(
+        query_result(
+            &kb,
+            compile_surface("believe(Goal, event { eats() }) & fit(Goal).")
+        ),
+        QueryResult::True,
+        "one process must complete the depth-bound standing proof and use it in the opaque projection"
+    );
+    let (complete, refused) = kb.materialization_report();
+    assert!(
+        complete.iter().any(|relation| relation == "fit"),
+        "the exact positive antecedent must be completed: complete={complete:?} refused={refused:?}"
+    );
+    for unrelated in ["believe", "earlier", "eats"] {
+        assert!(
+            !complete.iter().any(|relation| relation == unrelated),
+            "the fallback must remain relation-scoped; unexpectedly completed {unrelated}: {complete:?}"
+        );
+    }
+    assert_eq!(
+        kb.materialization_tuple_bind_attempts("earlier"),
+        0,
+        "the exact unrelated-work threshold is zero path tuple-unification attempts"
+    );
+}
+
 fn force_abstraction_digest(buffer: &mut LogicBuffer, digest: &str) {
     assert_eq!(digest.len(), 16);
     let digest = u64::from_str_radix(digest, 16).unwrap();

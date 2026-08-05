@@ -192,8 +192,9 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   change — plus a `validate_cert` arm and a `factAx`-analogue bridge against `m.ext`.
 - **Materialisation: incremental re-saturation (C3).** Every fact insert drops the
   saturation (`assert_typed_fact` → `invalidate_materialization`), so an interleaved
-  `assert; query; assert; query` REPL session pays a full fixpoint per query, and
-  `nibli-ui` re-asserts its whole tab per run by design. Datalog is monotone, so a
+  `assert; query; assert; query` REPL session recomputes the next requested query cone
+  and its cumulative root union from scratch, and `nibli-ui` re-asserts its whole tab
+  per run by design. Datalog is monotone, so a
   seed addition can only GROW the model: a three-state dirty flag (`Clean` /
   `GrewBy(Vec<StoredFact>)` / `Invalid`) could resume the semi-naive loop from a
   one-tuple delta rather than rebuild — `eval_rule`'s `delta_pos` marker is already a

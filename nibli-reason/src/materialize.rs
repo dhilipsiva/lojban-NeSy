@@ -1507,6 +1507,45 @@ pub(super) fn query_cone_has_negative_dependency(
     false
 }
 
+/// Extend the cumulative materialisation cache with these surface-relation roots.
+///
+/// This is shared by top-level query planning and the backward-chainer's lazy
+/// positive-subgoal fallback. The cache represents the union of every requested
+/// root until KB mutation; adding one root recomputes that union rather than
+/// replacing earlier completed extensions.
+pub(super) fn ensure_materialized_targets(
+    inner: &KnowledgeBaseInner,
+    targets: &HashSet<String>,
+) -> bool {
+    if !inner.materialization {
+        return false;
+    }
+    if targets.is_empty() {
+        if inner.materialized.borrow().is_none() {
+            *inner.materialized.borrow_mut() = Some(Materialized::empty());
+        }
+        return false;
+    }
+
+    let previous_targets = inner
+        .materialized
+        .borrow()
+        .as_ref()
+        .map(|materialized| materialized.requested.clone())
+        .unwrap_or_default();
+    if targets.is_subset(&previous_targets) {
+        return false;
+    }
+
+    let mut cumulative = targets.clone();
+    cumulative.extend(previous_targets);
+    let eligibility = eligible_relations(inner);
+    let strata = compute_strata(&inner.pred_dep_graph);
+    let materialized = saturate(inner, &eligibility, &strata, &cumulative);
+    *inner.materialized.borrow_mut() = Some(materialized);
+    true
+}
+
 /// Project a `~P` group under a rule's current bindings into a ground surface tuple —
 /// the probe [`crate::reasoning::eval_negated_exists_group`] uses to replace its
 /// candidate sweep with a set membership test.
@@ -1521,6 +1560,30 @@ pub(super) fn probe_negated_group(
     let atom = project_negated_group(group).ok()?;
     let tuple = ground_values(&atom.values, bindings)?;
     if tuple.iter().any(|t| matches!(t, GroundTerm::PatternVar(_))) {
+        return None;
+    }
+    Some((atom.relation, tuple))
+}
+
+/// Project one rule's complete positive antecedent into a ground surface tuple.
+/// Returns `None` for multiple surface atoms, flat/equality conditions, flavours,
+/// negation (screened by the caller), or any surviving unbound value. A successful
+/// projection is exact, so a complete materialised extension can replace the
+/// event-witness search without weakening the rule.
+pub(super) fn probe_positive_rule_conditions(
+    conditions: &[StoredFact],
+    bindings: &HashMap<String, GroundTerm>,
+) -> Option<(String, Vec<GroundTerm>)> {
+    let (mut projected, flat) = project_atoms(conditions).ok()?;
+    if projected.len() != 1 || !flat.is_empty() {
+        return None;
+    }
+    let atom = projected.remove(0);
+    let tuple = ground_values(&atom.values, bindings)?;
+    if tuple
+        .iter()
+        .any(|term| matches!(term, GroundTerm::PatternVar(_)))
+    {
         return None;
     }
     Some((atom.relation, tuple))

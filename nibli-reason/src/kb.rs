@@ -3065,6 +3065,11 @@ pub(super) fn entailment_candidate_cartesian_steps(relation: &str) -> usize {
         .with(|steps| steps.borrow().get(relation).copied().unwrap_or_default())
 }
 
+#[cfg(test)]
+pub(super) fn entailment_candidate_cartesian_total_steps() -> usize {
+    ENTAILMENT_CANDIDATE_CARTESIAN_STEPS.with(|steps| steps.borrow().values().copied().sum())
+}
+
 #[inline]
 fn note_entailment_candidate_cartesian_step(_relation: &str) {
     #[cfg(test)]
@@ -3103,9 +3108,100 @@ pub(super) fn collect_entailment_candidates(
         return None;
     }
     let members: Vec<GroundTerm> = inner.all_typed_domain_members().to_vec();
-    Some(select_narrowest_anchor_candidates(
-        &anchors, inner, &members,
-    ))
+    let mut candidates = select_narrowest_anchor_candidates(&anchors, inner, &members);
+    let mut priority_terms = Vec::new();
+    let mut seen = HashSet::new();
+    collect_candidate_priority_terms(buffer, body_id, subs, &mut priority_terms, &mut seen);
+    prioritize_candidates_by_dependency(&mut candidates, &priority_terms);
+    Some(candidates)
+}
+
+/// Gather ground terms already present in the query body, in structural order.
+/// They are search-order hints only: every complete candidate is still retained.
+/// This lets a dependent witness such as `sk_rule($subject)` try the query's
+/// concrete subject before unrelated domain members without coupling the engine
+/// to any predicate name or opaque-body spelling.
+fn collect_candidate_priority_terms(
+    buffer: &LogicBuffer,
+    node_id: u32,
+    subs: &HashMap<String, GroundTerm>,
+    terms: &mut Vec<GroundTerm>,
+    seen: &mut HashSet<GroundTerm>,
+) {
+    let Ok(node) = get_node(buffer, node_id) else {
+        return;
+    };
+    match node {
+        LogicNode::Predicate((_, args)) | LogicNode::ComputeNode((_, args)) => {
+            for arg in args {
+                let term = match arg {
+                    LogicalTerm::Variable(name) => subs.get(name).cloned(),
+                    LogicalTerm::Constant(value) => Some(GroundTerm::Constant(value.clone())),
+                    LogicalTerm::Description(value) => Some(GroundTerm::Description(value.clone())),
+                    LogicalTerm::Number(value) => Some(GroundTerm::Number(value.to_bits())),
+                    LogicalTerm::Unspecified => None,
+                };
+                if let Some(term) = term
+                    && seen.insert(term.clone())
+                {
+                    terms.push(term);
+                }
+            }
+        }
+        LogicNode::AndNode((left, right)) | LogicNode::OrNode((left, right)) => {
+            collect_candidate_priority_terms(buffer, *left, subs, terms, seen);
+            collect_candidate_priority_terms(buffer, *right, subs, terms, seen);
+        }
+        LogicNode::NotNode(inner)
+        | LogicNode::ExistsNode((_, inner))
+        | LogicNode::ForAllNode((_, inner))
+        | LogicNode::PastNode(inner)
+        | LogicNode::PresentNode(inner)
+        | LogicNode::FutureNode(inner)
+        | LogicNode::ObligatoryNode(inner)
+        | LogicNode::PermittedNode(inner) => {
+            collect_candidate_priority_terms(buffer, *inner, subs, terms, seen);
+        }
+        LogicNode::CountNode((_, _, body)) => {
+            collect_candidate_priority_terms(buffer, *body, subs, terms, seen);
+        }
+    }
+}
+
+fn term_contains_priority_term(term: &GroundTerm, priority: &GroundTerm) -> bool {
+    term == priority
+        || match term {
+            GroundTerm::SkolemFn(_, dependency) => {
+                term_contains_priority_term(dependency, priority)
+            }
+            GroundTerm::DepPair(left, right) => {
+                term_contains_priority_term(left, priority)
+                    || term_contains_priority_term(right, priority)
+            }
+            _ => false,
+        }
+}
+
+fn prioritize_candidates_by_dependency(
+    candidates: &mut [GroundTerm],
+    priority_terms: &[GroundTerm],
+) {
+    if priority_terms.is_empty() {
+        return;
+    }
+    candidates.sort_by(|left, right| {
+        let left_priority = priority_terms
+            .iter()
+            .position(|term| term_contains_priority_term(left, term))
+            .unwrap_or(usize::MAX);
+        let right_priority = priority_terms
+            .iter()
+            .position(|term| term_contains_priority_term(right, term))
+            .unwrap_or(usize::MAX);
+        left_priority
+            .cmp(&right_priority)
+            .then_with(|| left.cmp(right))
+    });
 }
 
 /// Relations whose truth is not store-backed (query-time evaluation /
@@ -3233,8 +3329,25 @@ fn collect_mandatory_anchors(
         LogicNode::FutureNode(inner_id) => {
             collect_mandatory_anchors(buffer, *inner_id, var_name, subs, Some("Future"), anchors);
         }
-        LogicNode::ObligatoryNode(inner_id) | LogicNode::PermittedNode(inner_id) => {
-            collect_mandatory_anchors(buffer, *inner_id, var_name, subs, tense, anchors);
+        LogicNode::ObligatoryNode(inner_id) => {
+            collect_mandatory_anchors(
+                buffer,
+                *inner_id,
+                var_name,
+                subs,
+                Some("Obligatory"),
+                anchors,
+            );
+        }
+        LogicNode::PermittedNode(inner_id) => {
+            collect_mandatory_anchors(
+                buffer,
+                *inner_id,
+                var_name,
+                subs,
+                Some("Permitted"),
+                anchors,
+            );
         }
         // A nested quantifier's body conjuncts are still mandatory for OUR
         // variable (nibli-semantics generates unique variable names, so no shadowing).
@@ -3312,9 +3425,37 @@ fn term_contains_pattern_var(term: &GroundTerm) -> bool {
     }
 }
 
+/// Distinct unresolved variables inside one already-specialized candidate term, in
+/// structural first-occurrence order. A dependent witness such as
+/// `sk_rule(Grounded, $remaining)` has one search dimension, not the registry
+/// family's original two. Repeated variables stay one dimension so their equality is
+/// preserved when the term is instantiated.
+fn unresolved_pattern_vars(term: &GroundTerm) -> Vec<String> {
+    fn walk(term: &GroundTerm, seen: &mut HashSet<String>, vars: &mut Vec<String>) {
+        match term {
+            GroundTerm::PatternVar(name) => {
+                if seen.insert(name.clone()) {
+                    vars.push(name.clone());
+                }
+            }
+            GroundTerm::SkolemFn(_, dep) => walk(dep, seen, vars),
+            GroundTerm::DepPair(left, right) => {
+                walk(left, seen, vars);
+                walk(right, seen, vars);
+            }
+            _ => {}
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut vars = Vec::new();
+    walk(term, &mut seen, &mut vars);
+    vars
+}
+
 /// Apply the anchor's already-bound non-witness arguments to a matching rule conclusion.
-/// A head `person_x1(sk_person($x), $x)` anchored at `person_x1($event, Adam)` therefore
-/// yields exactly `sk_person(Adam)`, not `sk_person(member)` for every domain member.
+/// A head `kind_x1(sk_kind($x), $x)` anchored at `kind_x1($event, Subject)` therefore
+/// yields exactly `sk_kind(Subject)`, not `sk_kind(member)` for every domain member.
 /// Equality classes disable this narrowing: an equivalent spelling may still match via
 /// the ordinary fallback, so keeping the broader template is the sound choice.
 fn specialize_conclusion_candidate(
@@ -3386,13 +3527,11 @@ fn estimated_anchor_candidate_cost(
             } else {
                 match &candidate {
                     GroundTerm::PatternVar(_) => global_pool,
-                    GroundTerm::SkolemFn(base, _) => {
-                        let dep_count = inner
-                            .skolem_fn_registry
-                            .iter()
-                            .find(|entry| entry.symbol == *base)
-                            .map_or(1, |entry| entry.dep_count);
-                        saturating_cartesian_size(member_count, dep_count)
+                    GroundTerm::SkolemFn(_, _) | GroundTerm::DepPair(_, _) => {
+                        saturating_cartesian_size(
+                            member_count,
+                            unresolved_pattern_vars(&candidate).len(),
+                        )
                     }
                     _ => 1,
                 }
@@ -3539,28 +3678,24 @@ fn extract_rule_candidates_for_entailment_bounded(
                         }
                     }
                 }
-                GroundTerm::SkolemFn(base, _) => {
-                    // Anchored cartesian: only THIS base name can unify here.
-                    let dep_count = inner
-                        .skolem_fn_registry
-                        .iter()
-                        .find(|e| e.symbol == base)
-                        .map(|e| e.dep_count)
-                        .unwrap_or(1);
-                    for combo in GroundTermCartesianProduct::new(members, dep_count) {
+                structured => {
+                    // Preserve every grounded dependency supplied by sibling
+                    // arguments. Enumerate only the distinct variables that remain in
+                    // this specialized term rather than rebuilding the Skolem family's
+                    // original members^dep_count registry product.
+                    let unresolved = unresolved_pattern_vars(&structured);
+                    debug_assert!(!unresolved.is_empty());
+                    for combo in GroundTermCartesianProduct::new(members, unresolved.len()) {
                         note_entailment_candidate_cartesian_step(&anchor.relation);
+                        let bindings: HashMap<String, GroundTerm> =
+                            unresolved.iter().cloned().zip(combo.into_iter()).collect();
                         if insert_bounded_candidate(
                             candidates,
-                            build_skolem_fn_term(base, &combo),
+                            substitute_term(&structured, &bindings).into_owned(),
                             stop_at,
                         ) {
                             return true;
                         }
-                    }
-                }
-                other => {
-                    if insert_bounded_candidate(candidates, other, stop_at) {
-                        return true;
                     }
                 }
             }
