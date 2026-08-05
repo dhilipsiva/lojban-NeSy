@@ -5,7 +5,8 @@
 //! canonical re-spelling must compile to the SAME `LogicBuffer` — nibli-kr's
 //! pinned fixpoint contract, `nibli-kr/src/render.rs`; AstBuffer equality is
 //! deliberately NOT the contract there). The KB-authoring entry point then
-//! rejects CountNodes in asserted position (opaque quoted content is inert).
+//! rejects CountNodes and executable default ComputeNodes in asserted position
+//! (opaque quoted content is inert).
 //! The round-trip gate is pure Rust,
 //! so it runs on native AND wasm. (The legacy Lojban chain — gerna + the
 //! wasm-only camxes gate — retired with the Lojban front-end.)
@@ -60,7 +61,8 @@ impl GateError {
 
 /// Run the local gates in fail-fast order and return the compiled FOL on
 /// success. Mirrors `nibli-ui`'s `compile_text` front-end (minus
-/// `nibli_reason::transform_compute_nodes`, which the translator does not need):
+/// `nibli_reason::transform_compute_nodes`, which [`validate`] applies only
+/// after the syntax-preserving round-trip check):
 /// nibli-kr grammar (parse + fail-closed resolve) → nibli-semantics semantics → the render
 /// round-trip gate. Which call fails determines the [`GateError`] variant: a
 /// `parse_checked` failure is always a grammar error; a
@@ -106,12 +108,13 @@ fn nibli_kr_round_trip(
     Ok(())
 }
 
-/// The full assertion-authoring gate the agent calls. Exact-count formulas
-/// remain valid compiler/query input, but Formalize produces KB assertions, so
-/// it must reject a `CountNode` in asserted position before returning text the
+/// The full assertion-authoring gate the agent calls. Exact-count and compute
+/// formulas remain valid compiler/query input, but Formalize produces KB
+/// assertions, so it must reject query-only nodes before returning text the
 /// engine cannot assert. Opaque quoted content is deliberately ignored.
 pub fn validate(candidate: &str) -> Result<LogicBuffer, GateError> {
-    let buf = local_gates(candidate)?;
+    let mut buf = local_gates(candidate)?;
+    nibli_reason::transform_compute_nodes(&mut buf, &nibli_reason::default_compute_predicates());
     if nibli_reason::contains_asserted_count_node(&buf) {
         return Err(GateError::Semantic(
             "exact-count formulas (exactly N and no) are query-only and cannot be \
@@ -119,6 +122,14 @@ pub fn validate(candidate: &str) -> Result<LogicBuffer, GateError> {
              assertion. Assert only ordinary facts explicitly supported by the source; otherwise \
              the exact claim is unsupported and must not be omitted, weakened to some, or \
              fabricated around."
+                .to_string(),
+        ));
+    }
+    if nibli_reason::contains_asserted_compute_node(&buf) {
+        return Err(GateError::Semantic(
+            "compute formulas (product, sum, and quotient) are query-only and cannot be \
+             emitted as knowledge-base assertions or rule atoms. Preserve the source claim, \
+             but do not fabricate an ordinary stored fact around a computed result."
                 .to_string(),
         ));
     }
@@ -258,6 +269,26 @@ mod tests {
 
         validate("believe(me, fact { red(exactly 2 red) }).")
             .expect("a count in opaque quoted content is not a KB constraint");
+    }
+
+    #[test]
+    fn compute_compiles_for_queries_but_is_rejected_as_formalized_kb_output() {
+        local_gates("sum(5, 2, 3).")
+            .expect("the compiler/query surface must retain compute syntax");
+
+        for candidate in [
+            "sum(5, 2, 3).",
+            "all $x: big($x) & sum($x, 2, 3) -> animal($x).",
+            "all $x: big($x) -> sum($x, 2, 3).",
+        ] {
+            let err = validate(candidate)
+                .expect_err("Formalize must not emit query-only compute as a KB assertion");
+            assert!(matches!(err, GateError::Semantic(_)), "{err:?}");
+            assert!(err.message().contains("query-only"), "{err:?}");
+        }
+
+        validate("believe(me, fact { sum(5, 2, 3) }).")
+            .expect("compute inside opaque quoted content is not executed as a KB premise");
     }
 
     #[test]

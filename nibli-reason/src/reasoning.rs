@@ -265,8 +265,8 @@ fn negate_result(result: QueryResult) -> QueryResult {
 /// iff NO binding of the group's `event_var` satisfies ALL inner conditions for the
 /// already-bound universal — i.e. "no witness exists" (`la .adam.` has not
 /// consented). Composes only the shared-`&inner` primitives, so it runs from the
-/// SHARED-`&inner` firing path (unlike `check_formula_holds_core`, which needs
-/// `&mut inner` for compute auto-assert): enumerate the same complete candidate
+/// SHARED-`&inner` firing path (unlike `check_formula_holds_core`, which owns
+/// the full formula evaluator): enumerate the same complete candidate
 /// pool the positive ExistsNode evaluator uses (`ensure_candidates`, incl. event
 /// Skolems — so a consenting person's witness is always found), check each via
 /// `check_predicate_in_kb_typed`, then `negate_result` the four-valued existential
@@ -411,6 +411,7 @@ pub(super) fn check_formula_holds(
     subs: &mut HashMap<String, GroundTerm>,
     inner: &mut KnowledgeBaseInner,
     tense: Option<&str>,
+    compute_memo: &mut QueryComputeMemo,
 ) -> Result<QueryResult, String> {
     // The bare (untraced) entry: delegate to the single evaluator with a no-op
     // sink (every recording branch is dead-code-eliminated for `NoOpSink`), and
@@ -418,8 +419,15 @@ pub(super) fn check_formula_holds(
     // DURING a long backward-chaining call into a clean `Err`; the core also
     // check_cancelled's at every node entry.
     check_cancelled(inner)?;
-    let (result, _idx) =
-        check_formula_holds_core::<NoOpSink>(buffer, node_id, subs, inner, tense, &mut NoOpSink)?;
+    let (result, _idx) = check_formula_holds_core::<NoOpSink>(
+        buffer,
+        node_id,
+        subs,
+        inner,
+        tense,
+        compute_memo,
+        &mut NoOpSink,
+    )?;
     check_cancelled(inner)?;
     Ok(result)
 }
@@ -438,11 +446,19 @@ pub(super) fn check_formula_holds_recording(
     steps: &mut Vec<ProofStep>,
     tense: Option<&str>,
     memo: &mut HashMap<StoredFact, u32>,
+    compute_memo: &mut QueryComputeMemo,
 ) -> Result<(QueryResult, u32), String> {
     check_cancelled(inner)?;
     let mut sink = RecordingSink { steps, memo };
-    let result =
-        check_formula_holds_core::<RecordingSink>(buffer, node_id, subs, inner, tense, &mut sink)?;
+    let result = check_formula_holds_core::<RecordingSink>(
+        buffer,
+        node_id,
+        subs,
+        inner,
+        tense,
+        compute_memo,
+        &mut sink,
+    )?;
     check_cancelled(inner)?;
     Ok(result)
 }
@@ -467,6 +483,7 @@ fn check_formula_holds_core<S: TraceSink>(
     subs: &mut HashMap<String, GroundTerm>,
     inner: &mut KnowledgeBaseInner,
     tense: Option<&str>,
+    compute_memo: &mut QueryComputeMemo,
     sink: &mut S,
 ) -> Result<(QueryResult, u32), String> {
     check_cancelled(inner)?;
@@ -477,9 +494,18 @@ fn check_formula_holds_core<S: TraceSink>(
             // (left). This is what keeps `believe P` from leaking or being satisfied by
             // bare P, while same-content abstractions still match via the marker.
             if is_abstraction_marker(buffer, *l) {
-                return check_formula_holds_core::<S>(buffer, *l, subs, inner, tense, sink);
+                return check_formula_holds_core::<S>(
+                    buffer,
+                    *l,
+                    subs,
+                    inner,
+                    tense,
+                    compute_memo,
+                    sink,
+                );
             }
-            let (lv, li) = check_formula_holds_core::<S>(buffer, *l, subs, inner, tense, sink)?;
+            let (lv, li) =
+                check_formula_holds_core::<S>(buffer, *l, subs, inner, tense, compute_memo, sink)?;
             // Short-circuit on a definitively-False left: `False ∧ x = False`
             // regardless of x (verdict-identical to combine_conjunction).
             if lv.is_false() {
@@ -494,7 +520,8 @@ fn check_formula_holds_core<S: TraceSink>(
                 };
                 return Ok((QueryResult::False, idx));
             }
-            let (rv, ri) = check_formula_holds_core::<S>(buffer, *r, subs, inner, tense, sink)?;
+            let (rv, ri) =
+                check_formula_holds_core::<S>(buffer, *r, subs, inner, tense, compute_memo, sink)?;
             let verdict = combine_conjunction(lv, rv);
             let idx = if S::RECORDING {
                 sink.push(ProofStep {
@@ -508,7 +535,8 @@ fn check_formula_holds_core<S: TraceSink>(
             Ok((verdict, idx))
         }
         LogicNode::OrNode((l, r)) => {
-            let (lv, li) = check_formula_holds_core::<S>(buffer, *l, subs, inner, tense, sink)?;
+            let (lv, li) =
+                check_formula_holds_core::<S>(buffer, *l, subs, inner, tense, compute_memo, sink)?;
             // Short-circuit on a definitively-True left: `True ∨ x = True`.
             if lv.is_true() {
                 let idx = if S::RECORDING {
@@ -524,7 +552,8 @@ fn check_formula_holds_core<S: TraceSink>(
                 };
                 return Ok((QueryResult::True, idx));
             }
-            let (rv, ri) = check_formula_holds_core::<S>(buffer, *r, subs, inner, tense, sink)?;
+            let (rv, ri) =
+                check_formula_holds_core::<S>(buffer, *r, subs, inner, tense, compute_memo, sink)?;
             let rv_is_true = rv.is_true();
             let verdict = combine_disjunction(lv, rv);
             let idx = if S::RECORDING {
@@ -558,8 +587,15 @@ fn check_formula_holds_core<S: TraceSink>(
         // by negate_result and must not display a decided NAF dependency) — the
         // four-valued sub-verdict `iv` is natively in hand, so no recheck re-walk.
         LogicNode::NotNode(inner_node) => {
-            let (iv, ii) =
-                check_formula_holds_core::<S>(buffer, *inner_node, subs, inner, tense, sink)?;
+            let (iv, ii) = check_formula_holds_core::<S>(
+                buffer,
+                *inner_node,
+                subs,
+                inner,
+                tense,
+                compute_memo,
+                sink,
+            )?;
             let verdict = negate_result(iv.clone());
             let idx = if S::RECORDING {
                 sink.push(ProofStep {
@@ -579,6 +615,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 subs,
                 inner,
                 Some("Past"),
+                compute_memo,
                 sink,
             )?;
             let idx = if S::RECORDING {
@@ -601,6 +638,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 subs,
                 inner,
                 Some("Present"),
+                compute_memo,
                 sink,
             )?;
             let idx = if S::RECORDING {
@@ -623,6 +661,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 subs,
                 inner,
                 Some("Future"),
+                compute_memo,
                 sink,
             )?;
             let idx = if S::RECORDING {
@@ -649,6 +688,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 subs,
                 inner,
                 Some("Obligatory"),
+                compute_memo,
                 sink,
             )?;
             let idx = if S::RECORDING {
@@ -673,6 +713,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 subs,
                 inner,
                 Some("Permitted"),
+                compute_memo,
                 sink,
             )?;
             let idx = if S::RECORDING {
@@ -693,24 +734,32 @@ fn check_formula_holds_core<S: TraceSink>(
             if let Ok(body_node) = get_node(buffer, *body) {
                 if let LogicNode::ComputeNode((rel, args)) = body_node {
                     let members = inner.all_typed_domain_members();
-                    if let Some(batch) =
-                        batch_evaluate_compute_for_members(&*inner, rel, args, v, members, subs)
-                    {
+                    if let Some(batch) = batch_evaluate_compute_for_members_with_memo(
+                        &*inner,
+                        rel,
+                        args,
+                        v,
+                        members,
+                        subs,
+                        compute_memo,
+                    ) {
                         // Clone the winning member before releasing the slice borrow.
                         let winner = batch
                             .results
                             .iter()
                             .position(|r| *r)
                             .map(|i| members[i].clone());
-                        // Ingest deferred facts now that the slice borrow is released.
-                        for fact in batch.deferred_facts {
-                            assert_typed_fact(fact, inner);
-                        }
                         if let Some(winning_member) = winner {
                             let idx = if S::RECORDING {
                                 let body_idx = with_sub(subs, v, winning_member.clone(), |s| {
                                     check_formula_holds_core::<S>(
-                                        buffer, *body, s, inner, tense, sink,
+                                        buffer,
+                                        *body,
+                                        s,
+                                        inner,
+                                        tense,
+                                        compute_memo,
+                                        sink,
                                     )
                                 })?
                                 .1;
@@ -728,13 +777,45 @@ fn check_formula_holds_core<S: TraceSink>(
                             };
                             return Ok((QueryResult::True, idx));
                         }
+                        // The batch decided every candidate false. Preserve that
+                        // evidence in the trace instead of falling through to a
+                        // second candidate walk and emitting an empty
+                        // `ExistsFailed`, which would make a compute-decided
+                        // failure look like a closed-world absence.
+                        let idx = if S::RECORDING {
+                            let children = batch
+                                .methods
+                                .iter()
+                                .zip(&batch.results)
+                                .map(|(method, holds)| {
+                                    sink.push(ProofStep {
+                                        rule: ProofRule::ComputeCheck {
+                                            method: (*method).to_string(),
+                                            detail: rel.clone(),
+                                        },
+                                        holds: *holds,
+                                        children: vec![],
+                                    })
+                                })
+                                .collect();
+                            sink.push(ProofStep {
+                                rule: ProofRule::ExistsFailed,
+                                holds: false,
+                                children,
+                            })
+                        } else {
+                            0
+                        };
+                        return Ok((QueryResult::False, idx));
                     }
                 }
             }
-            // Decomposed numeric group (surface arithmetic/comparison): evaluate
-            // the operands gathered from the role predicates directly — the
-            // verdict is definitive, matching the flat ComputeNode arm.
-            if let Some(group) = try_evaluate_numeric_group(&*inner, buffer, v, *body, subs) {
+            // Decomposed numeric/compute group: gather the surface operands
+            // from role predicates, then evaluate locally or dispatch using the
+            // same public-term contract as the flat ComputeNode arm.
+            if let Some(group) =
+                try_evaluate_numeric_group(&*inner, buffer, v, *body, subs, compute_memo)
+            {
                 let res = group.verdict.clone();
                 let idx = if S::RECORDING {
                     sink.push(ProofStep {
@@ -756,17 +837,14 @@ fn check_formula_holds_core<S: TraceSink>(
             // per-candidate body re-walk, no depth bound.
             //
             // Placed HERE deliberately: after the batch-compute and numeric-group segments
-            // above, which auto-ingest their results into the store and must keep
-            // precedence; and before `collect_entailment_candidates`, which is the cost
-            // this exists to skip.
+            // above, which must keep precedence; and before
+            // `collect_entailment_candidates`, which is the cost this exists to skip.
             //
             // Two guards the negated twin does not need. `tense.is_none()` — the
             // saturation only ever holds Bare tuples. And the `materialized` borrow is
-            // read into a local and DROPPED before anything else runs: this function holds
-            // `&mut inner`, and any path reaching `assert_typed_fact` would
-            // `borrow_mut()` the same cell (`invalidate_materialization`), so holding the
-            // shared borrow across the body would be a `BorrowMutError` panic, not a
-            // compile error.
+            // read into a local and DROPPED before anything else runs. Later probes may
+            // borrow the same `RefCell`; keeping this guard alive across them would turn
+            // an implementation detail into a runtime `BorrowMutError`.
             //
             // NOT taken during a proof-traced query (`positive_lookup` is lowered for its
             // whole duration): a lookup has no derivation to record, and the trace contract
@@ -824,6 +902,7 @@ fn check_formula_holds_core<S: TraceSink>(
                         s,
                         inner,
                         tense,
+                        compute_memo,
                         &mut NoOpSink,
                     )
                 })?
@@ -831,7 +910,15 @@ fn check_formula_holds_core<S: TraceSink>(
                 if result.is_true() {
                     let idx = if S::RECORDING {
                         let body_idx = with_sub(subs, v, candidate.clone(), |s| {
-                            check_formula_holds_core::<S>(buffer, *body, s, inner, tense, sink)
+                            check_formula_holds_core::<S>(
+                                buffer,
+                                *body,
+                                s,
+                                inner,
+                                tense,
+                                compute_memo,
+                                sink,
+                            )
                         })?
                         .1;
                         sink.push(ProofStep {
@@ -867,10 +954,26 @@ fn check_formula_holds_core<S: TraceSink>(
                         children: vec![],
                     })
                 } else {
+                    let mut children = Vec::with_capacity(candidates.len());
+                    for candidate in &candidates {
+                        let body_idx = with_sub(subs, v, candidate.clone(), |s| {
+                            check_formula_holds_core::<S>(
+                                buffer,
+                                *body,
+                                s,
+                                inner,
+                                tense,
+                                compute_memo,
+                                sink,
+                            )
+                        })?
+                        .1;
+                        children.push(body_idx);
+                    }
                     sink.push(ProofStep {
                         rule: ProofRule::ExistsFailed,
                         holds: false,
-                        children: vec![],
+                        children,
                     })
                 }
             } else {
@@ -901,27 +1004,31 @@ fn check_formula_holds_core<S: TraceSink>(
             if let Ok(body_node) = get_node(buffer, *body) {
                 if let LogicNode::ComputeNode((rel, args)) = body_node {
                     let members_slice = inner.all_non_event_domain_members();
-                    if let Some(batch) = batch_evaluate_compute_for_members(
+                    if let Some(batch) = batch_evaluate_compute_for_members_with_memo(
                         &*inner,
                         rel,
                         args,
                         v,
                         members_slice,
                         subs,
+                        compute_memo,
                     ) {
                         let fail_member = batch
                             .results
                             .iter()
                             .position(|r| !*r)
                             .map(|i| members_slice[i].clone());
-                        for fact in batch.deferred_facts {
-                            assert_typed_fact(fact, inner);
-                        }
                         if let Some(counter) = fail_member {
                             let idx = if S::RECORDING {
                                 let body_idx = with_sub(subs, v, counter.clone(), |s| {
                                     check_formula_holds_core::<S>(
-                                        buffer, *body, s, inner, tense, sink,
+                                        buffer,
+                                        *body,
+                                        s,
+                                        inner,
+                                        tense,
+                                        compute_memo,
+                                        sink,
                                     )
                                 })?
                                 .1;
@@ -943,7 +1050,15 @@ fn check_formula_holds_core<S: TraceSink>(
                         }
                         let idx = if S::RECORDING {
                             let (child_indices, entity_terms) = forall_record_all_members::<S>(
-                                buffer, *body, v, &members, subs, inner, tense, sink,
+                                buffer,
+                                *body,
+                                v,
+                                &members,
+                                subs,
+                                inner,
+                                tense,
+                                compute_memo,
+                                sink,
                             )?;
                             sink.push(ProofStep {
                                 rule: ProofRule::ForallVerified {
@@ -973,6 +1088,7 @@ fn check_formula_holds_core<S: TraceSink>(
                         s,
                         inner,
                         tense,
+                        compute_memo,
                         &mut NoOpSink,
                     )
                 })?
@@ -991,7 +1107,15 @@ fn check_formula_holds_core<S: TraceSink>(
             if let Some(counter) = false_member {
                 let idx = if S::RECORDING {
                     let body_idx = with_sub(subs, v, counter.clone(), |s| {
-                        check_formula_holds_core::<S>(buffer, *body, s, inner, tense, sink)
+                        check_formula_holds_core::<S>(
+                            buffer,
+                            *body,
+                            s,
+                            inner,
+                            tense,
+                            compute_memo,
+                            sink,
+                        )
                     })?
                     .1;
                     sink.push(ProofStep {
@@ -1015,7 +1139,15 @@ fn check_formula_holds_core<S: TraceSink>(
                     best_result.unwrap_or(QueryResult::Unknown(UnknownReason::IncompleteKnowledge));
                 let idx = if S::RECORDING {
                     let body_idx = with_sub(subs, v, nd.clone(), |s| {
-                        check_formula_holds_core::<S>(buffer, *body, s, inner, tense, sink)
+                        check_formula_holds_core::<S>(
+                            buffer,
+                            *body,
+                            s,
+                            inner,
+                            tense,
+                            compute_memo,
+                            sink,
+                        )
                     })?
                     .1;
                     sink.push(ProofStep {
@@ -1034,7 +1166,15 @@ fn check_formula_holds_core<S: TraceSink>(
             // All members hold.
             let idx = if S::RECORDING {
                 let (child_indices, entity_terms) = forall_record_all_members::<S>(
-                    buffer, *body, v, &members, subs, inner, tense, sink,
+                    buffer,
+                    *body,
+                    v,
+                    &members,
+                    subs,
+                    inner,
+                    tense,
+                    compute_memo,
+                    sink,
                 )?;
                 sink.push(ProofStep {
                     rule: ProofRule::ForallVerified {
@@ -1080,12 +1220,15 @@ fn check_formula_holds_core<S: TraceSink>(
             // Batch compute fast path.
             if let Ok(body_node) = get_node(buffer, *body) {
                 if let LogicNode::ComputeNode((rel, args)) = body_node {
-                    if let Some(batch) =
-                        batch_evaluate_compute_for_members(&*inner, rel, args, v, &members, subs)
-                    {
-                        for fact in batch.deferred_facts {
-                            assert_typed_fact(fact, inner);
-                        }
+                    if let Some(batch) = batch_evaluate_compute_for_members_with_memo(
+                        &*inner,
+                        rel,
+                        args,
+                        v,
+                        &members,
+                        subs,
+                        compute_memo,
+                    ) {
                         let satisfying = batch.results.iter().filter(|r| **r).count() as u32;
                         let existential_imported = members
                             .iter()
@@ -1102,6 +1245,21 @@ fn check_formula_holds_core<S: TraceSink>(
                             QueryResult::False
                         };
                         let idx = if S::RECORDING {
+                            let children = batch
+                                .methods
+                                .iter()
+                                .zip(&batch.results)
+                                .map(|(method, holds)| {
+                                    sink.push(ProofStep {
+                                        rule: ProofRule::ComputeCheck {
+                                            method: (*method).to_string(),
+                                            detail: rel.clone(),
+                                        },
+                                        holds: *holds,
+                                        children: vec![],
+                                    })
+                                })
+                                .collect();
                             sink.push(ProofStep {
                                 rule: ProofRule::CountResult {
                                     expected: *count,
@@ -1109,7 +1267,7 @@ fn check_formula_holds_core<S: TraceSink>(
                                     existential_imported,
                                 },
                                 holds: verdict.is_true(),
-                                children: vec![],
+                                children,
                             })
                         } else {
                             0
@@ -1130,6 +1288,7 @@ fn check_formula_holds_core<S: TraceSink>(
                         s,
                         inner,
                         tense,
+                        compute_memo,
                         &mut NoOpSink,
                     )
                 })?
@@ -1162,6 +1321,22 @@ fn check_formula_holds_core<S: TraceSink>(
                 best_result.unwrap_or(QueryResult::Unknown(UnknownReason::IncompleteKnowledge))
             };
             let idx = if S::RECORDING {
+                let mut children = Vec::with_capacity(members.len());
+                for member in &members {
+                    let body_idx = with_sub(subs, v, member.clone(), |s| {
+                        check_formula_holds_core::<S>(
+                            buffer,
+                            *body,
+                            s,
+                            inner,
+                            tense,
+                            compute_memo,
+                            sink,
+                        )
+                    })?
+                    .1;
+                    children.push(body_idx);
+                }
                 sink.push(ProofStep {
                     rule: ProofRule::CountResult {
                         expected: *count,
@@ -1169,7 +1344,7 @@ fn check_formula_holds_core<S: TraceSink>(
                         existential_imported,
                     },
                     holds: verdict.is_true(),
-                    children: vec![],
+                    children,
                 })
             } else {
                 0
@@ -1320,11 +1495,6 @@ fn check_formula_holds_core<S: TraceSink>(
             // batch path; the backend is only consulted for what the engine
             // cannot compute itself).
             if let Some(result) = try_arithmetic_evaluation(rel, args, subs) {
-                if result {
-                    if let Some(fact) = build_stored_fact_from_node(buffer, node_id, subs, tense) {
-                        assert_typed_fact(fact, inner);
-                    }
-                }
                 let verdict = if result {
                     QueryResult::True
                 } else {
@@ -1344,26 +1514,16 @@ fn check_formula_holds_core<S: TraceSink>(
                 };
                 return Ok((verdict, idx));
             }
-            if let Ok(resolved) = resolve_args_for_dispatch(args, subs)
-                && let Ok(result) = dispatch_to_backend(&*inner, rel, &resolved)
-            {
-                if result {
-                    if let Some(fact) = build_stored_fact_from_node(buffer, node_id, subs, tense) {
-                        assert_typed_fact(fact, inner);
-                    }
-                }
-                let verdict = if result {
-                    QueryResult::True
-                } else {
-                    QueryResult::False
-                };
+            if let Ok(resolved) = resolve_args_for_dispatch(args, subs) {
+                let evaluation = evaluate_external_compute(&*inner, rel, &resolved, compute_memo);
+                let verdict = evaluation.verdict;
                 let idx = if S::RECORDING {
                     sink.push(ProofStep {
                         rule: ProofRule::ComputeCheck {
-                            method: "backend".to_string(),
+                            method: evaluation.method.to_string(),
                             detail: rel.clone(),
                         },
-                        holds: result,
+                        holds: verdict.is_true(),
                         children: vec![],
                     })
                 } else {
@@ -1371,42 +1531,15 @@ fn check_formula_holds_core<S: TraceSink>(
                 };
                 return Ok((verdict, idx));
             }
-            // This fallback is reached ONLY when `dispatch_to_backend` returned `Err`
-            // (the arithmetic fast path and the `Ok(_)` branch both returned early).
-            // A backend outage / unregistered backend must NOT read as a derived
-            // falsehood: honor a prior successful computation that auto-asserted this
-            // exact fact (so a cached result survives a transient outage), but
-            // otherwise surface `Unknown(BackendUnavailable)` — we genuinely could not
-            // determine the result — never a definitive `False`.
-            let verdict =
-                if let Some(fact) = build_stored_fact_from_node(buffer, node_id, subs, tense) {
-                    let mut visited = HashSet::new();
-                    match check_predicate_in_kb_typed(&fact, &*inner, 0, &mut visited) {
-                        QueryResult::True => QueryResult::True,
-                        _ => QueryResult::Unknown(UnknownReason::BackendUnavailable),
-                    }
-                } else {
-                    QueryResult::Unknown(UnknownReason::BackendUnavailable)
-                };
+            // Dispatch errors (including an unregistered backend or an argument
+            // that cannot cross the protocol) are uniformly non-definitive.
+            // Compute replies are query-local: no fact-store or prior-result
+            // fallback may turn an outage into TRUE.
+            let verdict = QueryResult::Unknown(UnknownReason::BackendUnavailable);
             let idx = if S::RECORDING {
-                let method = match &verdict {
-                    QueryResult::Unknown(UnknownReason::CycleCut) => "cycle_cut",
-                    QueryResult::Unknown(UnknownReason::IncompleteKnowledge) => {
-                        "incomplete_knowledge"
-                    }
-                    QueryResult::Unknown(UnknownReason::NafDependent) => "naf_dependent",
-                    QueryResult::Unknown(UnknownReason::BackendUnavailable) => {
-                        "backend_unavailable"
-                    }
-                    QueryResult::Unknown(UnknownReason::NonFinite) => "non_finite",
-                    QueryResult::ResourceExceeded(ResourceKind::Depth) => "depth_limit",
-                    QueryResult::ResourceExceeded(ResourceKind::Fuel) => "fuel_limit",
-                    QueryResult::ResourceExceeded(ResourceKind::Memory) => "memory_limit",
-                    QueryResult::False | QueryResult::True => "kb",
-                };
                 sink.push(ProofStep {
                     rule: ProofRule::ComputeCheck {
-                        method: method.to_string(),
+                        method: "backend_unavailable".to_string(),
                         detail: rel.clone(),
                     },
                     holds: verdict.is_true(),
@@ -1432,13 +1565,14 @@ fn forall_record_all_members<S: TraceSink>(
     subs: &mut HashMap<String, GroundTerm>,
     inner: &mut KnowledgeBaseInner,
     tense: Option<&str>,
+    compute_memo: &mut QueryComputeMemo,
     sink: &mut S,
 ) -> Result<(Vec<u32>, Vec<WitnessBinding>), String> {
     let mut child_indices = Vec::new();
     let mut entity_terms = Vec::new();
     for member in members {
         let body_idx = with_sub(subs, v, member.clone(), |s| {
-            check_formula_holds_core::<S>(buffer, body, s, inner, tense, sink)
+            check_formula_holds_core::<S>(buffer, body, s, inner, tense, compute_memo, sink)
         })?
         .1;
         child_indices.push(body_idx);
@@ -1457,6 +1591,7 @@ pub(super) fn find_witnesses(
     subs: &mut HashMap<String, GroundTerm>,
     inner: &mut KnowledgeBaseInner,
     tense: Option<&str>,
+    compute_memo: &mut QueryComputeMemo,
 ) -> Result<Vec<Vec<(String, GroundTerm)>>, String> {
     // Once any leaf has been CUT at the depth/cycle horizon the enumeration is known
     // incomplete and `query_find_inner` will refuse with `Err` regardless of what the
@@ -1504,7 +1639,8 @@ pub(super) fn find_witnesses(
             for candidate in candidates {
                 let mut new_subs = subs.clone();
                 new_subs.insert(v.clone(), candidate.clone());
-                let sub_results = find_witnesses(buffer, *body, &mut new_subs, inner, tense)?;
+                let sub_results =
+                    find_witnesses(buffer, *body, &mut new_subs, inner, tense, compute_memo)?;
                 for mut bindings in sub_results {
                     bindings.push((v.clone(), candidate.clone()));
                     results.push(bindings);
@@ -1514,23 +1650,34 @@ pub(super) fn find_witnesses(
             Ok(results)
         }
         LogicNode::PastNode(inner_node) => {
-            find_witnesses(buffer, *inner_node, subs, inner, Some("Past"))
+            find_witnesses(buffer, *inner_node, subs, inner, Some("Past"), compute_memo)
         }
-        LogicNode::PresentNode(inner_node) => {
-            find_witnesses(buffer, *inner_node, subs, inner, Some("Present"))
-        }
-        LogicNode::FutureNode(inner_node) => {
-            find_witnesses(buffer, *inner_node, subs, inner, Some("Future"))
-        }
+        LogicNode::PresentNode(inner_node) => find_witnesses(
+            buffer,
+            *inner_node,
+            subs,
+            inner,
+            Some("Present"),
+            compute_memo,
+        ),
+        LogicNode::FutureNode(inner_node) => find_witnesses(
+            buffer,
+            *inner_node,
+            subs,
+            inner,
+            Some("Future"),
+            compute_memo,
+        ),
         LogicNode::AndNode((l, r)) => {
-            let left_results = find_witnesses(buffer, *l, subs, inner, tense)?;
+            let left_results = find_witnesses(buffer, *l, subs, inner, tense, compute_memo)?;
             let mut results = Vec::new();
             for left_bindings in left_results {
                 let mut merged_subs = subs.clone();
                 for (k, v) in &left_bindings {
                     merged_subs.insert(k.clone(), v.clone());
                 }
-                let right_results = find_witnesses(buffer, *r, &mut merged_subs, inner, tense)?;
+                let right_results =
+                    find_witnesses(buffer, *r, &mut merged_subs, inner, tense, compute_memo)?;
                 for right_bindings in right_results {
                     let mut combined = left_bindings.clone();
                     combined.extend(right_bindings);
@@ -1540,12 +1687,19 @@ pub(super) fn find_witnesses(
             Ok(results)
         }
         LogicNode::OrNode((l, r)) => {
-            let mut results = find_witnesses(buffer, *l, subs, inner, tense)?;
-            results.extend(find_witnesses(buffer, *r, subs, inner, tense)?);
+            let mut results = find_witnesses(buffer, *l, subs, inner, tense, compute_memo)?;
+            results.extend(find_witnesses(
+                buffer,
+                *r,
+                subs,
+                inner,
+                tense,
+                compute_memo,
+            )?);
             Ok(results)
         }
         _ => {
-            let verdict = check_formula_holds(buffer, node_id, subs, inner, tense)?;
+            let verdict = check_formula_holds(buffer, node_id, subs, inner, tense, compute_memo)?;
             if verdict.is_true() {
                 Ok(vec![vec![]])
             } else {
@@ -1599,7 +1753,7 @@ pub(super) fn clear_typed_pred_cache(inner: &KnowledgeBaseInner) {
 /// about one query — re-deriving it per query would throw away the whole point on the
 /// second query against an unchanged KB. So it is dropped at exactly the mutation
 /// points instead: the two structural ones (`assert_typed_fact` / `unassert_typed_fact`,
-/// which is what covers the mid-query compute auto-assert and forward chaining), the
+/// which cover forward chaining and strict rollback), the
 /// `invalidate_pred_cache` wrapper every assert/retract/reset already calls, and
 /// `rebuild_inner` / `reset` directly.
 ///

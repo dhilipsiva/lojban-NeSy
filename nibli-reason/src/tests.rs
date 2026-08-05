@@ -250,6 +250,7 @@ fn test_native_rule_selective_application() {
 
 mod assertions;
 mod compute_ingest;
+mod compute_trace;
 mod conditionals_deontic;
 mod descriptions_events;
 mod disjunctive;

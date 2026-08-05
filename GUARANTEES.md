@@ -75,7 +75,7 @@ The proofs are model-level (the perfect model is *characterized* by axioms, not 
 
 **NAF visibility:** Proof traces mark Negation steps with `holds: true` as NAF-dependent. The `ProofTrace::has_naf_dependency()` method reports whether a conclusion relies on the CWA. Under open-world semantics, the same conclusion would be Unknown rather than True.
 
-**Closed-world FALSE visibility:** Dually, a positive `FALSE` that rests on the closed-world assumption — *not derivable* from the KB, as opposed to a numeric/arithmetic FALSE that was genuinely *decided* (e.g. `5 dunli 3`) — is flagged `ProofTrace.cwa_false` and renders a symmetric caveat in every proof view. Under open-world semantics such a FALSE would be Unknown, not a proof of the negation.
+**Closed-world FALSE visibility:** Dually, a positive `FALSE` that rests on the closed-world assumption — *not derivable* from the KB, as opposed to a compute-decided FALSE from numeric/arithmetic evaluation or a trusted external backend (e.g. `5 dunli 3`) — is flagged `ProofTrace.cwa_false` and renders a symmetric caveat in every proof view. Under open-world semantics such a FALSE would be Unknown, not a proof of the negation.
 
 **CWA implication:** `FALSE` means "not derivable from the current KB and therefore assumed false." It does NOT mean "known to be false in the real world." If the KB is incomplete, NAF may give True for conclusions that would be Unknown with complete information.
 
@@ -105,7 +105,7 @@ The proofs are model-level (the perfect model is *characterized* by axioms, not 
 
 **Mechanism:** `register_constraint(label, conjuncts)` declares a set of facts that must NOT all hold simultaneously. Registration is fallible and canonicalizes any valid versioned opaque-abstraction marker (rejecting legacy/malformed identities); the constraint is checked after every fact insertion.
 
-**Mode:** Permissive by default — violations are warned via stderr, not rejected; the fact is still inserted. **Strict mode (opt-in, same switches as §Predicate Validation)** rejects: the violating fact is rolled back and the assertion fails atomically. Facts inserted internally (forward chaining, compute auto-assert) are also rejected loudly on violation, but have no user call to fail — their rejections are stderr-visible only.
+**Mode:** Permissive by default — violations are warned via stderr, not rejected; the fact is still inserted. **Strict mode (opt-in, same switches as §Predicate Validation)** rejects: the violating fact is rolled back and the assertion fails atomically. Facts inserted internally by forward chaining are also rejected loudly on violation, but have no user call to fail — their rejections are stderr-visible only.
 
 **Scope:** Constraints are structural declarations — they survive KB reset but are not persisted to disk.
 
@@ -139,6 +139,39 @@ Every query returns exactly one of four results:
 | `ResourceExceeded(kind)` | A resource limit was hit: `Depth`, `Fuel`, or `Memory`. The answer may exist but cannot be found within the configured bounds. |
 
 There is no confident-sounding middle ground. The engine never guesses. (One deliberately DECIDED numeric case that surprises: divide-by-zero over finite operands is a confident FALSE, not non-finite — see "Disclosed Sharp Edges".)
+
+## Compute Result Lifecycle
+
+Built-in arithmetic and external compute replies are **proof-local evidence**. A
+result decides the current `ComputeNode`/`ComputeCheck` and may therefore allow
+or block the current backward derivation, but it is never admitted as a
+knowledge-base premise. Compute results are not inserted into `fact_store` or
+the `FactRecord` registry: they receive no fact id, never appear in `:facts` or
+`list_facts`, cannot be retracted, do not add quantifier-domain members, are not
+persisted or replayed, and trigger no forward-chaining side effect.
+
+Executable `ComputeNode`s are therefore query-only. Assertion ingress rejects
+them before allocating an id or changing the KB, including compute atoms in rule
+antecedents, negated guards, and conclusions; opaque abstraction bodies remain
+quoted content. The rule store has no fake “compute as ordinary fact” fallback.
+
+Every top-level query starts with no compute results from an earlier query.
+Built-ins recompute locally; registered external predicates redispatch to the
+backend. Repeated identical external checks inside one query may share a
+transient memo so iterative deepening and proof construction cannot obtain
+contradictory oracle replies. That memo is discarded before the next query: it
+is not an outage cache, KB state, or durable evidence. There is no fallback to a
+matching ordinary or rule-derived fact. An external `Ok(true)` or
+`Ok(false)` decides that check; an error, an unconfigured backend, or an opaque
+generated argument that cannot cross the string-only protocol yields
+`Unknown(BackendUnavailable)`. That remains true after an earlier successful
+call and when the KB contains an equal-looking tuple. Compiled event-decomposed
+KR and hand-built flat `ComputeNode` buffers have this same contract.
+
+The proof-local lifecycle does not remove the trust boundary. An external
+`true` or `false` reply is not independently verified, and any verdict whose
+derivation depends on that `ComputeCheck` is sound only relative to the backend.
+The backend is therefore part of the trusted computing base for that proof step.
 
 ## Hypothetical Reasoning
 
@@ -197,7 +230,7 @@ Deliberate or accepted-but-surprising behaviors, each pinned by a test so any ch
 
 - **`na` and tense have one fixed relative scope.** On a single bridi, `na` and a tense marker are flags, not scoped operators: every surface ordering compiles to tense OUTSIDE negation (`pu na broda` ≡ `Past(¬broda)` — "in the past, it was not the case that…"). The other scoping (`¬Past(broda)`, "it is not the case that it was…") is not expressible on one bridi; under CWA the two coincide for ground facts, but they diverge inside larger formulas.
 
-- **Asserted numbers ARE quantifier-domain members** (2026-08-01 semantics decision; it REPLACES the old "numbers never enter the quantifier domain" contract and its `[Domain]` diagnostic). A finite number appearing in ANY asserted statement — a predicate fact (`big(5).`), or an asserted rule's operands and thresholds (`sum(every big, 2, 3).` notes 2 and 3) — is a domain member of the individual sort, exactly mirroring constants (`collect_and_note_constants` walks the whole buffer, and a rule mentioning `Adam` has always noted Adam; pinned by `rule_operand_numbers_join_the_domain_like_constants`), and retraction removes membership exactly (retraction always rebuilds — §Retraction Model). So `every` CHECKS an asserted number, `exactly N` COUNTS it, and `some` reaches it, and the three quantifiers agree: with `big(5).`, `sum(every big, 2, 3).` is TRUE *by checking 5* and the arithmetically false `sum(every big, 2, 2).` is FALSE with 5 as its counterexample (pinned by `numeric_terms_are_universal_domain_members`); with `big(5). dog(5).` entailed, `dog(no big).` is FALSE and agrees with `dog(some big).` — pre-change those two were BOTH true, a jointly inconsistent pair (pinned by `exact_count_ranges_over_asserted_numbers`). Rule-derived numeric witnesses now reach `query_find`/`count_witnesses`/`aggregate` too (pinned by `find_reaches_rule_derived_numeric_witnesses`), and the assert-vs-query asymmetry is gone: rule firing always unified numbers, and the queried universal now enumerates the same values. Membership is ATEMPORAL, same as constants (`past big(5).` notes 5, but the restrictor still evaluates under the query's own tense, so a past-only fact leaves a present universal guard-vacuous — pinned by `a_past_only_number_is_a_member_but_fails_a_present_restrictor`); identity-linked numbers count once (`du_linked_numbers_count_once`). When the explicit legacy existential-import profile is ON, its imported restrictor witness is another logical entity and counts by the same rule; `WitnessOrigin` and `CountResult.existential_imported` make that contribution visible. **Three disclosed residuals, all fail-closed:** (1) numbers a query-time compute auto-ingest stores (`sum(5, 2, 3).` answered TRUE writes the fact) do NOT join the domain — query evaluation must not grow the quantifier domain (pinned by `query_time_compute_ingest_does_not_grow_the_domain`); (2) NON-FINITE values (NaN/±inf, reachable via RDF import, never via the digits-only KR `number` rule) are skipped — they satisfy no arithmetic and already evaluate to `Unknown(NonFinite)` (pinned by `non_finite_numbers_are_skipped_fail_closed`) — though a STORED non-finite fact stays entailment-reachable as an existential witness, because narrowing draws candidates from the bitwise stored-fact index, not the member list (pinned by `stored_non_finite_witnesses_stay_reachable_through_the_index`); (3) equality is the store's bitwise equality, so `-0.0` and `0.0` are two members, consistent with fact matching. The retired `[Domain]`/`numeric_domain_gap` diagnostic announced the old exclusion; with asserted numbers as members its candidate source (the stored-fact index) can no longer name a non-member, so it was removed rather than left as dead code.
+- **Asserted numbers ARE quantifier-domain members** (2026-08-01 semantics decision; it REPLACES the old "numbers never enter the quantifier domain" contract and its `[Domain]` diagnostic). A finite number appearing in ANY asserted statement — a predicate fact (`big(5).`) or an ordinary asserted rule's operands and thresholds — is a domain member of the individual sort, exactly mirroring constants (`collect_and_note_constants` walks the whole buffer, and a rule mentioning `Adam` has always noted Adam; pinned by `rule_operand_numbers_join_the_domain_like_constants`), and retraction removes membership exactly (retraction always rebuilds — §Retraction Model). Compute formulas themselves are query-only and therefore never contribute members. So `every` CHECKS an asserted number, `exactly N` COUNTS it, and `some` reaches it, and the three quantifiers agree: with `big(5).`, `sum(every big, 2, 3).` is TRUE *by checking 5* and the arithmetically false `sum(every big, 2, 2).` is FALSE with 5 as its counterexample (pinned by `numeric_terms_are_universal_domain_members`); with `big(5). dog(5).` entailed, `dog(no big).` is FALSE and agrees with `dog(some big).` — pre-change those two were BOTH true, a jointly inconsistent pair (pinned by `exact_count_ranges_over_asserted_numbers`). Rule-derived numeric witnesses now reach `query_find`/`count_witnesses`/`aggregate` too (pinned by `find_reaches_rule_derived_numeric_witnesses`), and the assert-vs-query asymmetry is gone: rule firing always unified numbers, and the queried universal now enumerates the same values. Membership is ATEMPORAL, same as constants (`past big(5).` notes 5, but the restrictor still evaluates under the query's own tense, so a past-only fact leaves a present universal guard-vacuous — pinned by `a_past_only_number_is_a_member_but_fails_a_present_restrictor`); identity-linked numbers count once (`du_linked_numbers_count_once`). When the explicit legacy existential-import profile is ON, its imported restrictor witness is another logical entity and counts by the same rule; `WitnessOrigin` and `CountResult.existential_imported` make that contribution visible. **Two disclosed residuals, both fail-closed:** (1) NON-FINITE values (NaN/±inf, reachable via RDF import, never via the digits-only KR `number` rule) are skipped — they satisfy no arithmetic and already evaluate to `Unknown(NonFinite)` (pinned by `non_finite_numbers_are_skipped_fail_closed`) — though a STORED non-finite fact stays entailment-reachable as an existential witness, because narrowing draws candidates from the bitwise stored-fact index, not the member list (pinned by `stored_non_finite_witnesses_stay_reachable_through_the_index`); (2) equality is the store's bitwise equality, so `-0.0` and `0.0` are two members, consistent with fact matching. The retired `[Domain]`/`numeric_domain_gap` diagnostic announced the old exclusion; with asserted numbers as members its candidate source (the stored-fact index) can no longer name a non-member, so it was removed rather than left as dead code.
 
 ## What the Engine Cannot Do
 

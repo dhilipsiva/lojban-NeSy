@@ -13,7 +13,8 @@
 //! - **Witness extraction** — [`find_witnesses`] returns all satisfying entity bindings for
 //!   existential variables.
 //! - **Compute dispatch** — `ComputeNode` predicates are forwarded to the host-provided
-//!   `compute-backend` WIT interface for external evaluation.
+//!   `compute-backend` WIT interface for query-local external evaluation. Results
+//!   contribute to the current derivation only; they never mutate the KB.
 //!
 //! The knowledge base uses `RefCell` (not `Mutex`) — single-threaded WASI. All
 //! mutable state — facts, rules, the predicate-result cache, the compute
@@ -78,7 +79,7 @@ pub fn transform_compute_nodes(buf: &mut LogicBuffer, compute_preds: &HashSet<St
 
 pub mod kb;
 pub(crate) use kb::*;
-pub use kb::{KnowledgeBase, contains_asserted_count_node};
+pub use kb::{KnowledgeBase, contains_asserted_compute_node, contains_asserted_count_node};
 
 /// One predicate's row in [`KnowledgeBase::stratification_report`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -108,6 +109,178 @@ pub struct StratumEdge {
     pub negative: bool,
 }
 
+/// Counterfactual status of a recorded proof step when ordinary closed-world
+/// misses are weakened to Unknown while the finite query domain and genuine
+/// compute decisions are held fixed. This is used only to classify a FALSE
+/// proof for `ProofTrace::cwa_false`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenWorldStatus {
+    True,
+    False,
+    Unknown,
+}
+
+fn open_world_and(left: OpenWorldStatus, right: OpenWorldStatus) -> OpenWorldStatus {
+    if left == OpenWorldStatus::False || right == OpenWorldStatus::False {
+        OpenWorldStatus::False
+    } else if left == OpenWorldStatus::True && right == OpenWorldStatus::True {
+        OpenWorldStatus::True
+    } else {
+        OpenWorldStatus::Unknown
+    }
+}
+
+fn open_world_or(left: OpenWorldStatus, right: OpenWorldStatus) -> OpenWorldStatus {
+    if left == OpenWorldStatus::True || right == OpenWorldStatus::True {
+        OpenWorldStatus::True
+    } else if left == OpenWorldStatus::False && right == OpenWorldStatus::False {
+        OpenWorldStatus::False
+    } else {
+        OpenWorldStatus::Unknown
+    }
+}
+
+/// Re-evaluate the recorded proof structure under the open-world
+/// counterfactual above. Unlike the former global "any false ComputeCheck"
+/// heuristic, this respects which child actually determines conjunction,
+/// disjunction, quantifier, and exact-count results.
+fn proof_step_open_world_status(
+    steps: &[ProofStep],
+    index: u32,
+    memo: &mut HashMap<u32, OpenWorldStatus>,
+    visiting: &mut HashSet<u32>,
+) -> OpenWorldStatus {
+    if let Some(status) = memo.get(&index) {
+        return *status;
+    }
+    if !visiting.insert(index) {
+        return OpenWorldStatus::Unknown;
+    }
+    let Some(step) = steps.get(index as usize) else {
+        visiting.remove(&index);
+        return OpenWorldStatus::Unknown;
+    };
+    let mut children = || {
+        step.children
+            .iter()
+            .map(|child| proof_step_open_world_status(steps, *child, memo, visiting))
+            .collect::<Vec<_>>()
+    };
+
+    let status = match &step.rule {
+        ProofRule::Conjunction => children()
+            .into_iter()
+            .fold(OpenWorldStatus::True, open_world_and),
+        ProofRule::DisjunctionCheck { .. } | ProofRule::DisjunctionIntro { .. } => children()
+            .into_iter()
+            .fold(OpenWorldStatus::False, open_world_or),
+        // Re-evaluate the negation from its child's counterfactual status. A NAF
+        // success over an ordinary closed-world miss becomes Unknown, while a
+        // negation over a genuinely compute-decided false remains True. This
+        // distinction matters when negation is nested inside a FALSE formula.
+        ProofRule::Negation => match children().first() {
+            Some(OpenWorldStatus::True) => OpenWorldStatus::False,
+            Some(OpenWorldStatus::False) => OpenWorldStatus::True,
+            Some(OpenWorldStatus::Unknown) | None => OpenWorldStatus::Unknown,
+        },
+        ProofRule::ModalPassthrough { .. }
+        | ProofRule::ExistsWitness { .. }
+        | ProofRule::ForallCounterexample { .. } => children()
+            .into_iter()
+            .next()
+            .unwrap_or(OpenWorldStatus::Unknown),
+        ProofRule::ExistsFailed => {
+            let child_statuses = children();
+            if child_statuses.is_empty() || child_statuses.contains(&OpenWorldStatus::Unknown) {
+                OpenWorldStatus::Unknown
+            } else if child_statuses.contains(&OpenWorldStatus::True) {
+                OpenWorldStatus::True
+            } else {
+                OpenWorldStatus::False
+            }
+        }
+        ProofRule::ForallVacuous => OpenWorldStatus::True,
+        ProofRule::ForallVerified { .. } => children()
+            .into_iter()
+            .fold(OpenWorldStatus::True, open_world_and),
+        ProofRule::CountResult { expected, .. } => {
+            let child_statuses = children();
+            if child_statuses.is_empty() && !step.holds {
+                // An empty trace can mean an empty narrowed extension whose
+                // absence is exactly the closed-world fact at issue.
+                OpenWorldStatus::Unknown
+            } else {
+                let true_count = child_statuses
+                    .iter()
+                    .filter(|status| **status == OpenWorldStatus::True)
+                    .count() as u32;
+                let unknown_count = child_statuses
+                    .iter()
+                    .filter(|status| **status == OpenWorldStatus::Unknown)
+                    .count() as u32;
+                if true_count > *expected || true_count + unknown_count < *expected {
+                    OpenWorldStatus::False
+                } else if unknown_count == 0 && true_count == *expected {
+                    OpenWorldStatus::True
+                } else {
+                    OpenWorldStatus::Unknown
+                }
+            }
+        }
+        ProofRule::PredicateCheck { method, .. } if method == "numeric" => {
+            if step.holds {
+                OpenWorldStatus::True
+            } else {
+                OpenWorldStatus::False
+            }
+        }
+        ProofRule::ComputeCheck { method, .. }
+            if method == "numeric" || method == "arithmetic" || method == "backend" =>
+        {
+            if step.holds {
+                OpenWorldStatus::True
+            } else {
+                OpenWorldStatus::False
+            }
+        }
+        ProofRule::Asserted { .. } => {
+            if step.holds {
+                OpenWorldStatus::True
+            } else {
+                OpenWorldStatus::Unknown
+            }
+        }
+        ProofRule::Derived { .. }
+        | ProofRule::ProofRef { .. }
+        | ProofRule::EqualitySubstitution { .. } => {
+            let child_statuses = children();
+            if child_statuses.is_empty() {
+                if step.holds {
+                    OpenWorldStatus::True
+                } else {
+                    OpenWorldStatus::Unknown
+                }
+            } else {
+                child_statuses
+                    .into_iter()
+                    .fold(OpenWorldStatus::True, open_world_and)
+            }
+        }
+        ProofRule::PredicateCheck { .. }
+        | ProofRule::ComputeCheck { .. }
+        | ProofRule::RuleAttemptFailed { .. }
+        | ProofRule::PredicateNotFound { .. } => OpenWorldStatus::Unknown,
+    };
+    visiting.remove(&index);
+    memo.insert(index, status);
+    status
+}
+
+fn proof_false_depends_on_closed_world(steps: &[ProofStep], root: u32) -> bool {
+    proof_step_open_world_status(steps, root, &mut HashMap::new(), &mut HashSet::new())
+        != OpenWorldStatus::False
+}
+
 /// Internal methods that return `Result<_, String>` for use by both the WIT boundary and tests.
 impl KnowledgeBase {
     fn combine_root_results(left: QueryResult, right: QueryResult) -> QueryResult {
@@ -123,12 +296,12 @@ impl KnowledgeBase {
 
     /// Assert FOL facts from a logic buffer into the knowledge base.
     /// Stores the buffer in the fact registry and returns a unique fact ID.
-    /// CountNodes in asserted position (outside opaque quoted content) are
-    /// query-only and fail before id allocation.
+    /// CountNodes and executable ComputeNodes in asserted position (outside
+    /// opaque quoted content) are query-only and fail before id allocation.
     fn assert_fact_inner(&self, mut logic: LogicBuffer, label: String) -> Result<u64, String> {
         // Validate before minting an id or borrowing/mutating the KB. The same
         // guard also lives in process_assertion so rebuild replay cannot bypass it.
-        validate_assertion_buffer(&logic)?;
+        preflight_assertion_buffer(&mut logic)?;
         let mut inner = self.inner.borrow_mut();
         let id = inner.fresh_fact_id()?;
         inner.current_assertion_id = Some(id);
@@ -164,9 +337,9 @@ impl KnowledgeBase {
     }
 
     /// Assert a fact with a pre-assigned ID. Used for replay from persistent store.
-    /// Advances the internal counter past the given ID. A CountNode in asserted
-    /// position fails before the counter advances, so legacy count assertions
-    /// fail closed.
+    /// Advances the internal counter past the given ID. A CountNode or executable
+    /// ComputeNode in asserted position fails before the counter advances, so
+    /// legacy query-formula assertions fail closed.
     pub fn assert_fact_with_id(
         &self,
         mut logic: LogicBuffer,
@@ -174,7 +347,7 @@ impl KnowledgeBase {
         id: u64,
     ) -> Result<(), String> {
         // A persisted/pre-assigned row must fail before advancing the live id counter.
-        validate_assertion_buffer(&logic)?;
+        preflight_assertion_buffer(&mut logic)?;
         let mut inner = self.inner.borrow_mut();
         if inner.fact_registry.contains_key(&id) {
             return Err(format!(
@@ -443,6 +616,14 @@ impl KnowledgeBase {
 
     /// Single-pass entailment check at the current max_chain_depth.
     fn run_entailment_check(&self, logic: &LogicBuffer) -> Result<QueryResult, String> {
+        self.run_entailment_check_with_compute_memo(logic, &mut QueryComputeMemo::default())
+    }
+
+    fn run_entailment_check_with_compute_memo(
+        &self,
+        logic: &LogicBuffer,
+        compute_memo: &mut QueryComputeMemo,
+    ) -> Result<QueryResult, String> {
         // Enable WITHOUT clearing: the cache is cleared once before the
         // iterative-deepening loop in query_entailment_inner, then definitive
         // results persist across depth passes (cross-depth tabling).
@@ -452,7 +633,8 @@ impl KnowledgeBase {
         let mut overall = QueryResult::True;
         for &root_id in &logic.roots {
             let mut subs = HashMap::new();
-            let result = check_formula_holds(logic, root_id, &mut subs, &mut inner, None)?;
+            let result =
+                check_formula_holds(logic, root_id, &mut subs, &mut inner, None, compute_memo)?;
             overall = Self::combine_root_results(overall, result);
         }
         Ok(overall)
@@ -471,18 +653,20 @@ impl KnowledgeBase {
             clear_and_enable_pred_cache(&inner);
             inner.max_chain_depth
         };
+        let mut compute_memo = QueryComputeMemo::default();
         for depth_limit in 1..=configured_max {
             self.inner.borrow_mut().max_chain_depth = depth_limit;
             // Restore the configured depth on EVERY exit, including the error
             // path (e.g. cooperative cancellation), so an aborted query never
             // leaves a reusable KB pinned at a partial deepening depth.
-            let result = match self.run_entailment_check(&logic) {
-                Ok(result) => result,
-                Err(e) => {
-                    self.inner.borrow_mut().max_chain_depth = configured_max;
-                    return Err(e);
-                }
-            };
+            let result =
+                match self.run_entailment_check_with_compute_memo(&logic, &mut compute_memo) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        self.inner.borrow_mut().max_chain_depth = configured_max;
+                        return Err(e);
+                    }
+                };
             if !matches!(result, QueryResult::ResourceExceeded(ResourceKind::Depth)) {
                 self.inner.borrow_mut().max_chain_depth = configured_max;
                 return Ok(result);
@@ -525,9 +709,17 @@ impl KnowledgeBase {
         inner.ensure_domain_members_cached();
         inner.find_horizon_hit = false;
         let mut result_sets: Option<Vec<Vec<(String, GroundTerm)>>> = None;
+        let mut compute_memo = QueryComputeMemo::default();
         for &root_id in &logic.roots {
             let mut subs = HashMap::new();
-            let witnesses = find_witnesses(&logic, root_id, &mut subs, &mut inner, None)?;
+            let witnesses = find_witnesses(
+                &logic,
+                root_id,
+                &mut subs,
+                &mut inner,
+                None,
+                &mut compute_memo,
+            )?;
             match result_sets {
                 None => result_sets = Some(witnesses),
                 Some(prev) => {
@@ -642,6 +834,17 @@ impl KnowledgeBase {
         &self,
         logic: &LogicBuffer,
     ) -> Result<(QueryResult, ProofTrace), String> {
+        self.run_entailment_check_with_proof_and_compute_memo(
+            logic,
+            &mut QueryComputeMemo::default(),
+        )
+    }
+
+    fn run_entailment_check_with_proof_and_compute_memo(
+        &self,
+        logic: &LogicBuffer,
+        compute_memo: &mut QueryComputeMemo,
+    ) -> Result<(QueryResult, ProofTrace), String> {
         // Enable WITHOUT clearing: cleared once before the iterative-deepening
         // loop in query_entailment_with_proof_inner; definitive results persist
         // across depth passes (cross-depth tabling).
@@ -659,7 +862,14 @@ impl KnowledgeBase {
             // per-node `holds` is natively `verdict.is_true()` — no separate
             // untraced pass and no root `holds` reconciliation needed.
             let (result, step_idx) = check_formula_holds_recording(
-                logic, root_id, &mut subs, &mut inner, &mut steps, None, &mut memo,
+                logic,
+                root_id,
+                &mut subs,
+                &mut inner,
+                &mut steps,
+                None,
+                &mut memo,
+                compute_memo,
             )?;
             overall = Self::combine_root_results(overall, result);
             root_children.push(step_idx);
@@ -678,18 +888,12 @@ impl KnowledgeBase {
         let naf_dependent = steps
             .iter()
             .any(|s| matches!(s.rule, ProofRule::Negation) && s.holds);
-        // A FALSE verdict is closed-world ("not derivable from the KB") UNLESS a
-        // numeric/arithmetic compute DECIDED it (e.g. `5 dunli 3` is genuinely false).
-        // The dual of `naf_dependent`: under open-world semantics it would be Unknown.
-        let cwa_false = overall.is_false()
-            && !steps.iter().any(|s| {
-                !s.holds
-                    && matches!(
-                        &s.rule,
-                        ProofRule::ComputeCheck { method, .. }
-                            if method == "numeric" || method == "arithmetic"
-                    )
-            });
+        // Classify the ROOT under an open-world counterfactual. A failed compute
+        // leaf is definitive, but it only removes the CWA caveat when the
+        // formula/quantifier/count structure actually makes that leaf decisive.
+        // Conversely, an unrelated failed compute check cannot launder an
+        // absence-driven disjunction into a non-CWA result.
+        let cwa_false = overall.is_false() && proof_false_depends_on_closed_world(&steps, root);
         Ok((
             overall,
             ProofTrace {
@@ -724,6 +928,7 @@ impl KnowledgeBase {
             clear_and_enable_pred_cache(&inner);
             inner.max_chain_depth
         };
+        let mut compute_memo = QueryComputeMemo::default();
         // Phase 1: find the resolving depth with the CHEAP untraced walk — no proof
         // trace is built (then discarded) on the probe passes. The costly part of a
         // proof query is the ProofStep-tree construction, which (unlike the verdict,
@@ -737,16 +942,17 @@ impl KnowledgeBase {
             // Restore the configured depth on the error path too (see
             // query_entailment_inner) — explicit `match`, NOT `?`, so a cancelled
             // query never leaves the KB pinned at a partial deepening depth.
-            let result = match self.run_entailment_check(&logic) {
-                Ok(r) => r,
-                Err(e) => {
-                    let inner = self.inner.borrow();
-                    inner.positive_lookup.set(true);
-                    drop(inner);
-                    self.inner.borrow_mut().max_chain_depth = configured_max;
-                    return Err(e);
-                }
-            };
+            let result =
+                match self.run_entailment_check_with_compute_memo(&logic, &mut compute_memo) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let inner = self.inner.borrow();
+                        inner.positive_lookup.set(true);
+                        drop(inner);
+                        self.inner.borrow_mut().max_chain_depth = configured_max;
+                        return Err(e);
+                    }
+                };
             if !matches!(result, QueryResult::ResourceExceeded(ResourceKind::Depth)) {
                 resolving_depth = depth_limit;
                 break;
@@ -758,7 +964,7 @@ impl KnowledgeBase {
         // descent never shortcuts on the verdict cache and the fact store is
         // set-idempotent for the only state it reads (`typed_fact_is_asserted`).
         self.inner.borrow_mut().max_chain_depth = resolving_depth;
-        let out = self.run_entailment_check_with_proof(&logic);
+        let out = self.run_entailment_check_with_proof_and_compute_memo(&logic, &mut compute_memo);
         {
             let inner = self.inner.borrow();
             inner.positive_lookup.set(true);
@@ -851,8 +1057,8 @@ impl KnowledgeBase {
     /// integrity-constraint violation REJECTS the offending fact and fails the
     /// assertion (`Err`) ATOMICALLY — the failed assertion's partial mutations
     /// are rolled back via the registry rebuild, exactly like any other
-    /// assertion error. Facts inserted internally (forward chaining, compute
-    /// auto-assert) are also rejected loudly but cannot fail a user call.
+    /// assertion error. Facts inserted internally by forward chaining are also
+    /// rejected loudly but cannot fail a user call.
     /// Configuration, not derived state — survives `reset()`; inert during
     /// retraction-replay rebuilds.
     pub fn set_strict(&self, strict: bool) {
@@ -1112,16 +1318,15 @@ impl KnowledgeBase {
     /// Register this KB's external compute dispatch (per-instance — replaces the
     /// old thread-local `register_compute_dispatch`, which the multithreaded
     /// server could never register because each tokio blocking-pool worker had
-    /// its own `None` thread-local). Built-in arithmetic (pilji/sumji/dilcu) is
-    /// always evaluated locally; everything else is forwarded to `eval`/
-    /// `batch_eval`.
+    /// its own `None` thread-local). Valid numeric built-in arithmetic
+    /// (pilji/sumji/dilcu) is evaluated locally first; registered calls whose
+    /// arguments are not locally evaluable are forwarded to `eval`/`batch_eval`.
     ///
-    /// TRUST BOUNDARY: a `true` reply is auto-asserted as a ground fact mid-query
-    /// that downstream universal rules can chain on, so a malicious or MITM
-    /// backend can seed arbitrary predicates. The backend is part of the trusted
-    /// computing base — run it on localhost or a network segment you control.
-    /// (Auto-asserted compute facts are non-durable: no FactRecord, never
-    /// replayed by rebuild.)
+    /// TRUST BOUNDARY: a backend verdict is trusted as the result of that compute
+    /// step, so a malicious or MITM backend can still make a proof wrong. It is
+    /// query-local: never inserted into the logical fact store or assertion
+    /// registry, never cached across queries, and never reused during an outage.
+    /// Run the backend on localhost or a network segment you control.
     pub fn set_compute_dispatch(
         &self,
         eval: crate::compute::EvalFn,
@@ -1152,12 +1357,14 @@ impl KnowledgeBase {
     /// or mutating the knowledge base. Multi-root surfaces use this before
     /// installing any independently retractable root.
     pub fn validate_assertion(&self, logic: &LogicBuffer) -> Result<(), NibliError> {
-        validate_assertion_buffer(logic).map_err(NibliError::Reasoning)
+        let mut logic = logic.clone();
+        preflight_assertion_buffer(&mut logic).map_err(NibliError::Reasoning)
     }
 
     /// Assert a compiled FOL formula into the knowledge base. Returns the fact ID.
-    /// Exact-count formulas in asserted position are query-only and cannot be
-    /// installed as constraints; opaque abstraction content remains quoted.
+    /// Exact-count and executable compute formulas in asserted position are
+    /// query-only and cannot be installed as constraints/facts; opaque
+    /// abstraction content remains quoted.
     pub fn assert_fact(&self, logic: LogicBuffer, label: String) -> Result<u64, NibliError> {
         // The assert IS the reasoning stage: by the time this runs the buffer has
         // already passed nibli-semantics, so every failure here (stratification, fail-closed
@@ -1171,8 +1378,9 @@ impl KnowledgeBase {
     /// Clones the KB, asserts all assumptions into the clone, runs the callback,
     /// and discards the clone. The original KB is untouched.
     ///
-    /// Assumptions use assertion semantics, so a CountNode is rejected rather
-    /// than treated as a temporary cardinality constraint. Supports multiple independent hypotheticals (each gets its own snapshot)
+    /// Assumptions use assertion semantics, so CountNode and executable
+    /// ComputeNode formulas are rejected rather than treated as temporary
+    /// constraints/facts. Supports multiple independent hypotheticals (each gets its own snapshot)
     /// and nesting (the callback receives a `&KnowledgeBase` with `with_assumptions`).
     pub fn with_assumptions<F, R>(&self, assumptions: &[LogicBuffer], f: F) -> Result<R, NibliError>
     where

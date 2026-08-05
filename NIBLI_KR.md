@@ -248,6 +248,8 @@ rain().                                # observative — all places Unspecified
   n-ary `du` is inexpressible rather than an error. **Not** the numeric test — that is
   `num_equal(2, 2)` (`dunli`, exact `==`), and arithmetic is ordinary predication:
   `product(50, 5, 10).` (`pilji`; tolerant isclose, trusted-backend policy unchanged).
+  Compute formulas are query-only: asserting one directly or placing one in a rule
+  guard/head is rejected until the rule IR can execute compute compositionally.
   There is deliberately **no infix arithmetic sugar** — the three equality notions
   (du / dunli / compute-isclose) must stay unconflatable.
 - **Modal tags** (`via`): `goes(me, destination: some market) via cause(some rain).`

@@ -345,9 +345,11 @@ impl Session {
 
     /// Shared body for `assert_fact` / `assert_fact_with_id` — delegates to
     /// the core's `assert_fact_direct` (label `":assert {relation}"`,
-    /// event-decomposed to the surface shape, caller-chosen id for replay). The
-    /// args and error ARE the canonical `nibli_types` types now (the boundary
-    /// is `with`-remapped), so nothing is converted here.
+    /// event-decomposed to the surface shape, compute-marked against the live
+    /// registry, caller-chosen id for replay). Registered compute relations are
+    /// therefore rejected as query-only. The args and error ARE the canonical
+    /// `nibli_types` types now (the boundary is `with`-remapped), so nothing is
+    /// converted here.
     fn assert_fact_inner(
         &self,
         relation: String,
@@ -442,8 +444,9 @@ impl GuestSession for Session {
     /// stay one compound fact, matching the native surfaces). Returns one
     /// (id, buffer) pair per asserted root so a persisting host can store the
     /// compiled FACT itself and replay it recompile-free via
-    /// `assert-buffer-with-id`. Exact counts in asserted position (outside
-    /// opaque quoted content) are query-only and fail before an id is allocated.
+    /// `assert-buffer-with-id`. Exact counts and executable compute formulas in
+    /// asserted position (outside opaque quoted content) are query-only and fail
+    /// before an id is allocated.
     fn assert_text(
         &self,
         input: String,
@@ -455,8 +458,9 @@ impl GuestSession for Session {
     }
 
     /// Recompile-free replay: assert an already-compiled buffer (as returned
-    /// by `assert-text`) under a caller-chosen id. Legacy CountNodes in asserted
-    /// position fail closed before the caller-chosen id advances live state.
+    /// by `assert-text`) under a caller-chosen id. Legacy CountNodes and
+    /// executable ComputeNodes in asserted position fail closed before the
+    /// caller-chosen id advances live state.
     fn assert_buffer_with_id(
         &self,
         buffer: logic::LogicBuffer,

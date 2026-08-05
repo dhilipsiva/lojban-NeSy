@@ -195,14 +195,7 @@ fn strict_mode_is_inert_during_rebuild() {
     );
 }
 
-// ─── Mid-query strict rollback (unassert_typed_fact) ─────────────────
-
-fn always_true_eval(_rel: &str, _args: &[LogicalTerm]) -> Result<bool, String> {
-    Ok(true)
-}
-fn always_true_batch(reqs: &[ComputeRequest]) -> Vec<Result<bool, String>> {
-    reqs.iter().map(|_| Ok(true)).collect()
-}
+// ─── Internal strict rollback (unassert_typed_fact) ──────────────────
 
 /// Kills three rules.rs mutants in `unassert_typed_fact`:
 /// `replace unassert_typed_fact with ()` (the rejected fact would stay in the
@@ -210,14 +203,13 @@ fn always_true_batch(reqs: &[ComputeRequest]) -> Vec<Result<bool, String>> {
 /// keep the ghost), and `replace != with ==` (the leaf `retain` flips polarity
 /// and scrubs the INNOCENT co-leaf facts instead of the rejected one).
 ///
-/// The mid-query compute auto-assert is the one strict-rejection path with no
-/// registry-rebuild rollback behind it (`assert_fact_inner`'s rebuild masks
-/// the assert-path twin), so `unassert_typed_fact` itself must surgically undo
-/// the insert: store AND every index leaf, innocents untouched.
+/// Internal insertions have no registry-rebuild rollback behind them
+/// (`assert_fact_inner`'s rebuild masks the user-assertion twin), so
+/// `unassert_typed_fact` itself must surgically undo the insert: store AND every
+/// index leaf, innocents untouched.
 #[test]
-fn strict_mid_query_constraint_rejection_scrubs_store_and_index() {
+fn strict_internal_constraint_rejection_scrubs_store_and_index() {
     let kb = new_kb();
-    kb.set_compute_dispatch(always_true_eval, always_true_batch);
 
     // Innocent co-leaf fact: same relation, shares the (relation, position,
     // value) index leaves at positions 0 and 1 with the fact the constraint
@@ -254,13 +246,12 @@ fn strict_mid_query_constraint_rejection_scrubs_store_and_index() {
     kb.register_constraint("no-zzoracle-8-2-3".to_string(), vec![stored(3.0)])
         .unwrap();
 
-    // The query dispatches zzoracle(8,2,3) to the always-true backend, which
-    // auto-asserts it mid-query; the constraint then rejects it and strict
-    // mode rolls it back out (verdict stays the backend's TRUE).
-    assert!(
-        query(&kb, make_compute_query("zzoracle", 8.0, 2.0, 3.0)),
-        "the backend's TRUE still answers the query"
-    );
+    // Exercise the internal insertion primitive directly. The constraint
+    // rejects the fact and strict mode must roll it out immediately.
+    {
+        let mut inner = kb.inner.borrow_mut();
+        assert_typed_fact(stored(3.0), &mut inner);
+    }
 
     let inner = kb.inner.borrow();
     let rejected = stored(3.0);

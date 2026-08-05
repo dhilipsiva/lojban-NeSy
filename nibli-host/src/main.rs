@@ -10,7 +10,8 @@
 //! - **`:debug`** — Compile to logic representation without asserting
 //! - **`:load`** — Load a `.nibli` file (
 //!   assert each line, skip `#` comments)
-//! - **`:assert`** — Assert ground facts directly (bypasses text parsing)
+//! - **`:assert`** — Assert ground facts directly (bypasses text parsing;
+//!   registered compute relations remain query-only)
 //! - **`:retract`** — Retract a fact by ID (triggers KB rebuild)
 //! - **`:facts`** — List all active facts in the KB
 //! - **`:compute`** — Register predicates for compute dispatch
@@ -597,8 +598,9 @@ fn format_nibli_error(e: &NibliError) -> String {
 /// One journaled, successful KB mutation. After a wasm trap poisons the
 /// component instance, replaying these in order on a fresh instance rebuilds
 /// a byte-identical session (the engine is deterministic: identical fact ids
-/// and Skolem numbering). Queries are not journaled — their only KB side
-/// effect (flat-path compute auto-ingestion) is recomputed on demand.
+/// and Skolem numbering). Queries are not journaled: compute results are
+/// proof-local and queries have no fact-store, registry, or persistence side
+/// effect. A later query recomputes locally or redispatches to the backend.
 enum JournalEntry {
     /// A compiled single-root fact buffer (one per root of a text assertion).
     /// Replayed recompile-free via `assert-buffer-with-id`. `id` is the fact

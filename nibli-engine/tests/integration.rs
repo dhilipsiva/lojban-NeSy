@@ -5,7 +5,7 @@
 
 use nibli_engine::{
     EngineAggregateOp, EngineComputeRequest, EngineError, EngineLogicBuffer, EngineLogicNode,
-    EngineLogicalTerm, EngineQueryResult, EngineWitnessOrigin, NibliEngine,
+    EngineLogicalTerm, EngineQueryResult, EngineUnknownReason, EngineWitnessOrigin, NibliEngine,
 };
 use nibli_render::{
     DRUG_INTERACTIONS_OVERLAY, GDPR_OVERLAY, Register, render_collapsed_text_with,
@@ -2135,8 +2135,8 @@ fn imported_and_numeric_witnesses_share_one_counting_algebra() {
 
 #[test]
 fn compute_role_predicates_do_not_anchor_existential_narrowing() {
-    // `sum_x1` (role predicate of a compute relation) has a lazily-populated
-    // store extension — empty until an auto-ingest — so admitting it as a
+    // `sum_x1` (role predicate of a compute relation) has no complete store
+    // extension because its truth is evaluated at query time, so admitting it as a
     // MANDATORY anchor let its empty candidate set win the min-cardinality
     // narrowing pick: `sum(some big, 2, 3).` answered a definitive FALSE while
     // both `big(5).` and `sum(5, 2, 3).` are TRUE (TODO §Reasoning/evaluation,
@@ -2170,9 +2170,9 @@ fn naf_over_a_numeric_existential_inverts_the_corrected_verdict() {
 
 #[test]
 fn entity_existentials_are_untouched_by_the_anchor_fix() {
-    // Controls: ordinary store-backed narrowing must be unchanged, and a
-    // NON-numeric witness still fails a compute body closed-world (the same
-    // empty-extension mechanism, no numbers anywhere).
+    // Controls: ordinary store-backed narrowing is unchanged. A public
+    // non-numeric witness is a valid external-compute argument, so without a
+    // backend the compute body is unresolved rather than closed-world FALSE.
     let engine = engine_with_facts(&["big(5).", "dog(Rex)."]);
     assert_true(
         &engine.query_holds("dog(some dog).").unwrap(),
@@ -2182,9 +2182,10 @@ fn entity_existentials_are_untouched_by_the_anchor_fix() {
         &engine.query_holds("dog(some big).").unwrap(),
         "nothing big is a dog — the 5 candidate fails the dog body",
     );
-    assert_false(
-        &engine.query_holds("sum(some dog, 2, 3).").unwrap(),
-        "a non-numeric witness fails the compute body — closed-world FALSE",
+    assert_eq!(
+        engine.query_holds("sum(some dog, 2, 3).").unwrap(),
+        EngineQueryResult::Unknown(EngineUnknownReason::BackendUnavailable),
+        "a non-numeric public witness requires the unavailable external backend",
     );
 }
 
@@ -3094,6 +3095,41 @@ fn persistent_engine_replays_asserted_facts_after_reopen() {
                 .expect("Derived query should run after reopen")
                 .is_true(),
             "Reopened engine should replay persisted rule and fact"
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn persistent_engine_never_journals_proof_local_compute_results() {
+    let path = temp_db_path("proof_local_compute_not_persisted");
+    cleanup(&path);
+
+    {
+        let engine = fresh_open(&path, "persistent engine should open");
+        assert_true(
+            &engine.query_holds("product(6, 2, 3).").unwrap(),
+            "built-in compute must answer before reopen",
+        );
+        assert!(
+            engine.list_facts().unwrap().is_empty(),
+            "a compute query must not create a live registry row"
+        );
+    }
+    {
+        let store = NibliStore::open(&path, "local".into()).expect("store should reopen");
+        assert!(
+            store.all_active_facts().unwrap().is_empty(),
+            "a compute query must not create a durable journal row"
+        );
+    }
+    {
+        let reopened = fresh_open(&path, "empty compute-only store should reopen");
+        assert!(reopened.list_facts().unwrap().is_empty());
+        assert_true(
+            &reopened.query_holds("product(6, 2, 3).").unwrap(),
+            "the reopened engine recomputes rather than replays a premise",
         );
     }
 
@@ -5690,6 +5726,58 @@ fn surface_numeric_negation() {
     assert_false(
         &engine.query_holds("~greater(5, 3).").unwrap(),
         "NOT(5 > 3) must be FALSE through surface Lojban",
+    );
+}
+
+#[test]
+fn executable_compute_is_query_only_in_facts_and_rules() {
+    let mut engine = fresh_engine();
+    engine.register_compute_predicate("exponential".to_string());
+
+    for statement in [
+        "sum(5, 2, 3).",
+        "all $x: big($x) & sum($x, 2, 3) -> animal($x).",
+        "all $x: big($x) & ~sum($x, 2, 3) -> animal($x).",
+        "all $x: big($x) -> sum($x, 2, 3).",
+        "exponential(8, 2, 3).",
+    ] {
+        let err = engine
+            .assert_text(statement)
+            .expect_err("executable compute must be rejected at assertion ingress");
+        assert!(
+            err.to_string().contains("query-only"),
+            "expected query-only rejection for `{statement}`, got: {err}"
+        );
+        assert!(
+            engine.list_facts().unwrap().is_empty(),
+            "rejected compute assertion mutated the registry: `{statement}`"
+        );
+    }
+
+    let direct_err = engine
+        .assert_fact_direct(
+            "product".to_string(),
+            vec![
+                nibli_engine::EngineLogicalTerm::Number(6.0),
+                nibli_engine::EngineLogicalTerm::Number(2.0),
+                nibli_engine::EngineLogicalTerm::Number(3.0),
+            ],
+        )
+        .expect_err("direct injection must share the compute assertion guard");
+    assert!(
+        direct_err.to_string().contains("query-only"),
+        "{direct_err}"
+    );
+    assert!(engine.list_facts().unwrap().is_empty());
+
+    assert_eq!(
+        engine.assert_text("big(5).").unwrap(),
+        vec![0],
+        "rejected compute assertions must not consume an id"
+    );
+    assert_true(
+        &engine.query_holds("sum(5, 2, 3).").unwrap(),
+        "the same compute formula remains valid on the query surface",
     );
 }
 

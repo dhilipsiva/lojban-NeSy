@@ -467,14 +467,17 @@ fn test_decomposed_non_numeric_falls_through_to_store() {
 }
 
 #[test]
-fn test_decomposed_asserted_true_group_still_true() {
-    // Asserting an arithmetically-true group then querying it: the computed
-    // verdict agrees with the store, so shadowing is invisible for true facts.
+fn test_decomposed_compute_group_is_query_only() {
+    // An arithmetically true formula is still executable compute, not a fact.
+    // Assertion must fail closed, while querying evaluates it proof-locally.
     let kb = new_kb();
-    assert_buf(
-        &kb,
-        make_decomposed_compute_query("product", 10.0, 2.0, 5.0),
-    );
+    let error = kb
+        .assert_fact_inner(
+            make_decomposed_compute_query("product", 10.0, 2.0, 5.0),
+            "query-only product".to_string(),
+        )
+        .expect_err("a decomposed compute group must not enter asserted state");
+    assert!(error.contains("compute formulas are query-only"));
     assert!(query(
         &kb,
         make_decomposed_compute_query("product", 10.0, 2.0, 5.0)
@@ -551,8 +554,10 @@ fn test_compute_negated() {
 }
 
 #[test]
-fn test_compute_node_kb_fallback() {
-    // ComputeNode with non-arithmetic predicate falls back to KB lookup
+fn ordinary_fact_cannot_mask_compute_backend_outage() {
+    // A ComputeNode is an operational call, not an alternate spelling of a
+    // store lookup. A matching asserted tuple must not turn an unavailable
+    // backend into TRUE.
     let kb = new_kb();
 
     // Assert: klama(alis, zarci) as a regular fact
@@ -573,7 +578,7 @@ fn test_compute_node_kb_fallback() {
         },
     );
 
-    // Query as ComputeNode — unknown to arithmetic, should fall through to KB lookup
+    // Query the same tuple as a ComputeNode with no backend registered.
     let mut q_nodes = Vec::new();
     let q_root = compute(
         &mut q_nodes,
@@ -583,21 +588,24 @@ fn test_compute_node_kb_fallback() {
             LogicalTerm::Constant("zarci".to_string()),
         ],
     );
-    assert!(query(
-        &kb,
-        LogicBuffer {
-            nodes: q_nodes,
-            roots: vec![q_root]
-        }
-    ));
+    assert_eq!(
+        query_result(
+            &kb,
+            LogicBuffer {
+                nodes: q_nodes,
+                roots: vec![q_root]
+            }
+        ),
+        QueryResult::Unknown(UnknownReason::BackendUnavailable)
+    );
 }
 
 #[test]
 fn compute_and_comparison_role_predicates_are_non_indexable() {
     // Anchor-narrowing classifier: a query-time-evaluated relation must never
     // narrow entailment candidates, and that covers its decomposed ROLE
-    // predicates too — `sum_x1`'s extension is populated lazily by auto-ingest
-    // (a comparison's never), so an empty index entry is not "no witness".
+    // predicates too — their truth is computed rather than represented by a
+    // complete store extension, so an empty index entry is not "no witness".
     // Before the surface-relation check, `sum_x1` anchored `sum(some big, 2, 3).`
     // and its empty candidate set won the narrowing pick: a definitive FALSE.
     use crate::kb::is_non_indexable_relation as non_indexable;
@@ -678,8 +686,8 @@ fn stored_non_finite_witnesses_stay_reachable_through_the_index() {
 // predicate fact IS a quantifier-domain member (`note_number` → both member
 // caches): `every` checks it, `exactly N` counts it, `some` reaches it. These
 // pin the corrected verdicts and the deliberate residuals (non-finite values
-// skipped fail-closed here; mid-query compute ingest not growing the domain is
-// pinned in compute_ingest.rs).
+// skipped fail-closed here; proof-local query-time compute never growing the
+// domain is pinned in compute_ingest.rs).
 
 #[test]
 fn asserted_numbers_are_universal_domain_members() {
@@ -736,7 +744,24 @@ fn rule_operand_numbers_join_the_domain_like_constants() {
     // operands are domain members even with no predicate fact asserting them —
     // just as a rule mentioning Adam has always noted Adam.
     let kb = new_kb();
-    assert_buf(&kb, compile_surface("sum(every big, 2, 3)."));
+    let mut nodes = Vec::new();
+    let x = LogicalTerm::Variable("_v0".to_string());
+    let restrictor = pred(&mut nodes, "big", vec![x.clone(), LogicalTerm::Unspecified]);
+    let conclusion = pred(
+        &mut nodes,
+        "zznumeric_operand",
+        vec![x, LogicalTerm::Number(2.0), LogicalTerm::Number(3.0)],
+    );
+    let negated_restrictor = not(&mut nodes, restrictor);
+    let implication = or(&mut nodes, negated_restrictor, conclusion);
+    let root = forall(&mut nodes, "_v0", implication);
+    assert_buf(
+        &kb,
+        LogicBuffer {
+            nodes,
+            roots: vec![root],
+        },
+    );
     // 2 and 3 are members and 2 ≠ 2 + 2: the bare universal finds a
     // counterexample where an empty domain would be vacuously TRUE.
     assert!(query_false(&kb, compile_surface("all $x: sum($x, 2, 2).")));

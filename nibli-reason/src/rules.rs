@@ -65,7 +65,8 @@ pub(super) fn collect_exists_for_skolem(
         LogicNode::NotNode(inner) => {
             collect_exists_for_skolem(buffer, *inner, subs, enclosing_universals, kb);
         }
-        // CountNode is query-only and rejected before assertion processing.
+        // CountNode and ComputeNode are query-only and rejected before
+        // assertion processing; the ComputeNode arm remains for exhaustiveness.
         LogicNode::CountNode(_) => {}
         LogicNode::Predicate(_) | LogicNode::ComputeNode(_) => {}
         LogicNode::PastNode(inner)
@@ -962,7 +963,7 @@ pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner
     // Populate the argument-position index only for a fact not already in the
     // store (the store is a HashSet, so this keeps the index consistent with it
     // — exactly one index entry per fact). Re-ingesting an identical ground fact
-    // (e.g. compute auto-assert firing on every query) is then a no-op for the
+    // (for example, duplicate derivation support) is then a no-op for the
     // index, not a duplicate append; duplicates would both grow the index
     // unboundedly and inflate `bind_join_vars_from_index`'s `matching.len() == 1`
     // uniqueness check, suppressing a valid join binding. `fact_store.insert` is
@@ -995,9 +996,8 @@ pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner
     inner.fact_store.insert(fact);
 
     // The fact store just changed. Clear the predicate result cache so no
-    // subsequent lookup in the SAME query returns a stale verdict — the most
-    // important trigger is mid-query compute auto-ingestion (an external/
-    // arithmetic result asserted here that a downstream rule then chains on).
+    // subsequent lookup in the SAME query returns a stale verdict — forward
+    // chaining can insert a premise that changes a downstream derivation.
     // Structural invariant at the mutation point, not call-site discipline.
     // CLEARS entries but KEEPS the cache enabled (preserves cross-depth
     // tabling); cycle-cutting is a separate `visited` set, so this is
@@ -1006,7 +1006,7 @@ pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner
     clear_typed_pred_cache(inner);
     // Same reasoning one level up: the saturated extensions are a claim about the fact
     // store, which just changed. Structural invariant at the mutation point — this is
-    // the site that covers the mid-query compute auto-assert and forward chaining.
+    // the site that covers forward chaining and direct assertion.
     invalidate_materialization(inner);
 
     // Check integrity constraints (permissive default: warn, don't reject;

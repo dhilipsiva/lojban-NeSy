@@ -131,48 +131,52 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ---
 
-## Compute / fact lifecycle
+## Proof provenance / compute assurance
 
-- **Auto-ingested compute facts bypass the fact registry.** An arithmetic/backend
-  `true` auto-asserted mid-query (`assert_typed_fact`) writes only the typed fact
-  store: no `FactRecord`, no fact id — invisible to `:facts`, not retractable, and
-  dropped by any rebuild (retraction, failed-assert rollback, and trap replay all
-  rebuild from the registry). README now DISCLOSES both halves (the ghost-fact lifecycle and the outage-cache
-  read-back), so this is no longer an undocumented surprise — but the DECISION is still
-  unmade, and the store-shadowing policy question in `nibli-reason/src/compute.rs` still
-  points here. Decide the lifecycle: give ingested
-  facts registry records (listable, retractable, replay-safe), or codify the
-  current outage-cache semantics as the contract (dispatch-first on every query;
-  the stored fact is consulted only when dispatch errors) and say so in
-  GUARANTEES.md.
-
-- **Track fact origin so traces cannot call derived/cache facts “asserted.”**
+- **Track fact origin so traces cannot call derived facts “asserted.”**
   `trace_predicate_provenance_typed` treats any exact `fact_store` hit as
   `ProofRule::Asserted` (`nibli-reason/src/reasoning.rs`:2724-2735), but that same store
-  receives forward-derived facts (`nibli-reason/src/rules.rs`:985-1098) and compute
-  auto-ingestion. Neither carries the user `FactRecord` id/label/source. This can turn a
-  derived or trusted-oracle premise into a displayed `[given]`, defeating the proof's
-  trust-boundary story. Introduce explicit origin metadata (user assertion id, rule id,
-  compute request/response provenance, presupposition, or other internal source), retain
-  it through equivalence and rebuild, and render origins honestly. **Exit:** tests force
-  the same ground fact through each origin and require distinct serialized/WIT proof
-  steps; duplicate user assertions remain separately citable; retraction/reopen retains
+  also receives forward-derived facts (`nibli-reason/src/rules.rs`:985-1098), which carry
+  no user `FactRecord` id/label/source. This can turn a rule-derived premise into a
+  displayed `[given]`. Introduce explicit origin metadata (user assertion id, rule id,
+  presupposition, or other internal source), retain it through equivalence and rebuild,
+  and render origins honestly. **Exit:** tests force the same ground fact through user
+  assertion and forward derivation and require distinct serialized/WIT proof steps;
+  duplicate user assertions remain separately citable; retraction/reopen retains
   provenance; Chapters 10, 11, 16 and Appendices C/E recapture real output.
 
-- **Define a high-assurance compute admission policy.** Today a backend `true` crosses a
-  plaintext JSONL/TCP seam and is inserted as a premise. The current disclosure is honest,
+- **Define a high-assurance compute admission policy.** Today a backend reply crosses a
+  plaintext JSONL/TCP seam and is accepted as trusted evidence for the current
+  `ComputeCheck`. The proof-local lifecycle prevents it from becoming a stored premise,
   but there is no authenticated request/response binding, backend/schema version,
-  freshness/expiry/revocation policy, or durable provenance. Decide whether v0.1 remains
+  freshness/expiry/revocation policy, or auditable response provenance. Decide whether v0.1 remains
   explicitly low-assurance or add an opt-in policy that verifies identity/integrity and
   records the exact request, response, backend version, timestamp/nonce, and admission
-  decision before assertion. **Exit:** tampered, replayed, stale, mismatched, unavailable,
+  decision before accepting the result. **Exit:** tampered, replayed, stale, mismatched, unavailable,
   and revoked responses have fail-closed tests; proof/export surfaces identify oracle
-  premises; protocol and host docs state the residual TCB. Ripple: Chapters 2, 16, 21 and
+  checks; protocol and host docs state the residual TCB. Ripple: Chapters 2, 16, 21 and
   Appendices C/E/H.
 
 ---
 
 ## Reasoning / evaluation
+
+- **Make numeric comparisons in rules compositional or reject the ambiguous
+  syntax.** `greater` / `less` / `num_equal` remain ordinary `Predicate` nodes
+  in the IR; query evaluation recognizes their event-decomposed numeric shape
+  operationally in `try_evaluate_numeric_group`, but rule compilation lowers
+  the same atoms to plain `StoredFact` templates. A positive numeric guard is
+  therefore inert, a negated guard can overfire under NAF because the stored
+  extension is empty, and a numeric comparison in a rule head is shadowed by
+  query-time evaluation. The new `ComputeNode` assertion guard cannot cover
+  this without also banning legitimate nonnumeric relational uses such as
+  `greater(Alis, Bob)`. Choose a typed rule-atom representation with bound-value
+  numeric dispatch and four-valued/proof propagation, or define a conservative
+  assertion-time sort rule that rejects only potentially operational comparison
+  atoms. **Exit:** surface and raw-IR tests cover positive/negated antecedents and
+  heads, numeric and nonnumeric bindings, non-finite values, materialisation
+  refusal, stratification, proof children, and external-oracle differentials;
+  accepted syntax can never compile to a store lookup whose query twin computes.
 
 - **Materialisation: the trace story (C2).** Proof-traced queries keep the
   backward-chaining path (`positive_lookup` lowered for their duration) because a
@@ -206,7 +210,7 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   configuration/corpus/engine versions and stable evidence ids sufficient for an
   independent checker. **Exit:** round-trip and independent-validation tests cover TRUE,
   closed-world FALSE, arithmetic FALSE, every UNKNOWN reason, every resource kind, NAF,
-  equality, duplicate assertions, compute premises, and replay; WIT/protocol/host/UI and
+  equality, duplicate assertions, proof-local compute evidence, and replay; WIT/protocol/host/UI and
   Appendix C evolve together.
 
 - **Use structural proof-memo keys and checked proof indices.** The provenance tracer

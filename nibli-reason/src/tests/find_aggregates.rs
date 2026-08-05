@@ -319,8 +319,8 @@ fn test_arg_index_populated() {
 
 #[test]
 fn arg_index_dedups_reingested_fact() {
-    // Re-ingesting an Eq-identical ground fact (e.g. compute auto-assert firing
-    // on every query) must NOT append a duplicate to the arg_position_index leaf.
+    // Re-ingesting an Eq-identical ground fact (for example, duplicate
+    // assertion support) must NOT append a duplicate to the arg_position_index leaf.
     // Duplicates would grow the index unboundedly AND inflate
     // bind_join_vars_from_index's `matching.len() == 1` uniqueness check,
     // suppressing a valid join binding. The store (a HashSet) already dedups; the

@@ -16,10 +16,11 @@ Every candidate must clear a four-gate, fail-fast, local firewall:
 2. `nibli_semantics::compile_from_ast` — semantics and arity.
 3. The render round-trip gate — the canonical `nibli_kr::render` re-spelling
    must recompile to the same `LogicBuffer` (pure Rust, native and WASM).
-4. The KB-assertability gate — query-only `exactly N` / `no` formulas in
-   asserted position are rejected instead of being presented as persistent
-   cardinality constraints. Opaque `fact { ... }` / `event { ... }` content
-   remains quoted. If an exact source claim cannot be represented by explicit,
+4. The KB-assertability gate — query-only `exactly N` / `no` formulas and
+   executable `product` / `sum` / `quotient` atoms in asserted position are
+   rejected instead of being presented as persistent constraints, facts, or
+   rule literals. Opaque `fact { ... }` / `event { ... }` content remains
+   quoted. If an exact source claim cannot be represented by explicit,
    source-supported ordinary facts, it stays an explicit unsupported failure;
    it is never silently omitted, weakened, or fabricated around.
 

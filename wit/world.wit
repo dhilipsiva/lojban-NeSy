@@ -276,7 +276,8 @@ interface logic-types {
         /// a consumer need not recompute it from the steps.
         naf-dependent: bool,
         /// True if the verdict is a CLOSED-WORLD FALSE: not derivable from the KB
-        /// (rather than a numeric/arithmetic FALSE that was genuinely decided). The
+        /// (rather than a compute-decided FALSE from local arithmetic or a trusted
+        /// external backend). The
         /// dual of `naf-dependent` — under open-world semantics it would be Unknown.
         cwa-false: bool,
     }
@@ -320,6 +321,12 @@ interface logic-types {
 /// The reasoning engine calls this interface when it encounters a predicate
 /// registered for compute dispatch (e.g., `exponential`, `logarithm`). The
 /// host connects to an external TCP backend or evaluates built-in arithmetic.
+/// Replies are evidence for the current query only: executable compute atoms
+/// are rejected at assertion ingress, and the guest never turns replies into KB
+/// facts, registry rows, or cross-query outage-cache entries. The guest may
+/// memoize an identical request only for the duration of one query so its proof
+/// cannot disagree with its verdict. An error therefore remains
+/// `backend-unavailable` even after an earlier query succeeded.
 ///
 /// Supports single evaluation, batch evaluation (amortises WASM boundary
 /// crossings and TCP round trips), and membership queries (for ∀/∃ over
@@ -376,9 +383,10 @@ interface engine {
         /// asserted root, in root order: the id for later retraction, the
         /// root's compiled buffer so a persisting host can store the FACT
         /// itself (recompile-free replay via `assert-buffer-with-id`).
-        /// A count-node in asserted position (outside opaque quoted content)
-        /// is rejected before a fact id is allocated; this API does not install
-        /// cardinality constraints.
+        /// A count-node or executable compute-node in asserted position
+        /// (outside opaque quoted content) is rejected before a fact id is
+        /// allocated; this API does not install cardinality constraints or
+        /// computed premises.
         assert-text: func(input: string) -> result<list<tuple<fact-id, logic-buffer>>, nibli-error>;
         /// Query whether KR text is entailed.
         query-text: func(input: string) -> result<query-result, nibli-error>;
@@ -396,6 +404,8 @@ interface engine {
         /// Register a predicate name for external computation dispatch.
         register-compute-predicate: func(name: string);
         /// Assert a ground fact directly into the KB (bypasses text parsing).
+        /// A relation already registered for compute is marked and rejected as
+        /// query-only rather than stored as an ordinary shadow fact.
         assert-fact: func(relation: string, args: list<logical-term>) -> result<fact-id, nibli-error>;
         /// Assert a ground fact directly with a CALLER-CHOSEN fact id (for
         /// persistent restart-replay; see `assert-buffer-with-id`).
@@ -403,9 +413,9 @@ interface engine {
         /// Assert an already-compiled logic buffer under a CALLER-CHOSEN fact
         /// id — the recompile-free replay primitive for hosts that persist the
         /// per-root buffers `assert-text` returns. `label` is the fact's
-        /// display label (the original source text). A count-node in asserted
-        /// position fails closed, including during legacy-row replay; quoted
-        /// opaque-abstraction content remains inert.
+        /// display label (the original source text). A count-node or executable
+        /// compute-node in asserted position fails closed, including during
+        /// legacy-row replay; quoted opaque-abstraction content remains inert.
         assert-buffer-with-id: func(buffer: logic-buffer, label: string, id: fact-id) -> result<_, nibli-error>;
         /// Retract a previously asserted fact by its ID.
         retract-fact: func(id: fact-id) -> result<_, nibli-error>;

@@ -91,16 +91,25 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   `rel_tol 1e-9, abs_tol 0` — `0.3 = 0.1 + 0.2` is TRUE. The comparison
   predicate `num_equal` is exact `==`. Non-finite operands yield
   `UNKNOWN (non-finite)`.
-- **Trust boundary (disclosed):** a backend `true` reply is **auto-asserted as
-  a ground fact mid-query** which downstream rules chain on. The backend is
-  part of the trusted computing base — a plaintext, unauthenticated peer; run
-  it on localhost or a segment you control. Auto-asserted compute facts are
-  non-durable — never journaled or replayed, recomputed on demand, and they do
-  not survive a restart (the persistent engine's typed mirror is cleared and
-  rebuilt from the fact registry on open).
+- **Trust boundary (disclosed):** an external reply is trusted evidence for the
+  current `ComputeCheck`. The backend is part of the trusted computing base for
+  that proof step — a plaintext, unauthenticated peer; run it on localhost or a
+  segment you control.
+- **Proof-local lifecycle:** built-in and external results are never inserted
+  into the typed fact store or assertion registry. They receive no fact id, do
+  not appear in `:facts`, cannot be retracted, never change the quantifier
+  domain, are not persisted or journaled, and trigger no forward chaining.
+  Compute atoms are query-only: executable `ComputeNode`s in assertions or any
+  rule position fail before id allocation; opaque abstraction bodies remain
+  quoted. Each top-level query recomputes or redispatches. Repeated identical
+  external checks may share a transient within-query memo to keep the verdict
+  and trace consistent; the memo never survives into another query. Compiled
+  KR and raw flat `ComputeNode` buffers follow the same rule.
 - **No backend configured?** A registered external predicate answers
   `UNKNOWN (backend-unavailable)` — an outage is never a derived falsehood
-  (pinned by the `smoke-host-backend-unavailable` gate).
+  (pinned by the `smoke-host-backend-unavailable` gate). The result remains
+  `UNKNOWN` after an earlier success and despite any matching ordinary fact;
+  there is no compute-result outage cache or fact-store fallback.
 - **Opaque generated argument?** Internal `Skolem`/`SkolemFn` identity has no
   lossless representation in this string-only protocol. Dispatch therefore
   fails closed as `UNKNOWN (backend-unavailable)` before the host callback runs.

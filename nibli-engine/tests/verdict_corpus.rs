@@ -110,22 +110,15 @@ fn verdict_corpus_true_false_breadth() {
 }
 
 #[test]
-fn compute_conjunct_ingestion_drop_is_verdict_neutral() {
-    // Claim-3 hazard probe (Stage 2c). The merged evaluator short-circuits an
-    // And on a definitively-False left conjunct, so it no longer evaluates (and
-    // thus no longer AUTO-INGESTS) a compute-right conjunct on the BARE path
-    // (`query_holds`). This must not flip any later verdict: a compute predicate
-    // is RE-DISPATCHED (recomputed) on every direct query, so it is never
-    // reachable ONLY via the dropped store ingestion. The single theoretical
-    // flip vector — a universal rule keyed on the compute relation, whose
-    // condition check reads the store WITHOUT recomputing — is not expressible
-    // through the surface compiler (compute relations are not rule-compilable
-    // conditions), which is itself the neutrality evidence.
+fn compute_conjunct_short_circuit_is_verdict_neutral() {
+    // The merged evaluator short-circuits an And on a definitively-False left
+    // conjunct, so it does not evaluate the compute-right conjunct. This cannot
+    // affect later queries: compute results are query-local and every direct
+    // query recomputes.
     //
     // Demonstrated on BOTH paths: (A) `False ∧ compute` is False (the
-    // conjunction), and (B) a subsequent DIRECT compute query is still True
-    // (recompute) — regardless of whether (A) ingested the fact. `mlatu(rex)` is
-    // unasserted, so the left conjunct is definitively False.
+    // conjunction), and (B) a subsequent DIRECT compute query is still True.
+    // `mlatu(rex)` is unasserted, so the left conjunct is definitively False.
     let engine = engine_with_facts(&[]);
     let conj = "cat(Rex) & product(6, 2, 3).";
     let a_bare = engine.query_holds(conj).unwrap();
@@ -142,20 +135,18 @@ fn compute_conjunct_ingestion_drop_is_verdict_neutral() {
     let (b_proof, _t2, _j2) = engine.query_text_with_proof("product(6, 2, 3).").unwrap();
     assert!(
         b_bare.is_true(),
-        "compute recomputes True after the dropped ingestion (bare), got {b_bare:?}"
+        "compute recomputes True after the short circuit (bare), got {b_bare:?}"
     );
     assert!(
         b_proof.is_true(),
-        "compute recomputes True after the dropped ingestion (proof), got {b_proof:?}"
+        "compute recomputes True after the short circuit (proof), got {b_proof:?}"
     );
 }
 
 #[test]
 fn verdict_corpus_compute_requery_stable() {
-    // A surface arithmetic query that succeeds auto-ingests its compute fact; a
-    // re-query must return the SAME verdict on both paths whether or not the fact
-    // was ingested (recompute is free). Guards that the merged evaluator's compute
-    // handling stays verdict-stable across repeated queries.
+    // A surface arithmetic query is pure and recomputes on each evaluation. Its
+    // verdict must stay identical on bare and proof paths across repeated queries.
     let engine = engine_with_facts(&[]);
     for _ in 0..3 {
         let bare = engine.query_holds("product(6, 2, 3).").unwrap();

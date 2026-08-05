@@ -518,22 +518,20 @@ fn test_compute_backend_failure_is_unknown_not_false() {
 }
 
 #[test]
-fn test_cached_compute_result_survives_backend_outage() {
-    // A prior SUCCESSFUL computation auto-asserts its fact; that result must keep
-    // answering TRUE even after the backend starts failing — only genuinely
-    // undetermined compute predicates degrade to Unknown.
+fn test_prior_compute_success_does_not_mask_backend_outage() {
+    // Compute evidence is local to the derivation that obtained it. A prior
+    // success must not become an unversioned, indefinitely fresh axiom when the
+    // backend later fails.
     let kb = new_kb();
     kb.set_compute_dispatch(ok_eval, ok_batch);
-    assert!(
-        query(&kb, tenfa_query()),
-        "working backend → TRUE (auto-asserted into the KB)"
-    );
+    assert!(query(&kb, tenfa_query()), "working backend → TRUE");
     // Backend goes away.
     kb.set_compute_dispatch(failing_eval, failing_batch);
     let r = query_result(&kb, tenfa_query());
-    assert!(
-        matches!(r, QueryResult::True),
-        "the auto-asserted prior result survives the outage, got {r:?}"
+    assert_eq!(
+        r,
+        QueryResult::Unknown(UnknownReason::BackendUnavailable),
+        "a prior success must not turn an outage into TRUE"
     );
 }
 

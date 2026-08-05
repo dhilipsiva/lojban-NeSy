@@ -783,10 +783,23 @@ fn malformed_and_unknown_abstraction_markers_fail_closed() {
         _ => unreachable!("selected a Predicate marker"),
     };
     compute_marker.nodes[marker_index] = LogicNode::ComputeNode((relation, args));
-    let compute_error = new_kb()
-        .assert_fact_inner(compute_marker, "compute marker".to_string())
-        .expect_err("an internal marker must never be a ComputeNode");
-    assert!(compute_error.contains("never ComputeNode"));
+    let kb = new_kb();
+    let assertion_error = kb
+        .assert_fact_inner(compute_marker.clone(), "compute marker".to_string())
+        .expect_err("an internal marker must never be asserted as a ComputeNode");
+    assert!(
+        assertion_error.contains("never ComputeNode"),
+        "marker validation must run before treating anything as opaque: {assertion_error}"
+    );
+    assert_eq!(
+        kb.next_fact_id().unwrap(),
+        0,
+        "malformed marker rejection must precede id allocation"
+    );
+    let query_error = kb
+        .query_entailment_inner(compute_marker)
+        .expect_err("an internal marker must never be queried as a ComputeNode");
+    assert!(query_error.contains("never ComputeNode"));
 }
 
 #[test]

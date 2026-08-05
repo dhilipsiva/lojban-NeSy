@@ -373,6 +373,230 @@ fn count_content_inside_an_opaque_abstraction_does_not_join_the_outer_domain() {
 // ─── Compute builtin arithmetic tests ────────────────────────
 
 #[test]
+fn raw_compute_assertions_reject_in_fact_and_every_rule_position() {
+    let direct = make_compute_query("product", 6.0, 2.0, 3.0);
+
+    let antecedent = {
+        let mut nodes = Vec::new();
+        let compute = compute(
+            &mut nodes,
+            "greater",
+            vec![
+                LogicalTerm::Variable("x".to_string()),
+                LogicalTerm::Number(0.0),
+            ],
+        );
+        let head = pred(
+            &mut nodes,
+            "positive",
+            vec![LogicalTerm::Variable("x".to_string())],
+        );
+        let not_compute = not(&mut nodes, compute);
+        let implication = or(&mut nodes, not_compute, head);
+        let root = forall(&mut nodes, "x", implication);
+        LogicBuffer {
+            nodes,
+            roots: vec![root],
+        }
+    };
+
+    let naf_condition = {
+        let mut nodes = Vec::new();
+        let candidate = pred(
+            &mut nodes,
+            "candidate",
+            vec![LogicalTerm::Variable("x".to_string())],
+        );
+        let compute = compute(
+            &mut nodes,
+            "greater",
+            vec![
+                LogicalTerm::Variable("x".to_string()),
+                LogicalTerm::Number(0.0),
+            ],
+        );
+        let not_compute = not(&mut nodes, compute);
+        let rule_body = and(&mut nodes, candidate, not_compute);
+        let head = pred(
+            &mut nodes,
+            "eligible",
+            vec![LogicalTerm::Variable("x".to_string())],
+        );
+        let not_rule_body = not(&mut nodes, rule_body);
+        let implication = or(&mut nodes, not_rule_body, head);
+        let root = forall(&mut nodes, "x", implication);
+        LogicBuffer {
+            nodes,
+            roots: vec![root],
+        }
+    };
+
+    let rule_head = {
+        let mut nodes = Vec::new();
+        let antecedent = pred(
+            &mut nodes,
+            "candidate",
+            vec![LogicalTerm::Variable("x".to_string())],
+        );
+        let compute = compute(
+            &mut nodes,
+            "greater",
+            vec![
+                LogicalTerm::Variable("x".to_string()),
+                LogicalTerm::Number(0.0),
+            ],
+        );
+        let not_antecedent = not(&mut nodes, antecedent);
+        let implication = or(&mut nodes, not_antecedent, compute);
+        let root = forall(&mut nodes, "x", implication);
+        LogicBuffer {
+            nodes,
+            roots: vec![root],
+        }
+    };
+
+    for (position, buffer) in [
+        ("direct fact", direct.clone()),
+        ("rule antecedent", antecedent),
+        ("rule NAF condition", naf_condition),
+        ("rule head", rule_head),
+    ] {
+        let kb = new_kb();
+        let error = kb
+            .assert_fact_inner(buffer, position.to_string())
+            .unwrap_err();
+        assert!(
+            error.contains("query-only") && error.contains("cannot be asserted"),
+            "{position} must fail with the compute assertion contract: {error}"
+        );
+        assert!(
+            kb.list_facts_inner().unwrap().is_empty(),
+            "{position} rejection must leave no registry record"
+        );
+        assert_eq!(
+            kb.next_fact_id().unwrap(),
+            0,
+            "{position} rejection must not consume an assertion id"
+        );
+    }
+
+    let kb = new_kb();
+    let error = kb
+        .assert_fact_with_id(direct, "persisted compute".to_string(), 41)
+        .expect_err("preassigned/replay ComputeNode must fail closed");
+    assert!(error.contains("query-only"), "{error}");
+    assert_eq!(
+        kb.next_fact_id().unwrap(),
+        0,
+        "a rejected preassigned id must not advance the allocator"
+    );
+    let id = assert_id(&kb, make_assertion("alis", "gerku"), "ordinary");
+    assert_eq!(id, 0, "the first real assertion retains the first id");
+}
+
+#[test]
+fn asserted_compute_classifier_respects_roots_opacity_and_cycles() {
+    let nested = LogicBuffer {
+        nodes: vec![
+            LogicNode::ComputeNode(("product".to_string(), Vec::new())),
+            LogicNode::NotNode(0),
+        ],
+        roots: vec![1],
+    };
+    assert!(contains_asserted_compute_node(&nested));
+
+    let unreachable = LogicBuffer {
+        nodes: vec![
+            LogicNode::Predicate((
+                "gerku".to_string(),
+                vec![
+                    LogicalTerm::Constant("alis".to_string()),
+                    LogicalTerm::Unspecified,
+                ],
+            )),
+            LogicNode::ComputeNode(("product".to_string(), Vec::new())),
+        ],
+        roots: vec![0],
+    };
+    assert!(
+        !contains_asserted_compute_node(&unreachable),
+        "a sibling root's shared-arena compute is unreachable and inert"
+    );
+    new_kb()
+        .assert_fact_inner(unreachable, "unreachable compute".to_string())
+        .expect("unreachable arena content must not reject an ordinary assertion");
+
+    // Valid v1 abstraction identity: event-kind + Predicate("p", []).
+    let mut key = vec![0xa0, 0x10];
+    key.extend_from_slice(&1_u64.to_be_bytes());
+    key.push(b'p');
+    key.extend_from_slice(&0_u64.to_be_bytes());
+    let marker_relation = nibli_types::abstraction::encode_v1(&key);
+    let opaque = LogicBuffer {
+        nodes: vec![
+            LogicNode::ComputeNode(("product".to_string(), Vec::new())),
+            LogicNode::Predicate((
+                marker_relation,
+                vec![LogicalTerm::Constant("OpaqueRef".to_string())],
+            )),
+            LogicNode::AndNode((1, 0)),
+        ],
+        roots: vec![2],
+    };
+    assert!(
+        !contains_asserted_compute_node(&opaque),
+        "compute inside opaque abstraction content is quoted, not asserted"
+    );
+    new_kb()
+        .assert_fact_inner(opaque, "opaque compute content".to_string())
+        .expect("quoted compute content must remain assertable");
+
+    // A marker-looking predicate is not an opacity boundary until its full
+    // versioned identity validates. Preflight must reject this malformed marker
+    // before either the ordinary or preassigned-id allocator can advance, even
+    // though the structural classifier alone conservatively treats its right
+    // branch as quoted.
+    let malformed_marker = LogicBuffer {
+        nodes: vec![
+            LogicNode::ComputeNode(("product".to_string(), Vec::new())),
+            LogicNode::Predicate((
+                "__abs_v1_short_00".to_string(),
+                vec![LogicalTerm::Constant("FakeRef".to_string())],
+            )),
+            LogicNode::AndNode((1, 0)),
+        ],
+        roots: vec![2],
+    };
+    assert!(!contains_asserted_compute_node(&malformed_marker));
+    let kb = new_kb();
+    let error = kb
+        .assert_fact_inner(malformed_marker.clone(), "malformed marker".to_string())
+        .expect_err("a malformed marker must fail before it can hide compute");
+    assert!(
+        error.contains("malformed opaque-abstraction marker"),
+        "{error}"
+    );
+    assert_eq!(kb.next_fact_id().unwrap(), 0);
+    let replay_error = kb
+        .assert_fact_with_id(malformed_marker, "malformed replay".to_string(), 41)
+        .expect_err("a malformed replay marker must fail before id advancement");
+    assert!(
+        replay_error.contains("malformed opaque-abstraction marker"),
+        "{replay_error}"
+    );
+    assert_eq!(kb.next_fact_id().unwrap(), 0);
+
+    let cyclic = LogicBuffer {
+        nodes: vec![LogicNode::NotNode(0)],
+        roots: vec![0],
+    };
+    assert!(
+        !contains_asserted_compute_node(&cyclic),
+        "untrusted cyclic buffers must terminate without inventing compute content"
+    );
+}
+
+#[test]
 fn test_compute_pilji_correct() {
     let kb = new_kb();
     let buf = make_compute_query("product", 6.0, 2.0, 3.0);

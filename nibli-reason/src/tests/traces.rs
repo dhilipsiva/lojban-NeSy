@@ -314,9 +314,9 @@ fn flat_forall_and_count_over_compute_batch_stays_non_definitive() {
 }
 
 /// A universal over a COMPUTE body takes the batch fast path
-/// (`batch_evaluate_compute_for_members`): the first FAILING member is the
-/// counterexample. Pin both verdict directions so the fail-detection polarity
-/// cannot silently flip (an all-false body must be FALSE, never a vacuous TRUE).
+/// (`batch_evaluate_compute_for_members`). Public constants are valid external
+/// compute arguments, so an unconfigured backend leaves the universal
+/// unresolved rather than treating every member as a closed-world failure.
 #[test]
 fn forall_over_compute_body_batch_path() {
     let kb = new_kb();
@@ -324,12 +324,14 @@ fn forall_over_compute_body_batch_path() {
     assert_buf(&kb, compile_surface("dog(Adam)."));
     assert_buf(&kb, compile_surface("dog(Bel)."));
 
-    // No entity equals 2 + 3: the universal is FALSE with a counterexample.
+    // The local arithmetic evaluator cannot decide `sum(Adam, 2, 3)` or
+    // `sum(Bel, 2, 3)`. With no external backend, neither member is a proved
+    // counterexample.
     assert_eq!(
         kb.query_entailment_inner(compile_surface("all $da: sum($da, 2, 3)."))
             .unwrap(),
-        QueryResult::False,
-        "a compute body false for every member makes the universal FALSE"
+        QueryResult::Unknown(UnknownReason::BackendUnavailable),
+        "an unavailable external compute backend keeps the universal unresolved"
     );
 }
 

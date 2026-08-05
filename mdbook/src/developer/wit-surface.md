@@ -65,18 +65,22 @@ The engine calls this for predicates registered for compute dispatch; the host
 answers built-in arithmetic locally and forwards the rest over TCP
 ([WASM, host & compute](wasm-host-compute.md)).
 
+Results are query-local. Neither `evaluate` nor `evaluate-batch` creates a KB
+fact, fact id, registry row, or replay entry, and a later backend error is
+`UNKNOWN (backend-unavailable)` even if the same request succeeded earlier.
+
 ### `engine` (export) — the `session` resource
 
 | Method | Contract |
 |--------|----------|
 | `constructor()` | Fresh KB |
-| `assert-text(input)` | → `list<(fact-id, logic-buffer)>` — multi-statement input splits into one independent fact per root (a connective stays one compound fact); each pair carries the compiled buffer so a persisting host can replay without recompiling. A `CountNode` in asserted position fails as query-only before an id is allocated; opaque quoted content remains inert |
+| `assert-text(input)` | → `list<(fact-id, logic-buffer)>` — multi-statement input splits into one independent fact per root (a connective stays one compound fact); each pair carries the compiled buffer so a persisting host can replay without recompiling. `CountNode` and executable `ComputeNode` formulas in asserted position fail as query-only before an id is allocated; opaque quoted content remains inert |
 | `query-text(input)` | → `query-result` |
 | `query-text-with-proof(input)` | → `(query-result, proof-trace)` |
 | `query-find-text(input)` | → witness binding sets |
 | `compile-debug(input)` | Compile without asserting; the host renders the buffer |
-| `assert-fact(relation, args)` / `assert-fact-with-id(…)` | Ground fact, bypassing text parsing; the `-with-id` form takes a caller-chosen id for restart replay |
-| `assert-buffer-with-id(buffer, label, id)` | **The** recompile-free replay primitive (the legacy `assert-text-with-id` was removed at 0.5.0 with store schema v3). Legacy count-assertion rows fail closed rather than regenerating witnesses |
+| `assert-fact(relation, args)` / `assert-fact-with-id(…)` | Ground fact, bypassing text parsing; the `-with-id` form takes a caller-chosen id for restart replay. A relation already registered for compute is rejected as query-only rather than stored as a shadow fact |
+| `assert-buffer-with-id(buffer, label, id)` | **The** recompile-free replay primitive (the legacy `assert-text-with-id` was removed at 0.5.0 with store schema v3). Legacy count or executable-compute assertion rows fail closed rather than regenerating witnesses or premises |
 | `retract-fact(id)` / `list-facts()` / `reset-kb()` | KB management |
 | `register-compute-predicate(name)` | Marks a relation for compute dispatch |
 | `set-strict(bool)` | Off = permissive warn-and-insert; on = arity/integrity violations reject atomically |

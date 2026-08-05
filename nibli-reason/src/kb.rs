@@ -197,6 +197,25 @@ pub(super) fn validate_no_count_assertions(buffer: &LogicBuffer) -> Result<(), S
     Ok(())
 }
 
+/// Reject executable compute formulas at assertion ingress. `ComputeNode` is a
+/// query/proof operator: its result belongs to the current evaluation only and
+/// cannot be represented as a persistent fact or rule literal.
+///
+/// As with exact-count validation, only nodes reachable from `roots` are
+/// assertion content. Opaque abstraction bodies remain quoted content.
+pub(super) fn validate_no_compute_assertions(buffer: &LogicBuffer) -> Result<(), String> {
+    if contains_asserted_compute_node(buffer) {
+        return Err(
+            "compute formulas are query-only and cannot be asserted: executable \
+             ComputeNode content is evaluated only during a query proof and is \
+             not persisted as a fact or rule literal. Assert ordinary facts, \
+             then evaluate the compute formula through a query."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Whether an exact-count formula occurs in an asserted position reachable
 /// from `roots`.
 ///
@@ -206,6 +225,26 @@ pub(super) fn validate_no_count_assertions(buffer: &LogicBuffer) -> Result<(), S
 /// assertions in the surrounding knowledge base. The walk is cycle-safe for
 /// untrusted BYO/persisted buffers.
 pub fn contains_asserted_count_node(buffer: &LogicBuffer) -> bool {
+    contains_reachable_assertion_node(buffer, |node| matches!(node, LogicNode::CountNode(_)))
+}
+
+/// Whether an executable compute formula occurs in an asserted position
+/// reachable from `roots`. Unreachable arena entries and opaque abstraction
+/// bodies are ignored under the same contract as [`contains_asserted_count_node`].
+pub fn contains_asserted_compute_node(buffer: &LogicBuffer) -> bool {
+    contains_reachable_assertion_node(buffer, |node| matches!(node, LogicNode::ComputeNode(_)))
+}
+
+/// Walk the assertion-visible subgraph of a raw [`LogicBuffer`].
+///
+/// `LogicBuffer::split_roots()` retains a shared arena, and abstraction bodies
+/// are quoted in the right branch of `And(marker, body)`, so neither may be
+/// treated as live assertion content. This common walker keeps query-only
+/// operator guards aligned on both boundaries.
+fn contains_reachable_assertion_node(
+    buffer: &LogicBuffer,
+    rejected: impl Fn(&LogicNode) -> bool,
+) -> bool {
     let mut stack = buffer.roots.clone();
     let mut visited = HashSet::new();
 
@@ -216,8 +255,10 @@ pub fn contains_asserted_count_node(buffer: &LogicBuffer) -> bool {
         let Some(node) = buffer.nodes.get(node_id as usize) else {
             continue;
         };
+        if rejected(node) {
+            return true;
+        }
         match node {
-            LogicNode::CountNode(_) => return true,
             LogicNode::AndNode((left, right)) => {
                 if !is_abstraction_marker(buffer, *left) {
                     stack.push(*right);
@@ -235,7 +276,8 @@ pub fn contains_asserted_count_node(buffer: &LogicBuffer) -> bool {
             | LogicNode::PresentNode(inner)
             | LogicNode::FutureNode(inner)
             | LogicNode::ObligatoryNode(inner)
-            | LogicNode::PermittedNode(inner) => stack.push(*inner),
+            | LogicNode::PermittedNode(inner)
+            | LogicNode::CountNode((_, _, inner)) => stack.push(*inner),
             LogicNode::Predicate(_) | LogicNode::ComputeNode(_) => {}
         }
     }
@@ -245,7 +287,16 @@ pub fn contains_asserted_count_node(buffer: &LogicBuffer) -> bool {
 /// Pure structural checks that must run before any assertion-side mutation.
 pub(super) fn validate_assertion_buffer(buffer: &LogicBuffer) -> Result<(), String> {
     validate_single_flavor_paths(buffer)?;
-    validate_no_count_assertions(buffer)
+    validate_no_count_assertions(buffer)?;
+    validate_no_compute_assertions(buffer)
+}
+
+/// Canonicalize/validate internal abstraction markers before using them as
+/// opacity boundaries, then apply every structural assertion guard. Callers run
+/// this before id allocation; `process_assertion` repeats it for replay defense.
+pub(super) fn preflight_assertion_buffer(buffer: &mut LogicBuffer) -> Result<(), String> {
+    canonicalize_abstraction_markers(buffer)?;
+    validate_assertion_buffer(buffer)
 }
 
 /// Relation-name prefix of the opaque abstraction marker emitted by nibli-semantics for
@@ -1228,9 +1279,8 @@ pub(super) struct KnowledgeBaseInner {
     /// Finite numbers asserted into predicate facts (f64 bit patterns) —
     /// quantifier-domain members of the INDIVIDUAL sort, so `every` /
     /// `exactly N` / `some` all range over them (GUARANTEES §Disclosed Sharp
-    /// Edges). Populated by `note_number` from `collect_and_note_constants`
-    /// (the assertion path ONLY — mid-query compute auto-asserts deliberately
-    /// do not note: query evaluation must not grow the quantifier domain).
+    /// Edges). Populated by `note_number` from `collect_and_note_constants`;
+    /// query-time compute evaluation never grows the quantifier domain.
     pub(super) known_numbers: HashSet<u64>,
     pub(super) known_rules: RuleIdentityIndex,
     pub(super) skolem_fn_registry: Vec<SkolemFnEntry>,
@@ -1429,9 +1479,8 @@ pub(super) struct KnowledgeBaseInner {
     /// to disclose their origin, not to exclude them.
     /// Violations collected by `assert_typed_fact` while strict mode rejects
     /// facts; drained by `process_assertion` into its error return. Internal
-    /// insertions (forward chaining, compute auto-assert) also reject loudly
-    /// but have no error channel — their entries are cleared at the next
-    /// assertion boundary.
+    /// forward-chaining insertions also reject loudly but have no user call to
+    /// fail; their entries are cleared at the next assertion boundary.
     pub(super) strict_violations: Vec<String>,
     /// STRATUM-ORDERED MATERIALISATION (see [`crate::materialize`]): the saturated
     /// extensions of the surface relations read under `~`, so a NAF check is a set
@@ -2579,12 +2628,10 @@ pub(super) fn process_assertion(
     inner: &mut KnowledgeBaseInner,
     logic: &mut LogicBuffer,
 ) -> Result<(), String> {
-    validate_assertion_buffer(logic)?;
-    canonicalize_abstraction_markers(logic)?;
+    preflight_assertion_buffer(logic)?;
     inner.begin_skolem_scope();
-    // Strict-mode violations from PREVIOUS work (e.g. a mid-query compute
-    // auto-assert, which has no error channel) must not bleed into THIS
-    // assertion's verdict.
+    // Strict-mode violations from PREVIOUS internal forward chaining (which
+    // has no user error channel) must not bleed into THIS assertion's verdict.
     inner.strict_violations.clear();
     for &root_id in &logic.roots {
         if root_id as usize >= logic.nodes.len() {
@@ -3071,8 +3118,8 @@ pub(super) fn collect_entailment_candidates(
 /// equivalence machinery) — never sound to narrow candidates from. Classifies
 /// the SURFACE relation, so a decomposed role predicate of an arithmetic or
 /// comparison relation (`sum_x1`, `greater_x2`) is refused like its base: its
-/// store extension is populated lazily by compute auto-ingest (or never —
-/// `asserted_numeric_comparison` refuses comparison facts outright), so an
+/// store extension is not a complete account of query-time evaluation
+/// (`asserted_numeric_comparison` also refuses comparison facts outright), so an
 /// empty index entry is not "no witness", and a mandatory anchor built on one
 /// let its empty candidate set win the narrowing pick — turning
 /// `sum(some big, 2, 3).` into a definitive FALSE.

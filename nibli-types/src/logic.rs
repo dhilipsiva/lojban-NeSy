@@ -330,12 +330,14 @@ pub struct ProofTrace {
     #[cfg_attr(feature = "serde", serde(default))]
     pub naf_dependent: bool,
     /// True if the verdict is a CLOSED-WORLD `FALSE`: not derivable from the KB
-    /// (the closed-world assumption), as opposed to a numeric/arithmetic FALSE that
-    /// was genuinely DECIDED (e.g. `5 dunli 3`). A closed-world FALSE is the dual of
+    /// (the closed-world assumption), as opposed to a compute-decided FALSE from
+    /// local arithmetic or a trusted external backend (e.g. `5 dunli 3`). A
+    /// closed-world FALSE is the dual of
     /// `naf_dependent` — under open-world semantics it would be Unknown, not a proof
-    /// of the negation. Computed by nibli-reason from the verdict (it needs to distinguish
-    /// FALSE from Unknown, both of which have a non-holding root), so unlike
-    /// `naf_dependent` it cannot be recomputed from the steps alone.
+    /// of the negation. Computed by nibli-reason from the authoritative FALSE
+    /// verdict plus a structural open-world re-evaluation of the recorded root;
+    /// a failed compute step only removes the caveat when it actually decides
+    /// the enclosing formula or quantifier.
     #[cfg_attr(feature = "serde", serde(default))]
     pub cwa_false: bool,
 }

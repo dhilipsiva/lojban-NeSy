@@ -22,7 +22,8 @@ pub(crate) const NAF_NOTE: &str =
 
 /// The closed-world honesty caveat prepended to a proof whose FALSE verdict rests on
 /// the closed-world assumption ("not derivable from the KB"), as opposed to a
-/// numeric/arithmetic FALSE that was genuinely decided. The dual of [`NAF_NOTE`].
+/// compute-decided FALSE from local arithmetic or a trusted external backend.
+/// The dual of [`NAF_NOTE`].
 pub(crate) const CWA_FALSE_NOTE: &str =
     "[Note: FALSE is closed-world — not derivable from the KB, not a proof of the negation]";
 

@@ -145,8 +145,8 @@ impl NibliEngine {
     /// Enable external compute dispatch to a Python-style JSON-Lines backend at
     /// `addr` (e.g. `"127.0.0.1:5555"`). Wires the native TCP client as this
     /// engine's compute dispatch, so registered external predicates (e.g.
-    /// `tenfa`/`dugri`) are evaluated by the backend; built-in arithmetic
-    /// (pilji/sumji/dilcu) is still resolved in-engine. Opt-in — engines that do
+    /// `tenfa`/`dugri`) are evaluated by the backend; valid numeric built-in
+    /// arithmetic (pilji/sumji/dilcu) is still resolved in-engine. Opt-in — engines that do
     /// not call this leave external compute unregistered (`set_compute_dispatch`
     /// isolation preserved). The address is stored per-thread; in the
     /// multithreaded server each `spawn_blocking` worker connects lazily and
@@ -230,8 +230,8 @@ impl NibliEngine {
     }
 
     /// Validate KR text without asserting — returns Ok if it parses and compiles.
-    /// This is intentionally compile-only: a CountNode is valid query IR even
-    /// though `assert_text` will reject it as query-only.
+    /// This is intentionally compile-only: CountNode and ComputeNode are valid
+    /// query IR even though `assert_text` will reject them as query-only.
     pub fn validate(&self, text: &str) -> Result<(), String> {
         self.compile_text(text)
             .map(|_| ())
@@ -307,10 +307,10 @@ impl NibliEngine {
     /// A bare-`.i` multi-sentence text becomes N INDEPENDENT facts — one per root —
     /// each with its own id, store record, and retraction (connectives compile to a
     /// single root and stay one fact). Returns the minted ids in root order. A
-    /// single-sentence text yields exactly one id. Exact-count formulas in
-    /// asserted position (outside opaque quoted content) are query-only. The
-    /// whole compiled input is preflighted before any independently retractable
-    /// root receives an id or durable row.
+    /// single-sentence text yields exactly one id. Exact-count and executable
+    /// compute formulas in asserted position (outside opaque quoted content) are
+    /// query-only. The whole compiled input is preflighted before any independently
+    /// retractable root receives an id or durable row.
     pub fn assert_text(&self, text: &str) -> Result<Vec<u64>, EngineError> {
         let mut store = self.store.try_borrow_mut().map_err(|_| {
             EngineError::Reasoning("Store error: persistence state is already borrowed".to_string())
@@ -356,7 +356,7 @@ impl NibliEngine {
             return self.core.assert_fact_direct(&relation, &args, None);
         };
 
-        let buffer = nibli_semantics::compile_injected_fact(&relation, &args)?;
+        let buffer = self.core.compile_injected_fact(&relation, &args)?;
         self.persist_and_assert(store, buffer, format!(":assert {relation}"))
     }
 

@@ -200,7 +200,7 @@ fn test_proof_trace_forall() {
 
 /// The `cwa_false` flag (dual of `naf_dependent`) marks an absence-driven FALSE that
 /// rests on the closed-world assumption ("not derivable"). The complementary direction
-/// — a numeric/arithmetic FALSE (`5 = 3`) must NOT be flagged — is pinned end-to-end in
+/// — a compute-decided FALSE (`5 = 3`, or a trusted backend false) must NOT be flagged — is pinned end-to-end in
 /// `nibli-engine`'s `closed_world_false_carries_cwa_note_but_numeric_false_does_not`,
 /// because the flat helper here skips the event/compute decomposition that records the
 /// deciding `ComputeCheck(numeric)` step.

@@ -42,6 +42,10 @@ cardinality-constraint assertion. If the source explicitly enumerates named memb
 only those source-supported ordinary facts. Otherwise preserve the exact/no formula so the \
 deterministic gate reports it as unsupported: NEVER omit, weaken, or fabricate around the claim. \
 An exact count inside opaque \"fact { ... }\" or \"event { ... }\" content is quoted, not an outer-KB assertion.
+The arithmetic predicates \"product\", \"sum\", and \"quotient\" are also query-only compute \
+formulas. Do not emit them as KB facts, rule guards, or rule conclusions; executable compute \
+in asserted output is rejected before it can become a premise. Compute text inside an opaque \
+fact/event abstraction remains quoted content.
 When the body is compound or a variable must be shared across conjuncts, use a binder block:
   every dog $d: animal($d) & runs($d).
   some dog $d: big($d) & goes($d).

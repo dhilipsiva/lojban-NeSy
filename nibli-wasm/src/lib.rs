@@ -51,9 +51,9 @@ impl Session {
 
     /// Parse one KR assertion, compile to FOL, assert. A bare-`.i`
     /// multi-sentence text becomes N INDEPENDENT facts (one per root; connectives
-    /// stay whole); returns the minted fact ids in root order. Exact-count
-    /// formulas in asserted position (outside opaque quoted content) are
-    /// query-only and fail before id allocation.
+    /// stay whole); returns the minted fact ids in root order. Exact-count and
+    /// executable compute formulas in asserted position (outside opaque quoted
+    /// content) are query-only and fail before id allocation.
     pub fn assert_text(&self, text: &str) -> Result<Vec<u64>, JsError> {
         let pairs = self
             .core

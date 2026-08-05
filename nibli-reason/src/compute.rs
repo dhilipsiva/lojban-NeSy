@@ -7,6 +7,58 @@ pub(crate) type EvalFn = fn(&str, &[LogicalTerm]) -> Result<bool, String>;
 /// Batch external compute dispatch function (stored on `KnowledgeBaseInner`).
 pub(crate) type BatchEvalFn = fn(&[ComputeRequest]) -> Vec<Result<bool, String>>;
 
+/// One external compute call, keyed by the exact typed public arguments sent to
+/// the backend. Numeric keys use their IEEE-754 bits so `-0.0`, `0.0`, and NaN
+/// payloads cannot alias accidentally.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ComputeCallKey {
+    relation: String,
+    args: Vec<ComputeArgKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ComputeArgKey {
+    Variable(String),
+    Constant(String),
+    Description(String),
+    Unspecified,
+    Number(u64),
+}
+
+impl ComputeCallKey {
+    fn new(relation: &str, args: &[LogicalTerm]) -> Self {
+        Self {
+            relation: relation.to_string(),
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    LogicalTerm::Variable(v) => ComputeArgKey::Variable(v.clone()),
+                    LogicalTerm::Constant(c) => ComputeArgKey::Constant(c.clone()),
+                    LogicalTerm::Description(d) => ComputeArgKey::Description(d.clone()),
+                    LogicalTerm::Unspecified => ComputeArgKey::Unspecified,
+                    LogicalTerm::Number(n) => ComputeArgKey::Number(n.to_bits()),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The evidence returned for one proof-local compute call.
+#[derive(Clone)]
+pub(super) struct ComputeEvaluation {
+    pub method: &'static str,
+    pub verdict: QueryResult,
+}
+
+/// Fresh per top-level query. This is deliberately not a KB field: it makes a
+/// backend reply stable across iterative-deepening probes, proof reconstruction,
+/// quantifier probe/re-walk, and duplicate roots, while retaining nothing for a
+/// later query.
+#[derive(Default)]
+pub(super) struct QueryComputeMemo {
+    entries: HashMap<ComputeCallKey, ComputeEvaluation>,
+}
+
 pub(super) fn extract_num_value(
     term: &LogicalTerm,
     subs: &HashMap<String, GroundTerm>,
@@ -118,7 +170,7 @@ pub(super) struct NumericGroupVerdict {
     pub verdict: QueryResult,
 }
 
-/// Evaluate an event-decomposed numeric group at its `∃ev` boundary.
+/// Evaluate an event-decomposed numeric/compute group at its `∃ev` boundary.
 ///
 /// Fires only on the EXACT group shape (the strictness is the soundness
 /// guard): the body's And-tree must consist of one head — `ComputeNode(rel,
@@ -131,25 +183,20 @@ pub(super) struct NumericGroupVerdict {
 /// Routing is by RELATION NAME, arithmetic-first (matching the documented
 /// design, nibli-host's host evaluate(), and the batch path): comparison →
 /// built-in arithmetic → (ComputeNode heads only) external backend dispatch.
-/// A backend error (or no backend at all) yields `Unknown(BackendUnavailable)`
-/// — method "backend_unavailable", with NO store fallback on this path (there
-/// is nothing cached to honor: this path never ingests) — so no-backend
-/// configs neither error nor hang.
+/// A backend error (or no backend at all) yields
+/// `Unknown(BackendUnavailable)` — successful results are query-local and are
+/// never reused during an outage.
 ///
-/// A computed `false` is DEFINITIVE, matching the flat ComputeNode/Predicate
-/// arms (the store-shadowing policy question is tracked in TODO.md
-/// §Compute / fact lifecycle).
-///
-/// Deliberately performs NO auto-ingestion: unlike the flat path, whose
-/// ground fact is byte-identical on every query (HashSet-deduped), ingesting
-/// a group would mint a fresh Skolem event per query and accumulate
-/// duplicate facts. Recomputation is free.
+/// A computed `false` is DEFINITIVE, matching the flat ComputeNode arm. Results
+/// never enter the logical fact store: ingesting this decomposed group would
+/// mint a fresh Skolem event per query.
 pub(super) fn try_evaluate_numeric_group(
     inner: &KnowledgeBaseInner,
     buffer: &LogicBuffer,
     exists_var: &str,
     body_id: u32,
     subs: &HashMap<String, GroundTerm>,
+    compute_memo: &mut QueryComputeMemo,
 ) -> Option<NumericGroupVerdict> {
     // Flatten the And-tree; bail on anything that is not And/Predicate/Compute.
     let mut conjuncts: Vec<u32> = Vec::new();
@@ -276,29 +323,27 @@ pub(super) fn try_evaluate_numeric_group(
         });
     }
     if head_is_compute {
-        // External dispatch: every non-Unspecified role must resolve numeric.
-        let resolved = resolve_args_for_dispatch(&collected, subs).ok()?;
-        let dispatchable = resolved
-            .iter()
-            .all(|t| matches!(t, LogicalTerm::Number(_) | LogicalTerm::Unspecified));
-        if dispatchable {
-            return Some(match dispatch_to_backend(inner, rel, &resolved) {
-                Ok(holds) => NumericGroupVerdict {
+        // External dispatch accepts the same public LogicalTerm surface as a
+        // flat ComputeNode: numbers, user constants, opaque descriptions,
+        // Unspecified, and any variable the caller deliberately leaves free.
+        // `resolve_args_for_dispatch` rejects engine-minted identities before
+        // presentation conversion; that refusal is non-definitive rather than
+        // falling through to ordinary event lookup and becoming a CWA FALSE.
+        return Some(match resolve_args_for_dispatch(&collected, subs) {
+            Ok(resolved) => {
+                let evaluation = evaluate_external_compute(inner, rel, &resolved, compute_memo);
+                NumericGroupVerdict {
                     relation: rel.to_string(),
-                    method: "backend",
-                    verdict: bool_verdict(holds),
-                },
-                // Backend unreachable/unregistered: the computation is genuinely
-                // undetermined — surface Unknown(BackendUnavailable), never FALSE.
-                // (This path does not auto-assert, so there is no cached result to
-                // honor; returning here is equivalent to the no-witness fallback.)
-                Err(_) => NumericGroupVerdict {
-                    relation: rel.to_string(),
-                    method: "backend_unavailable",
-                    verdict: QueryResult::Unknown(UnknownReason::BackendUnavailable),
-                },
-            });
-        }
+                    method: evaluation.method,
+                    verdict: evaluation.verdict,
+                }
+            }
+            Err(_) => NumericGroupVerdict {
+                relation: rel.to_string(),
+                method: "backend_unavailable",
+                verdict: QueryResult::Unknown(UnknownReason::BackendUnavailable),
+            },
+        });
     }
     None
 }
@@ -350,12 +395,9 @@ pub(super) fn resolve_args_for_dispatch(
 
 /// Forward a single predicate to the operator-configured external backend.
 ///
-/// On `Ok(true)` the caller (the ComputeNode arm in `reasoning.rs`) auto-asserts the
-/// predicate as a ground fact via `assert_typed_fact`, which downstream rules may then
-/// chain on. The channel is unauthenticated — see the trust-boundary note on
-/// `register_compute_dispatch`. `assert_typed_fact` invalidates the predicate result
-/// cache on every insert, so an auto-asserted fact never leaves a stale verdict cached
-/// within the same query.
+/// The caller trusts a successful reply for the current compute step. It never
+/// inserts or caches the reply in the logical KB. The channel is unauthenticated
+/// — see the trust-boundary note on `KnowledgeBase::set_compute_dispatch`.
 pub(super) fn dispatch_to_backend(
     inner: &KnowledgeBaseInner,
     rel: &str,
@@ -365,6 +407,33 @@ pub(super) fn dispatch_to_backend(
         Some(eval) => eval(rel, args),
         None => Err("Compute backend not registered".to_string()),
     }
+}
+
+/// Evaluate one external call at most once during the current top-level query.
+/// The memo is proof-local evidence, not logical KB state: its owner creates it
+/// at query ingress and drops it before returning to the caller.
+pub(super) fn evaluate_external_compute(
+    inner: &KnowledgeBaseInner,
+    rel: &str,
+    resolved: &[LogicalTerm],
+    memo: &mut QueryComputeMemo,
+) -> ComputeEvaluation {
+    let key = ComputeCallKey::new(rel, resolved);
+    if let Some(evaluation) = memo.entries.get(&key) {
+        return evaluation.clone();
+    }
+    let evaluation = match dispatch_to_backend(inner, rel, resolved) {
+        Ok(holds) => ComputeEvaluation {
+            method: "backend",
+            verdict: bool_verdict(holds),
+        },
+        Err(_) => ComputeEvaluation {
+            method: "backend_unavailable",
+            verdict: QueryResult::Unknown(UnknownReason::BackendUnavailable),
+        },
+    };
+    memo.entries.insert(key, evaluation.clone());
+    evaluation
 }
 
 /// Batch compute request.
@@ -386,37 +455,10 @@ fn dispatch_batch_to_backend(
     }
 }
 
-/// Build a typed StoredFact from resolved LogicalTerm arguments.
-pub(super) fn build_ground_fact_from_resolved(
-    rel: &str,
-    resolved_args: &[LogicalTerm],
-) -> Option<StoredFact> {
-    for arg in resolved_args {
-        if matches!(arg, LogicalTerm::Variable(_)) {
-            return None;
-        }
-    }
-    let args: Vec<GroundTerm> = resolved_args
-        .iter()
-        .map(|arg| match arg {
-            LogicalTerm::Number(n) => GroundTerm::from_f64(*n),
-            LogicalTerm::Constant(c) => GroundTerm::Constant(c.clone()),
-            LogicalTerm::Description(d) => GroundTerm::Description(d.clone()),
-            LogicalTerm::Unspecified => GroundTerm::Unspecified,
-            LogicalTerm::Variable(v) => {
-                unreachable!("Variable '{}' in compute result — should be ground", v)
-            }
-        })
-        .collect();
-    Some(StoredFact::Bare(GroundFact::new(rel, args)))
-}
-
-/// Result of batch compute: boolean results + facts to ingest into the KB.
-/// The caller is responsible for ingesting the deferred facts, which allows
-/// the domain member slice borrow to be released before mutating the KB.
+/// Result of batch compute. Results are query-local and do not mutate the KB.
 pub(super) struct BatchComputeResult {
     pub results: Vec<bool>,
-    pub deferred_facts: Vec<StoredFact>,
+    pub methods: Vec<&'static str>,
 }
 
 pub(super) fn batch_evaluate_compute_for_members(
@@ -427,9 +469,30 @@ pub(super) fn batch_evaluate_compute_for_members(
     members: &[GroundTerm],
     subs: &HashMap<String, GroundTerm>,
 ) -> Option<BatchComputeResult> {
+    let mut compute_memo = QueryComputeMemo::default();
+    batch_evaluate_compute_for_members_with_memo(
+        inner,
+        rel,
+        args,
+        var,
+        members,
+        subs,
+        &mut compute_memo,
+    )
+}
+
+pub(super) fn batch_evaluate_compute_for_members_with_memo(
+    inner: &KnowledgeBaseInner,
+    rel: &str,
+    args: &[LogicalTerm],
+    var: &str,
+    members: &[GroundTerm],
+    subs: &HashMap<String, GroundTerm>,
+    compute_memo: &mut QueryComputeMemo,
+) -> Option<BatchComputeResult> {
     let mut results = vec![false; members.len()];
-    let mut deferred_facts = Vec::new();
-    let mut pending: Vec<(usize, Vec<LogicalTerm>)> = Vec::new();
+    let mut methods = vec!["arithmetic"; members.len()];
+    let mut pending: Vec<(ComputeCallKey, Vec<LogicalTerm>, Vec<usize>)> = Vec::new();
 
     for (i, member) in members.iter().enumerate() {
         let mut s = subs.clone();
@@ -437,51 +500,83 @@ pub(super) fn batch_evaluate_compute_for_members(
 
         if let Some(r) = try_arithmetic_evaluation(rel, args, &s) {
             results[i] = r;
-            if r {
-                let resolved = resolve_args_for_dispatch(args, &s).ok()?;
-                if let Some(fact) = build_ground_fact_from_resolved(rel, &resolved) {
-                    deferred_facts.push(fact);
-                }
-            }
         } else {
             let resolved = resolve_args_for_dispatch(args, &s).ok()?;
-            pending.push((i, resolved));
+            let key = ComputeCallKey::new(rel, &resolved);
+            if let Some(evaluation) = compute_memo.entries.get(&key) {
+                methods[i] = evaluation.method;
+                match evaluation.verdict {
+                    QueryResult::True => results[i] = true,
+                    QueryResult::False => results[i] = false,
+                    _ => return None,
+                }
+            } else if let Some((_, _, member_indices)) = pending
+                .iter_mut()
+                .find(|(pending_key, _, _)| *pending_key == key)
+            {
+                member_indices.push(i);
+            } else {
+                pending.push((key, resolved, vec![i]));
+            }
         }
     }
 
     if pending.is_empty() {
-        return Some(BatchComputeResult {
-            results,
-            deferred_facts,
-        });
+        return Some(BatchComputeResult { results, methods });
     }
 
     let requests: Vec<ComputeRequest> = pending
         .iter()
-        .map(|(_, resolved)| ComputeRequest {
+        .map(|(_, resolved, _)| ComputeRequest {
             relation: rel.to_string(),
             args: resolved.clone(),
         })
         .collect();
     let batch_results = dispatch_batch_to_backend(inner, &requests);
+    // The injectable batch seam must preserve one response per request. A
+    // short response must not leave default `false` entries (a confident
+    // undercount/counterexample), and a long one must not index past `pending`.
+    // Returning None sends the caller through the scalar path, where each
+    // malformed/unavailable request becomes non-definitive.
+    if batch_results.len() != pending.len() {
+        for (key, _, _) in pending {
+            compute_memo.entries.insert(
+                key,
+                ComputeEvaluation {
+                    method: "backend_unavailable",
+                    verdict: QueryResult::Unknown(UnknownReason::BackendUnavailable),
+                },
+            );
+        }
+        return None;
+    }
 
-    for (batch_idx, result) in batch_results.into_iter().enumerate() {
-        let member_idx = pending[batch_idx].0;
-        match result {
-            Ok(r) => {
-                results[member_idx] = r;
-                if r {
-                    if let Some(fact) = build_ground_fact_from_resolved(rel, &pending[batch_idx].1)
-                    {
-                        deferred_facts.push(fact);
-                    }
+    let mut saw_error = false;
+    for ((key, _, member_indices), result) in pending.into_iter().zip(batch_results) {
+        let evaluation = match result {
+            Ok(holds) => ComputeEvaluation {
+                method: "backend",
+                verdict: bool_verdict(holds),
+            },
+            Err(_) => {
+                saw_error = true;
+                ComputeEvaluation {
+                    method: "backend_unavailable",
+                    verdict: QueryResult::Unknown(UnknownReason::BackendUnavailable),
                 }
             }
-            Err(_) => return None,
+        };
+        for member_idx in member_indices {
+            methods[member_idx] = evaluation.method;
+            if let QueryResult::True | QueryResult::False = evaluation.verdict {
+                results[member_idx] = evaluation.verdict.is_true();
+            }
         }
+        compute_memo.entries.insert(key, evaluation);
     }
-    Some(BatchComputeResult {
-        results,
-        deferred_facts,
-    })
+    if saw_error {
+        None
+    } else {
+        Some(BatchComputeResult { results, methods })
+    }
 }

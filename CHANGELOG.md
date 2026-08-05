@@ -15,6 +15,22 @@ here first.
 
 ### Changed
 
+- **Compute results are proof-local, never knowledge-base facts:** built-in and
+  external results decide only the current `ComputeCheck`; they are not inserted
+  into the typed fact store or assertion registry, receive no id, do not appear
+  in fact listings, cannot be retracted, never change the quantifier domain, are
+  not persisted or replayed, and trigger no forward chaining. Executable
+  compute is now query-only: assertions and rules containing a `ComputeNode`
+  fail before id allocation (opaque quoted content remains inert). Each
+  top-level query recomputes or redispatches, with identical compiled-KR and
+  raw-flat behavior; a transient within-query memo keeps repeated oracle checks
+  and their trace consistent but never survives to another query. A backend
+  error uniformly returns `UNKNOWN (backend-unavailable)`, even after an
+  earlier query succeeded or despite a matching ordinary fact. External
+  replies remain trusted evidence, so the backend is still in the TCB for each
+  proof step that uses one. Failed existential/count checks retain their
+  per-member compute evidence, and `cwa_false` is now derived from the enclosing
+  proof structure rather than a global scan for any failed compute step.
 - **Exact-count formulas are query-only:** `exactly N` and `no` remain
   compiler/IR/query/proof features, but assertion, assumption, and
   preassigned/replay entry points now reject a `CountNode` in asserted position before

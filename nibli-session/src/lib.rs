@@ -24,10 +24,11 @@
 //!   compute unregistered) — the [`CoreSession::set_compute_dispatch`]
 //!   passthrough is the seam.
 //!
-//! nibli-formalize's gates intentionally do NOT use this crate: they stop
-//! before compute-marking (the translator never needs `ComputeNode`s), keep
-//! the AST for the render round-trip gate, and carry their own `GateError`
-//! taxonomy (see nibli-formalize/src/gates.rs).
+//! nibli-formalize's gates intentionally do NOT use this crate: they keep the
+//! AST for the render round-trip gate, then mark the default compute predicates
+//! locally so its KB-authoring boundary can reject query-only `ComputeNode`s;
+//! they also carry their own `GateError` taxonomy (see
+//! nibli-formalize/src/gates.rs).
 
 use std::collections::HashSet;
 
@@ -126,8 +127,8 @@ impl CoreSession {
 
     /// Register this session's external compute dispatch (per-instance; see
     /// `nibli_reason::KnowledgeBase::set_compute_dispatch` for the trust
-    /// boundary). Without it, external predicates error; built-in arithmetic
-    /// still resolves in-engine.
+    /// boundary). Without it, external predicates error; valid numeric built-in
+    /// arithmetic still resolves in-engine.
     pub fn set_compute_dispatch(
         &self,
         eval: fn(&str, &[LogicalTerm]) -> Result<bool, String>,
@@ -188,9 +189,9 @@ impl CoreSession {
     /// root's label. Returns one `(id, compiled-sub-buffer)` pair per root so
     /// a persisting caller can store the FACT itself and replay it
     /// recompile-free; callers that only need ids map the pairs down. Reachable
-    /// exact-count formulas in asserted position (outside opaque quoted
-    /// content) are query-only; the whole compiled input is preflighted so a
-    /// later rejected root cannot leave earlier roots live.
+    /// exact-count and executable compute formulas in asserted position
+    /// (outside opaque quoted content) are query-only; the whole compiled input
+    /// is preflighted so a later rejected root cannot leave earlier roots live.
     pub fn assert_text(&self, text: &str) -> Result<Vec<(u64, LogicBuffer)>, NibliError> {
         let buf = self.compile_text(text)?;
         self.kb.validate_assertion(&buf)?;
@@ -206,9 +207,10 @@ impl CoreSession {
     /// parsing, under an optional caller-chosen id (store replay). The label
     /// is `":assert {relation}"`. Event-decomposes to the SAME shape a surface
     /// assertion produces, so the injected fact is matched by surface text
-    /// queries (not just raw-FOL / same-shape direct queries). Identity stays
-    /// flat; arity follows the injected-arity policy (fail-closed) — see
-    /// `nibli_semantics::compile_injected_fact`.
+    /// queries (not just raw-FOL / same-shape direct queries). A registered
+    /// compute relation is marked before assertion and therefore rejected as
+    /// query-only. Identity stays flat; arity follows the injected-arity policy
+    /// (fail-closed) — see `nibli_semantics::compile_injected_fact`.
     pub fn assert_fact_direct(
         &self,
         relation: &str,
@@ -216,7 +218,7 @@ impl CoreSession {
         id: Option<u64>,
     ) -> Result<u64, NibliError> {
         let label = format!(":assert {}", relation);
-        let buf = nibli_semantics::compile_injected_fact(relation, args)?;
+        let buf = self.compile_injected_fact(relation, args)?;
         match id {
             Some(i) => {
                 // The assert is the reasoning stage (buffer already past
@@ -229,6 +231,20 @@ impl CoreSession {
             }
             None => self.kb.assert_fact(buf, label),
         }
+    }
+
+    /// Compile one direct/injected fact through the same compute-marking policy
+    /// as text assertions. A relation registered for compute becomes a
+    /// `ComputeNode`, allowing assertion ingress to reject it as query-only
+    /// instead of silently storing an ordinary fact that compute queries ignore.
+    pub fn compile_injected_fact(
+        &self,
+        relation: &str,
+        args: &[LogicalTerm],
+    ) -> Result<LogicBuffer, NibliError> {
+        let mut buf = nibli_semantics::compile_injected_fact(relation, args)?;
+        nibli_reason::transform_compute_nodes(&mut buf, &self.compute_predicates);
+        Ok(buf)
     }
 
     /// Compile a KR query and run the entailment check.

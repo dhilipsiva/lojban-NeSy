@@ -180,9 +180,18 @@ payload) for every relation name in the set; `nibli_reason::default_compute_pred
 Every first-party embedder runs this immediately after
 compilation. **If you build buffers yourself and want compute dispatch, you must run it too** —
 `assert_fact`/`query_entailment` do not call it internally, and a compute relation left as a
-plain `Predicate` is treated as an ordinary fact predicate. A backend `true` reply is
-auto-asserted as a ground fact — the backend is a trusted axiom source, disclosed in README's
-"What zero-hallucination means here".
+plain `Predicate` is treated as an ordinary fact predicate. A `ComputeNode` result is
+proof-local: built-in evaluation or an external reply decides that node in the current
+derivation but is never inserted into the typed fact store or assertion registry. It has no
+fact id, domain, persistence, replay, retraction, or forward-chaining effect. Executable
+`ComputeNode`s are query-only; assertion ingress rejects them in facts and every rule
+position before allocating an id, while opaque abstraction bodies remain quoted. Each
+top-level query recomputes or redispatches; a transient within-query memo may stabilize
+repeated identical external checks but never survives to the next query. A backend error is
+always `Unknown(BackendUnavailable)`, even
+after an earlier success or when an ordinary fact has the same tuple. The backend remains a
+trusted evidence source for the current proof step, as disclosed in README's "What
+zero-hallucination means here". Compiled KR and hand-built flat buffers share this contract.
 
 ### What `NotNode` means
 
@@ -221,9 +230,10 @@ fragment filter scans source tokens for exactly this reason). Scope details live
   schema because generated terms now contain structural Skolem ids. That mirror is not
   authoritative: startup erases and rebuilds it from the `LogicBuffer` registry, which is
   what restores rules, domain/equality indexes, source provenance, and retraction state.
-  An older active registry row containing an asserted `CountNode` now aborts
-  replay with its fact id and remains on disk for explicit repair/re-import; it
-  is never silently dropped or reinterpreted as witness generation.
+  An older active registry row containing an asserted `CountNode` or executable
+  `ComputeNode` now aborts replay with its fact id and remains on disk for
+  explicit repair/re-import; it is never silently dropped, reinterpreted as
+  witness generation, or executed as a durable premise.
 - **WIT** ([wit/world.wit](wit/world.wit), package `nibli:engine@0.9.0`) declares the same types
   for the WASM component boundary: kebab-case variant names (`for-all-node` ↔ `ForAllNode`),
   identical declaration order (the component-model discriminant is positional). The
@@ -241,9 +251,12 @@ fragment filter scans source tokens for exactly this reason). Scope details live
 native (`nibli_engine::NibliEngine::compile_debug`) and the WIT session
 (`compile-debug: func(input: string) -> result<logic-buffer, nibli-error>`) — or directly via
 `nibli_semantics::compile_from_ast` (remember `transform_compute_nodes` afterward; the browser
-`Session` does not export a compile-only method). Programmatic
-single facts: `nibli_semantics::compile_injected_fact(relation, args)` — event-decomposes and arity-pads
-exactly like surface text (with the flat-`equals` exception).
+`Session` does not export a compile-only method). For programmatic single facts,
+prefer `CoreSession::assert_fact_direct` or `NibliEngine::assert_fact_direct`:
+they event-decompose and arity-pad like surface text, then apply the live compute
+registry so registered compute is rejected as query-only. The lower-level
+compiler is `nibli_semantics::compile_injected_fact(relation, args)` (with the
+flat-`equals` exception).
 
 **Consume/reason over a buffer** (the BYO-IR surface, `nibli_reason::KnowledgeBase`):
 `assert_fact(buffer, label) -> u64`, `query_entailment(buffer)`,
@@ -251,8 +264,9 @@ exactly like surface text (with the flat-`equals` exception).
 `count_witnesses(buffer)`, `aggregate(buffer, var, op)`, `with_assumptions(&[buffer], f)`
 (hypothetical reasoning on a clone), `retract_fact(id)`, plus
 `set_compute_dispatch(eval, batch_eval)` for wiring a compute backend. `CountNode`
-is accepted by the query methods and rejected by `assert_fact` and
-`with_assumptions`.
+and executable `ComputeNode` formulas are accepted by the query methods and
+rejected by `assert_fact` and `with_assumptions`; opaque abstraction content
+remains quoted.
 
 **The three packaged surfaces**, for integrators who want "does this KB entail that claim"
 without touching the IR:

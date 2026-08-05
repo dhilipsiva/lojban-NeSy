@@ -8,7 +8,7 @@ Nibli has **one** front-end language: **nibli KR** (predicate-call surface: `dog
 
 ## Soundness (relative to what you asserted)
 
-The engine never returns **TRUE** for a formula that does not follow from the asserted facts and compiled rules, **given a correct implementation**. A TRUE answer comes with a formal proof trace. Bugs would be deterministic and testable — not stochastic fabrication.
+The engine never returns **TRUE** for a formula that does not follow from the asserted facts and compiled rules plus any proof-local compute checks evaluated for that query, **given a correct implementation and correct trusted backend replies**. A TRUE answer comes with a formal proof trace. Bugs would be deterministic and testable — not stochastic fabrication.
 
 This is **not** omniscience: change the premises and the verdict can change.
 
@@ -69,16 +69,16 @@ How to read a query result (product README wording):
 
 | Verdict | Meaning |
 |---------|---------|
-| **TRUE** | A proof exists from your premises (facts + rules + trusted backend results). |
+| **TRUE** | A proof exists from your facts and rules plus any trusted compute evidence used by this derivation. |
 | **FALSE** | *Not derivable* from those premises. This is **not** a proof of ¬P. |
 | **UNKNOWN** | The search could not decide (e.g. a cycle, incomplete knowledge, or negation over an undecided sub-goal). |
 | **RESOURCE_EXCEEDED** | A budget ran out before the search finished — `depth`, `fuel`, or `memory`. Not a verdict about the claim: raise the budget and re-run. |
 
 All four are `QueryResult` variants in the engine itself, not host conventions — `RESOURCE_EXCEEDED` carries which limit was hit. Raise them with the `NIBLI_FUEL` / `NIBLI_MEMORY_MB` env vars or the `:fuel` / `:memory` REPL commands; see [GUARANTEES.md](https://github.com/dhilipsiva/nibli/blob/main/GUARANTEES.md).
 
-## Trusted compute backend
+## Trusted proof-local compute
 
-Results from the **external compute backend** (`exponential`, `logarithm`, or predicates you register) are a **trusted oracle**, not a derivation: a `true` reply is auto-asserted mid-query. Built-in arithmetic (`product` / `sum` / `quotient`) is local. Any conclusion that passes through the backend is only as sound as that oracle.
+Results from the **external compute backend** (`exponential`, `logarithm`, or predicates you register) are **trusted evidence for the current `ComputeCheck`**, not stored premises. Built-in arithmetic (`product` / `sum` / `quotient`) follows the same proof-local lifecycle: no compute result enters the fact store or registry, receives an id, changes the domain, survives replay, or triggers forward chaining. Compute atoms are query-only; assertions and rules containing executable compute are rejected before an id is allocated, while quoted abstraction content remains opaque. Each top-level query recomputes or redispatches; repeated identical external checks may share a transient within-query memo only to keep the verdict and proof consistent. A backend error is always `UNKNOWN (backend-unavailable)`, even after an earlier successful query or when an ordinary fact has the same tuple. Any conclusion that uses a successful external check is only as sound as that oracle.
 
 ## Where the full story lives
 

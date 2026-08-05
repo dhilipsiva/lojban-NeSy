@@ -14,18 +14,18 @@ Nibli is a deterministic theorem prover compiled to WebAssembly (WASI P2). It co
 
 ## What "zero-hallucination" means here
 
-Nibli derives every conclusion **from the facts and rules you assert**, under two explicit assumptions:
+Nibli derives every conclusion **from the facts and rules you assert, plus any proof-local compute checks evaluated for that query**, under two explicit assumptions:
 
 - **Closed world** — a fact you did not assert is taken to be *false*, not unknown.
 - **Closed domain** — quantifiers range only over the entities the knowledge base knows.
 
-Results from the **external compute backend** (`exponential`, `logarithm`, or any predicate you register) are a **trusted oracle**, not a derivation: a `true` reply is auto-asserted into the knowledge base as a ground fact mid-query, and downstream rules chain on it as if you had asserted it yourself. The backend is part of the *trusted computing base* — an axiom source — so any conclusion that passes through it is only as sound as that oracle. (Built-in arithmetic, `product`/`sum`/`quotient`, is computed locally — see [Compute Backend](#compute-backend).) So a verdict reads as:
+Results from the **external compute backend** (`exponential`, `logarithm`, or any predicate you register) are **trusted proof evidence**, not a derivation or a stored premise: a reply decides the current `ComputeCheck` only. The backend is part of the *trusted computing base* for that proof step, so any conclusion that depends on it is only as sound as that oracle. (Valid numeric `product`/`sum`/`quotient` calls are computed locally first; nonnumeric calls require the registered external path — see [Compute Backend](#compute-backend).) So a verdict reads as:
 
-- **`TRUE`** — a proof exists from those premises (your facts + rules + trusted backend results).
+- **`TRUE`** — a proof exists from your facts and rules plus any trusted compute evidence used by this derivation.
 - **`FALSE`** — *not derivable* from those premises. This is **not** a proof of ¬P.
 - **`UNKNOWN`** — the search could not decide: a cycle, incomplete knowledge, or a negation over an undecided sub-goal.
 
-The guarantee is **soundness relative to what you asserted**, not omniscience — change the premises and the verdict can change. What Nibli rules out is *fabrication*: it never invents a fact, a rule, or a proof step.
+The guarantee is **soundness relative to what you asserted and any trusted compute replies the proof used**, not omniscience — change those inputs and the verdict can change. What Nibli rules out is *fabrication*: it never invents a fact, a rule, or a proof step.
 
 ---
 
@@ -302,16 +302,16 @@ Count _v0 = 2:
 
 [English] Exactly 2 things are such that X is a dog and X is big.
 
-~/nibli> :assert exponential 8 2 3
+~/nibli> :assert cat Mimi
 [Skolem] 1 variable(s) → _ev0 ↦ sk_8
-[Fact #3] exponential(8, 2, 3) asserted.
+[Fact #3] cat(Mimi) asserted.
 
 ~/nibli> :facts
 [Facts] 4 active fact(s):
   #0: big(some dog). (1 root)
   #1: animal(every dog). (1 root)
   #2: dog(Adam). (1 root)
-  #3: :assert exponential (1 root)
+  #3: :assert cat (1 root)
 
 ~/nibli> :retract 1
 [Retract] Fact #1 retracted. KB rebuilt.
@@ -352,7 +352,7 @@ rejected as scope-ambiguous; separate period-terminated statements are independe
 | `? <statement>` | Query with proof trace |
 | `?? <statement>` | Witness extraction (find all satisfying bindings, `$x` variables) |
 | `:debug <statement>` | Show compiled FOL logic |
-| `:assert <rel> <args...>` | Assert a fact directly (bypasses text parsing) |
+| `:assert <rel> <args...>` | Assert a fact directly (bypasses text parsing; a registered compute relation is rejected as query-only) |
 | `:retract <id>` | Retract a fact by ID and rebuild the KB |
 | `:facts` | List all active facts |
 | `:load <filepath>` | Batch-load a `.nibli` file |
@@ -428,25 +428,24 @@ just run-with-backend
 
 # In the REPL:
 :compute exponential                # Register exponential for external dispatch
-exponential(8, 2, 3).               # Assert: 8 = 2^3
 ? exponential(8, 2, 3).             # Query: TRUE (computed by Python)
 ```
 
-**Built-in arithmetic** (always local, no backend needed): `product` (multiply), `sum` (add), `quotient` (divide).
+**Built-in arithmetic** (valid numeric calls are local, no backend needed): `product` (multiply), `sum` (add), `quotient` (divide). If one of those registered relations receives nonnumeric public terms, local arithmetic is inapplicable and the call follows the external-dispatch contract.
 
 > **One deliberate approximation.** `product`/`sum`/`quotient` check `x1 = x2 ∘ x3` with **tolerant** float equality — `isclose` with relative tolerance `1e-9` (matching Python's `math.isclose`), i.e. `|a − b| ≤ 1e-9 · max(|a|, |b|)`. So `0.3 = 0.1 + 0.2` answers `TRUE` despite IEEE-754 rounding making the sum `0.30000000000000004`. That is a real, bounded approximation on the numeric result — the one place Nibli is not bit-exact. The exact-equality predicate **`num_equal` (`=`) is exact** (`==`, tolerates no rounding); `quotient`'s divide-by-zero check is likewise an exact guard. The single evaluator (`nibli-types/src/arithmetic.rs`) is shared by the in-WASM engine, the `nibli-host` host, and the Python reference backend, so all three agree.
 
-> **Asserted numbers are quantifier-domain members.** A number appearing in anything you assert — a fact or a rule's operands, mirroring how constants are noted — is enumerated like any entity: with `big(5).` asserted, `sum(every big, 2, 3).` is `TRUE` because `5` was **checked** (not vacuously), the arithmetically false `sum(every big, 2, 2).` is `FALSE` with `5` as its counterexample, and `exactly N` / `no` / `some` all agree with the universal. Two deliberate boundaries: a number a *computed* result auto-asserts mid-query does not join the domain (querying never grows the domain), and non-finite values (NaN/±inf — never spellable in nibli KR's digits-only numbers, but injectable via RDF import, `:assert`, or the WIT term API) are skipped fail-closed. See GUARANTEES §Disclosed Sharp Edges for the full contract.
+> **Asserted numbers are quantifier-domain members.** A number appearing in anything you assert — a fact or a rule's operands, mirroring how constants are noted — is enumerated like any entity: with `big(5).` asserted, `sum(every big, 2, 3).` is `TRUE` because `5` was **checked** (not vacuously), the arithmetically false `sum(every big, 2, 2).` is `FALSE` with `5` as its counterexample, and `exactly N` / `no` / `some` all agree with the universal. Query-time compute never changes that domain, and non-finite values (NaN/±inf — never spellable in nibli KR's digits-only numbers, but injectable via RDF import, `:assert`, or the WIT term API) are skipped fail-closed. See GUARANTEES §Disclosed Sharp Edges for the full contract.
 
 **External predicates** (via backend): `exponential`, `logarithm`, and any custom predicates you add to the backend server.
 
-> **Trust boundary.** An external predicate is a **trusted oracle**, not something Nibli proves. When the backend replies `true`, that result is auto-asserted into the knowledge base as a ground fact mid-query, and the reasoner's rules chain on it exactly like a premise you asserted. Nibli never re-derives or checks it — the backend (and whoever operates it) is part of the trusted computing base. A proof that passes through `exponential`/`logarithm` is sound only relative to that oracle.
+> **Trust boundary.** An external predicate is a **trusted oracle**, not something Nibli proves. Its reply decides the current `ComputeCheck`, so the backend (and whoever operates it) is part of the trusted computing base for any proof that uses that step. Nibli does not independently verify the answer; a proof that passes through `exponential`/`logarithm` is sound only relative to that oracle.
 
-> **Computed facts are transient.** The auto-assert above writes the typed fact store *only* — no fact id, no provenance record. A computed fact is therefore invisible to `:facts`, cannot be retracted by id, and is dropped by any rebuild (a retraction, a failed assertion's rollback, a trap replay). **Built-in arithmetic shares this path**: `product`/`sum`/`quotient` involve no oracle and no network, but a `true` result is auto-asserted exactly the same way. The lifecycle is an open decision, not a settled contract — see `TODO.md` §Compute / fact lifecycle.
+> **Compute results are proof-local and query-only.** Built-in and external results are evidence for the current derivation only. They are never inserted into the typed fact store or fact registry, receive no fact id, do not appear in `:facts`, cannot be retracted, never join the quantifier domain, are not persisted or replayed, and trigger no forward chaining. Assertion ingress rejects executable compute atoms—including rule guards and conclusions—before allocating an id; opaque abstraction content remains quoted. Each top-level query recomputes locally or redispatches to the backend. Repeated identical external checks may share only a transient within-query memo so the verdict and proof cannot disagree; normal KR queries and raw `ComputeNode` buffers have the same lifecycle.
 
 Configure with `NIBLI_COMPUTE_ADDR=host:port` or `:backend host:port` in the REPL. Connection is lazy (connects on first dispatch) with auto-reconnect. The browser UI has no TCP, so external predicates resolve only in the `nibli-host` REPL; built-in arithmetic still works everywhere.
 
-If an external predicate's backend is unreachable (or unconfigured), the query returns `UNKNOWN (backend-unavailable)` — never a definitive `FALSE`. A backend the engine cannot consult is genuinely undetermined, not a derived falsehood. The same fail-closed result applies when a call would expose an opaque internal witness to the string-only compute protocol; an equal-looking user constant such as `"sk_0"` remains ordinary data and is forwarded. One qualifier: an outage is not uniformly `UNKNOWN`. If that **exact** tuple was computed successfully earlier in the same session, its auto-asserted fact is still in the store and the query answers `TRUE` from it — outage-cache semantics, tracked alongside the lifecycle decision above. Any other tuple of the same relation still returns `UNKNOWN`.
+If an external predicate's backend is unreachable (or unconfigured), the query returns `UNKNOWN (backend-unavailable)` — never a definitive `FALSE`. This is uniform: an earlier successful call and an ordinary stored fact with the same tuple do not act as an outage cache or bypass dispatch. A backend the engine cannot consult is genuinely undetermined. The same fail-closed result applies when a call would expose an opaque internal witness to the string-only compute protocol; an equal-looking user constant such as `"sk_0"` remains ordinary data and is forwarded.
 
 ---
 
@@ -483,7 +482,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Neo-Davidsonian event semantics:** every predication decomposes into event type + role predicates; compound predicates share event variables
 - **Conjunction introduction:** `And(A, B)` verified recursively with mutual `InDomain` entities (bounded, no exponential blowup)
 - **Numerical comparisons:** `greater` (>), `less` (<), `num_equal` (==) evaluated at query time on `Num` terms
-- **Compute dispatch:** `compute-backend` WIT protocol with `ComputeNode` IR variant; results auto-asserted into KB
+- **Compute dispatch:** `compute-backend` WIT protocol with `ComputeNode` IR variant; results are proof-local and never stored as KB facts
 - **Ground conjunction flattening:** top-level `And` trees flattened before assertion; ground material conditionals auto-registered as zero-variable rules for modus ponens
 - **Equality reasoning:** the `=` identity builtin (compiled relation `equals`) with union-find congruence closure
 - **Stratification enforcement:** predicate dependency graph analysis prevents unsound negative cycles
@@ -501,7 +500,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Failure traces:** `PredicateNotFound`, `RuleAttemptFailed`, `EqualitySubstitution` proof rule variants explain why derivations fail
 - **Argument-position indexing:** `(relation, position, value)` secondary index for efficient witness extraction
 - **Predicate signature validation:** arity checking from PHF dictionary with permissive warnings
-- **Closed-world visibility:** `naf_dependent` (a `na→True` NAF result) and its dual `cwa_false` (a `FALSE` that is closed-world — "not derivable", not a disproof — vs. a numeric FALSE that was decided) flag CWA-dependent conclusions on every proof trace; both render a closed-world caveat
+- **Closed-world visibility:** `naf_dependent` (a `na→True` NAF result) and its dual `cwa_false` (a `FALSE` that is closed-world — "not derivable", not a disproof — vs. a structurally compute-decided FALSE) flag CWA-dependent conclusions on every proof trace; both render a closed-world caveat
 - **Interactive debugging:** `:debug <text>` in the `nibli-host` REPL; `:trace`/`:untrace`/`:traces` in the `nibli` developer REPL (`just run-native`)
 - **WASM fuel limits:** configurable via `NIBLI_FUEL` or `:fuel` REPL command
 - **WASM memory limits:** configurable via `NIBLI_MEMORY_MB` or `:memory` REPL command
