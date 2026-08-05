@@ -128,7 +128,7 @@ impl KnowledgeBase {
         // guard also lives in process_assertion so rebuild replay cannot bypass it.
         validate_single_flavor_paths(&logic)?;
         let mut inner = self.inner.borrow_mut();
-        let id = inner.fresh_fact_id();
+        let id = inner.fresh_fact_id()?;
         inner.current_assertion_id = Some(id);
         let result = process_assertion(&mut inner, &mut logic);
         // ALWAYS clear: a stale id would mis-attribute the NEXT assertion's rules
@@ -172,8 +172,16 @@ impl KnowledgeBase {
         // A persisted/pre-assigned row must fail before advancing the live id counter.
         validate_single_flavor_paths(&logic)?;
         let mut inner = self.inner.borrow_mut();
+        if inner.fact_registry.contains_key(&id) {
+            return Err(format!(
+                "fact id {id} is already registered; assertion ids are semantic Skolem sources and cannot be reused"
+            ));
+        }
         if id >= inner.fact_counter {
-            inner.fact_counter = id + 1;
+            inner.fact_counter = id.checked_add(1).ok_or_else(|| {
+                "fact id u64::MAX cannot be registered because no collision-free successor remains"
+                    .to_string()
+            })?;
         }
         // Attribute any rule compiled during this replay to THIS fact in
         // rule_source_map (otherwise a later retract of a replayed rule-producing
@@ -255,15 +263,11 @@ impl KnowledgeBase {
 
         // Reset derived state (interner too — all interned keys become invalid)
         inner.skolem_counter = 0;
+        inner.skolem_local_counter = 0;
         inner.known_entities.clear();
         inner.known_event_entities.clear();
         inner.known_descriptions.clear();
         inner.known_numbers.clear();
-        // Derived origin metadata must be replayed with its witnesses. If a
-        // retracted description's old name survives here while the Skolem
-        // counter resets, a later real entity reusing that name is wrongly
-        // reported as imported.
-        inner.presupposition_witnesses.clear();
         // The member CACHES must go with the sets they were built from, and the
         // dirty flag must be raised HERE rather than left to replay re-noting:
         // `note_entity`/`note_number` set it only on fresh insertion, so a
@@ -311,9 +315,11 @@ impl KnowledgeBase {
         inner.rebuilding = true;
         let mut replay_errors: Vec<(u64, String)> = Vec::new();
         for (buf, &fid) in buffers.iter_mut().zip(ids.iter()) {
+            inner.current_assertion_id = Some(fid);
             if let Err(e) = process_assertion(inner, buf) {
                 replay_errors.push((fid, e));
             }
+            inner.current_assertion_id = None;
         }
         inner.rebuilding = false;
 
@@ -600,8 +606,8 @@ impl KnowledgeBase {
                 .iter()
                 .filter(|(var, term)| {
                     !var.starts_with("_ev")
-                        && matches!(term, GroundTerm::Constant(name)
-                            if inner.presupposition_witnesses.contains(name))
+                        && witness_origin(term)
+                            == nibli_types::logic::WitnessOrigin::ExistentialImport
                 })
                 .count()
         };
@@ -615,14 +621,7 @@ impl KnowledgeBase {
                 bindings
                     .into_iter()
                     .map(|(var, gt)| {
-                        let origin = match &gt {
-                            GroundTerm::Constant(name)
-                                if inner.presupposition_witnesses.contains(name) =>
-                            {
-                                nibli_types::logic::WitnessOrigin::ExistentialImport
-                            }
-                            _ => nibli_types::logic::WitnessOrigin::KnowledgeBase,
-                        };
+                        let origin = witness_origin(&gt);
                         WitnessBinding {
                             variable: var,
                             term: witness_term_to_logical_term(&gt),
@@ -646,7 +645,7 @@ impl KnowledgeBase {
         enable_pred_cache(&inner);
         inner.ensure_domain_members_cached();
         let mut steps: Vec<ProofStep> = Vec::new();
-        let mut memo: HashMap<String, u32> = HashMap::new();
+        let mut memo: HashMap<StoredFact, u32> = HashMap::new();
         let mut root_children: Vec<u32> = Vec::new();
         let mut overall = QueryResult::True;
         for &root_id in &logic.roots {
@@ -795,20 +794,17 @@ impl KnowledgeBase {
 
     /// Create a KB with a custom fact store backend (e.g., persistent redb).
     ///
-    /// Preloaded facts are an untrusted persistence boundary. The backend must
-    /// expose only canonical v1 opaque-abstraction relations: this constructor
-    /// cannot safely rewrite an arbitrary store's private predicate index, so
-    /// non-canonical, legacy, malformed, and unknown marker rows are rejected.
+    /// The backend must be empty. Persisted typed facts alone are not a complete
+    /// KB snapshot: they lack the assertion registry needed to replay rules,
+    /// rebuild domain/equality indexes, and retract by source. Install an empty
+    /// mirror, then replay the authoritative `LogicBuffer` registry through
+    /// [`Self::assert_fact_with_id`] (the path used by `nibli-engine`).
     pub fn with_store(store: Box<dyn fact_store::FactStore>) -> Result<Self, String> {
-        for fact in store.all_facts() {
-            let mut canonical = fact.clone();
-            kb::canonicalize_stored_fact_abstraction_marker(&mut canonical)?;
-            if canonical != *fact {
-                return Err(format!(
-                    "custom fact store contains non-canonical opaque-abstraction relation `{}`; normalize persisted rows before installing the store",
-                    fact.relation()
-                ));
-            }
+        if !store.is_empty() {
+            return Err(
+                "custom fact store is nonempty but has no authoritative assertion registry; install an empty mirror and replay LogicBuffers with assert_fact_with_id"
+                    .to_string(),
+            );
         }
         let mut inner = KnowledgeBaseInner::new();
         inner.fact_store = store;
@@ -1130,6 +1126,22 @@ impl KnowledgeBase {
         let mut inner = self.inner.borrow_mut();
         inner.compute_eval = Some(eval);
         inner.compute_batch_eval = Some(batch_eval);
+    }
+
+    /// Peek at the next assertion id this KB can accept.
+    ///
+    /// Persistent wrappers use this together with their durable registry's
+    /// allocator so a lower-level in-memory assertion cannot make the two id
+    /// spaces collide. The value is only a snapshot: the caller must serialize
+    /// mutations and then pass its chosen id to [`Self::assert_fact_with_id`].
+    pub fn next_fact_id(&self) -> Result<u64, NibliError> {
+        let id = self.inner.borrow().fact_counter;
+        id.checked_add(1).map(|_| id).ok_or_else(|| {
+            NibliError::Reasoning(
+                "fact-id space exhausted; assertion ids are monotonic semantic Skolem sources"
+                    .to_string(),
+            )
+        })
     }
 
     /// Assert a compiled FOL formula into the knowledge base. Returns the fact ID.
@@ -1686,16 +1698,17 @@ fn negative_group_to_query_buffer(group: &[StoredFact]) -> Option<LogicBuffer> {
     if group.is_empty() {
         return None;
     }
-    fn ground_term_to_logical(t: &GroundTerm) -> LogicalTerm {
+    fn ground_term_to_logical(t: &GroundTerm) -> Option<LogicalTerm> {
         match t {
-            GroundTerm::Constant(s) => LogicalTerm::Constant(s.clone()),
-            GroundTerm::Number(bits) => LogicalTerm::Number(f64::from_bits(*bits)),
-            GroundTerm::Description(s) => LogicalTerm::Description(s.clone()),
-            GroundTerm::Unspecified => LogicalTerm::Unspecified,
-            GroundTerm::PatternVar(s) => LogicalTerm::Variable(s.clone()),
-            // Dependent Skolems rarely appear in negative templates; treat as opaque constants.
-            GroundTerm::SkolemFn(name, _) => LogicalTerm::Constant(name.clone()),
-            GroundTerm::DepPair(_, _) => LogicalTerm::Unspecified,
+            GroundTerm::Constant(s) => Some(LogicalTerm::Constant(s.clone())),
+            GroundTerm::Number(bits) => Some(LogicalTerm::Number(f64::from_bits(*bits))),
+            GroundTerm::Description(s) => Some(LogicalTerm::Description(s.clone())),
+            GroundTerm::Unspecified => Some(LogicalTerm::Unspecified),
+            GroundTerm::PatternVar(s) => Some(LogicalTerm::Variable(s.clone())),
+            GroundTerm::Skolem(_)
+            | GroundTerm::SkolemFn(_, _)
+            | GroundTerm::DepPair(_, _)
+            | GroundTerm::SkolemPlaceholder(_) => None,
         }
     }
 
@@ -1712,7 +1725,11 @@ fn negative_group_to_query_buffer(group: &[StoredFact]) -> Option<LogicBuffer> {
                 }
             }
         }
-        let args: Vec<LogicalTerm> = gf.args.iter().map(ground_term_to_logical).collect();
+        let args: Vec<LogicalTerm> = gf
+            .args
+            .iter()
+            .map(ground_term_to_logical)
+            .collect::<Option<Vec<_>>>()?;
         let pred_id = nodes.len() as u32;
         nodes.push(LogicNode::Predicate((gf.relation.clone(), args)));
         let wrapped = match fact {

@@ -131,7 +131,7 @@ Built-in, zero-hallucination **authorization** (entailment of `authorized(...)` 
 |-------|----------|
 | Guide | [mdBook: Authorization](https://dhilipsiva.github.io/nibli/user/authorization.html) (or `just docs-serve`) |
 | Rust crate | `nibli-auth` — `Authorizer`, `tls` (thread-local for async servers). Not on crates.io yet (`publish = false`) — use a git or path dependency |
-| WIT | `nibli:engine@0.8.0` export `authorizer` (the version lives in `wit/world.wit`) |
+| WIT | `nibli:engine@0.9.0` export `authorizer` (the version lives in `wit/world.wit`) |
 | Python | `just build-auth-py` → `nibli_auth` / `nibli_auth_native` |
 | Examples | `examples/auth-axum`, `examples/auth-fastapi` (same policy) |
 | Tests | `just test-auth`; Python: `just test-auth-py` (local, maturin) |
@@ -186,7 +186,8 @@ The default profile is clean-core: universals mint no existential witnesses. Leg
 xorlo behavior is an explicit, fallible opt-in with
 `engine.set_existential_import(true)?`; changing it transactionally rebuilds the active
 KB, and `engine.is_existential_import()` reports the effective profile. Find bindings
-and existential proof steps expose `knowledge-base` vs `existential-import` origin;
+and existential/universal proof payloads expose `knowledge-base`,
+`generated-witness`, or `existential-import` origin;
 count proof steps expose the `existential_imported` share of `actual`.
 Full API: [docs.rs/nibli-engine](https://docs.rs/nibli-engine).
 
@@ -278,7 +279,7 @@ just test
     ▣ adam is a dog  [given] -> TRUE
 
 ~/nibli> ?? dog($x).
-[Find] _ev0 = sk_7 [knowledge-base], $x = adam [knowledge-base]
+[Find] _ev0 = sk_7 [generated-witness], $x = adam [knowledge-base]
 
 ~/nibli> :debug big(exactly 2 dog).
 [Logic]
@@ -439,7 +440,7 @@ exponential(8, 2, 3).               # Assert: 8 = 2^3
 
 Configure with `NIBLI_COMPUTE_ADDR=host:port` or `:backend host:port` in the REPL. Connection is lazy (connects on first dispatch) with auto-reconnect. The browser UI has no TCP, so external predicates resolve only in the `nibli-host` REPL; built-in arithmetic still works everywhere.
 
-If an external predicate's backend is unreachable (or unconfigured), the query returns `UNKNOWN (backend-unavailable)` — never a definitive `FALSE`. A backend the engine cannot consult is genuinely undetermined, not a derived falsehood. One qualifier: an outage is not uniformly `UNKNOWN`. If that **exact** tuple was computed successfully earlier in the same session, its auto-asserted fact is still in the store and the query answers `TRUE` from it — outage-cache semantics, tracked alongside the lifecycle decision above. Any other tuple of the same relation still returns `UNKNOWN`.
+If an external predicate's backend is unreachable (or unconfigured), the query returns `UNKNOWN (backend-unavailable)` — never a definitive `FALSE`. A backend the engine cannot consult is genuinely undetermined, not a derived falsehood. The same fail-closed result applies when a call would expose an opaque internal witness to the string-only compute protocol; an equal-looking user constant such as `"sk_0"` remains ordinary data and is forwarded. One qualifier: an outage is not uniformly `UNKNOWN`. If that **exact** tuple was computed successfully earlier in the same session, its auto-asserted fact is still in the store and the query answers `TRUE` from it — outage-cache semantics, tracked alongside the lifecycle decision above. Any other tuple of the same relation still returns `UNKNOWN`.
 
 ---
 
@@ -464,7 +465,10 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 
 - **Backward chaining** over a typed, hash-indexed fact store with predicate-indexed lookup
 - **Universal rules** compiled to backward-chaining templates (`UniversalRuleRecord`) at assertion time
-- **Skolemization:** independent constants and dependent Skolem functions (`SkolemFn` + `DepPair` for multi-dependency)
+- **Skolemization:** independent and dependent generated witnesses have opaque,
+  source-scoped typed identity (`Skolem` / `SkolemFn` + `DepPair` for
+  multi-dependency); friendly `sk_N` text is display only and cannot alias a user
+  constant
 - **Proof traces:** every query produces a proof tree over the `ProofRule` taxonomy (`nibli-types/src/logic.rs`) with DAG memoization via `ProofRef`
 - **Witness extraction:** `query-find` returns all satisfying binding sets for existential variables
 - **Belief revision:** retract-and-rebuild with monotonic fact IDs; `:retract <id>` and `:facts` REPL commands

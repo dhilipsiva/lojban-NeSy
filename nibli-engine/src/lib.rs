@@ -252,6 +252,41 @@ impl NibliEngine {
         self.core.compile_query_text(input)
     }
 
+    /// Persist one compiled root and install it in the live KB under the same
+    /// source id. The durable registry and KB counters are both consulted so
+    /// even a caller that used the exposed lower-level KB cannot cause reuse.
+    /// Persistence happens first; a reasoning rejection deletes that row before
+    /// the error is returned, so reopen cannot resurrect a failed assertion.
+    fn persist_and_assert(
+        &self,
+        store: &mut NibliStore,
+        buffer: logic::LogicBuffer,
+        label: String,
+    ) -> Result<u64, EngineError> {
+        let payload = postcard::to_allocvec(&buffer)
+            .map_err(|e| EngineError::Reasoning(format!("Serialize error: {e}")))?;
+        let durable_id = store
+            .next_fact_id()
+            .map_err(|e| EngineError::Reasoning(format!("Store error: {e}")))?;
+        let live_id = self.core.kb().next_fact_id()?;
+        let fact_id = durable_id.max(live_id);
+
+        store
+            .insert_fact(fact_id, label.clone(), payload)
+            .map_err(|e| EngineError::Reasoning(format!("Store error: {e}")))?;
+
+        if let Err(reason) = self.core.kb().assert_fact_with_id(buffer, label, fact_id) {
+            return match store.delete_fact(fact_id) {
+                Ok(()) => Err(EngineError::Reasoning(reason)),
+                Err(rollback) => Err(EngineError::Reasoning(format!(
+                    "{reason} (additionally, durable rollback of fact {fact_id} failed: {rollback})"
+                ))),
+            };
+        }
+
+        Ok(fact_id)
+    }
+
     /// Reset the knowledge base, clearing all facts and rules.
     pub fn reset(&self) {
         self.core.kb().reset().ok();
@@ -283,44 +318,37 @@ impl NibliEngine {
                 .collect());
         };
 
-        // Store write-through path (engine-specific): the durable registry
-        // mints the ids, so the per-root loop runs here with the store in the
-        // middle — compile through the shared chain, then per root: persist
-        // FIRST, then assert under the store's id.
+        // Store write-through path (engine-specific): the durable registry and
+        // live KB share one collision-free id space, so the per-root loop runs
+        // here with persistence in the middle.
         let buf = self.compile_text(text)?;
         let label = text.to_string();
         let parts = buf.split_roots();
         let mut ids = Vec::with_capacity(parts.len());
         for sub in parts {
-            let payload = postcard::to_allocvec(&sub)
-                .map_err(|e| EngineError::Reasoning(format!("Serialize error: {e}")))?;
-            let fact_id = s
-                .next_fact_id()
-                .map_err(|e| EngineError::Reasoning(format!("Store error: {e}")))?;
-            s.insert_fact(fact_id, label.clone(), payload)
-                .map_err(|e| EngineError::Reasoning(format!("Store error: {e}")))?;
-            // nibli-reason's `assert_fact_with_id` returns String (it predates the typed
-            // KB API); the assert IS the reasoning stage, so classify as Reasoning
-            // (the old `Semantic` here was a mislabel).
-            self.core
-                .kb()
-                .assert_fact_with_id(sub, label.clone(), fact_id)
-                .map_err(EngineError::Reasoning)?;
-            ids.push(fact_id);
+            ids.push(self.persist_and_assert(s, sub, label.clone())?);
         }
         Ok(ids)
     }
 
     /// Assert a fact directly by relation name and arguments, bypassing text
-    /// parsing. Delegates to the shared core (label `":assert {relation}"`;
-    /// event-decomposed to the surface shape — see
-    /// `CoreSession::assert_fact_direct`).
+    /// parsing. Uses the same durable id/rollback path as [`Self::assert_text`]
+    /// when persistence is configured (label `":assert {relation}"`) and is
+    /// event-decomposed to the surface shape.
     pub fn assert_fact_direct(
         &self,
         relation: String,
         args: Vec<EngineLogicalTerm>,
     ) -> Result<u64, EngineError> {
-        self.core.assert_fact_direct(&relation, &args, None)
+        let mut store = self.store.try_borrow_mut().map_err(|_| {
+            EngineError::Reasoning("Store error: persistence state is already borrowed".to_string())
+        })?;
+        let Some(store) = store.as_mut() else {
+            return self.core.assert_fact_direct(&relation, &args, None);
+        };
+
+        let buffer = nibli_semantics::compile_injected_fact(&relation, &args)?;
+        self.persist_and_assert(store, buffer, format!(":assert {relation}"))
     }
 
     /// Parse KR query, run entailment check, return result + formatted proof + JSON proof.
@@ -413,9 +441,9 @@ impl NibliEngine {
         })?;
         if let Some(s) = store.as_mut() {
             // Idempotent at the store layer: retracting an already-tombstoned or
-            // never-persisted-but-known fact is fine. A NotFound here means the id
-            // lives only in the in-memory KB (e.g. assert_fact_direct, which bypasses
-            // the store) — that is not a durability failure, so swallow it.
+            // never-persisted-but-known fact is fine. A NotFound here means a caller
+            // mutated the exposed lower-level KB directly — that is not a durability
+            // failure, so swallow it.
             match s.retract_fact(id) {
                 Ok(()) => {}
                 Err(nibli_store::StoreError::NotFound(_)) => {}

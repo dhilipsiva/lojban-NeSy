@@ -75,9 +75,16 @@ duplicated from `Stratification.lean` (each proof file stands alone).
 Formalizes the substitution engine under backward chaining (`nibli-reason/src/kb.rs` `unify_terms` :326 /
 `substitute_term` :389): matching a rule's conclusion TEMPLATE (which carries pattern variables)
 against a ground goal produces a substitution σ, and it must be sound — a successful match
-instantiates the template to *exactly* the goal. Models `GTerm` (mirroring `GroundTerm`), an
+instantiates the template to *exactly* the goal. Models `GTerm` (mirroring `GroundTerm`, including
+separate `const` and opaque-ID `skolem` constructors), an
 association-list `Subst`, `subst`, and the accumulator-threading `unify`, and proves:
 
+- **Skolem/user separation by construction**: a generated `skolem(id)` can unify only with the
+  same typed Skolem ID, never with `const("sk_N")`; the friendly display ordinal is deliberately
+  absent from the model because Rust excludes it from semantic equality and hashing. Dependent
+  `skolemFn` terms carry the same typed identity discipline. A compiler-only
+  `skolemPlaceholder` is non-ground and the unifier refuses it outright. The named
+  **`skolem_constant_disjoint`** theorem pins both unifier directions.
 - **`unify_sound`**: `NoVar c → unify t c σ₀ = some σ → subst σ t = c` — the headline soundness
   property. The `depPair` case (two components sharing one accumulator) is discharged by two
   lemmas: **`unify_extends`** (a successful `unify` only adds bindings — prior ones are preserved)
@@ -88,9 +95,10 @@ association-list `Subst`, `subst`, and the accumulator-threading `unify`, and pr
 
 The `NoVar c` hypothesis (the concrete side is ground) is enforced in the ENGINE as a mechanism,
 not call-site discipline: `assert_typed_fact` drops any fact whose args contain a pattern variable
-— recursively, including inside `SkolemFn`/`DepPair` components — at the single store-insert
-boundary (`nibli-reason/src/rules.rs`, pinned by `non_ground_fact_is_dropped_at_the_assert_boundary`),
-so a stored fact can never violate the hypothesis regardless of upstream changes.
+or compiler-only `SkolemPlaceholder` — recursively, including inside `SkolemFn`/`DepPair`
+components — at the single store-insert boundary (`nibli-reason/src/rules.rs`, pinned by
+`non_ground_fact_is_dropped_at_the_assert_boundary`), so a stored fact can never violate the
+hypothesis regardless of upstream changes.
 
 Mathlib-free (prelude only). The `Number` payload is abstracted to `Nat` — only decidable equality
 matters for match soundness, not f64 bit-semantics.

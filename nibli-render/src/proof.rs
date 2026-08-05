@@ -7,7 +7,9 @@
 //! fixed flat-form [`crate::fact::humanize_fact`] (the old S-expr humanizer dropped
 //! arguments when fed the `relation(args)` form the trace actually carries).
 
-use nibli_protocol::{LogicalTerm, ProofRule, ProofTrace};
+#[cfg(test)]
+use nibli_protocol::LogicalTerm;
+use nibli_protocol::{ProofRule, ProofTrace, WitnessOrigin};
 
 use crate::fact::humanize_fact;
 use crate::register::Register;
@@ -162,6 +164,14 @@ pub fn css_class(rule: &ProofRule) -> &'static str {
     }
 }
 
+fn witness_origin_suffix(origin: WitnessOrigin) -> &'static str {
+    match origin {
+        WitnessOrigin::KnowledgeBase => "",
+        WitnessOrigin::GeneratedWitness => " [generated-witness]",
+        WitnessOrigin::ExistentialImport => " [existential-import]",
+    }
+}
+
 /// Human-readable label describing the proof step (UI component form).
 pub fn label(rule: &ProofRule) -> String {
     match rule {
@@ -171,21 +181,30 @@ pub fn label(rule: &ProofRule) -> String {
         ProofRule::Negation => "Negation".to_string(),
         ProofRule::ModalPassthrough { kind } => kind.to_string(),
         ProofRule::ExistsWitness { var, term, origin } => {
-            let suffix = if *origin == nibli_protocol::WitnessOrigin::ExistentialImport {
-                " [existential-import]"
-            } else {
-                ""
-            };
+            let suffix = witness_origin_suffix(*origin);
             format!("Witness: {} = {}{}", var, term.display(), suffix)
         }
         ProofRule::ExistsFailed => "No witness found".to_string(),
         ProofRule::ForallVacuous => "Vacuously true".to_string(),
         ProofRule::ForallVerified { entities } => {
-            let names: Vec<String> = entities.iter().map(LogicalTerm::display).collect();
+            let names: Vec<String> = entities
+                .iter()
+                .map(|binding| {
+                    format!(
+                        "{}{}",
+                        binding.term.display(),
+                        witness_origin_suffix(binding.origin)
+                    )
+                })
+                .collect();
             format!("Verified: [{}]", names.join(", "))
         }
         ProofRule::ForallCounterexample { entity } => {
-            format!("Counterexample: {}", entity.display())
+            format!(
+                "Counterexample: {}{}",
+                entity.term.display(),
+                witness_origin_suffix(entity.origin)
+            )
         }
         ProofRule::CountResult {
             expected,
@@ -254,11 +273,7 @@ pub fn trace_display(rule: &ProofRule, result: bool) -> String {
         }
         ProofRule::ModalPassthrough { kind } => format!("Modal ({kind}) -> {tag}"),
         ProofRule::ExistsWitness { var, term, origin } => {
-            let suffix = if *origin == nibli_protocol::WitnessOrigin::ExistentialImport {
-                " [existential-import]"
-            } else {
-                ""
-            };
+            let suffix = witness_origin_suffix(*origin);
             format!(
                 "Exists: {} = {}{} -> {}",
                 var,
@@ -270,13 +285,23 @@ pub fn trace_display(rule: &ProofRule, result: bool) -> String {
         ProofRule::ExistsFailed => format!("Exists: no witness -> {tag}"),
         ProofRule::ForallVacuous => format!("ForAll: vacuous (empty domain) -> {tag}"),
         ProofRule::ForallVerified { entities } => {
-            let names: Vec<String> = entities.iter().map(LogicalTerm::trace_display).collect();
+            let names: Vec<String> = entities
+                .iter()
+                .map(|binding| {
+                    format!(
+                        "{}{}",
+                        binding.term.trace_display(),
+                        witness_origin_suffix(binding.origin)
+                    )
+                })
+                .collect();
             format!("ForAll: verified [{}] -> {}", names.join(", "), tag)
         }
         ProofRule::ForallCounterexample { entity } => {
             format!(
-                "ForAll: counterexample {} -> {}",
-                entity.trace_display(),
+                "ForAll: counterexample {}{} -> {}",
+                entity.term.trace_display(),
+                witness_origin_suffix(entity.origin),
                 tag
             )
         }
@@ -428,5 +453,19 @@ mod tests {
         let out = render_proof_text(&t, Register::Spec);
         assert!(out.starts_with("[Note: result depends on negation-as-failure"));
         assert!(out.contains("Negation [NAF] -> TRUE"));
+    }
+
+    #[test]
+    fn generated_witness_origin_is_visible_in_both_renderers() {
+        let rule = ProofRule::ExistsWitness {
+            var: "$x".to_string(),
+            term: LogicalTerm::Constant("sk_0".to_string()),
+            origin: WitnessOrigin::GeneratedWitness,
+        };
+        assert_eq!(label(&rule), "Witness: $x = sk_0 [generated-witness]");
+        assert_eq!(
+            trace_display(&rule, true),
+            "Exists: $x = sk_0 [generated-witness] -> TRUE"
+        );
     }
 }

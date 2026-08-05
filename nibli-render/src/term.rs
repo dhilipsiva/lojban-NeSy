@@ -1,6 +1,8 @@
 //! Term-level rendering primitives shared by the fact humanizer, the IR
 //! back-translation, and the proof renderer. ONE definition of role-predicate
-//! detection, event-Skolem detection, and Skolem humanization lives here.
+//! detection, rendered event-Skolem detection, and Skolem humanization lives here.
+//! These helpers consume reasoner-produced presentation strings; they are not a
+//! semantic identity test. Equal-looking user constants arrive quoted.
 
 /// Detect a Neo-Davidsonian role predicate name (`goes_x2`) and return its
 /// collapsed, ARGUMENT-NAMED form for the proof narrative: the curated place
@@ -36,8 +38,9 @@ pub(crate) fn role_index(name: &str) -> Option<usize> {
     rest.parse::<usize>().ok()
 }
 
-/// Is this rendered term string a bare event Skolem (`sk_N`)? Event variables
-/// are internal plumbing and are hidden from role-predicate argument lists.
+/// Is this reasoner-rendered term string a bare event Skolem (`sk_N`)? Event
+/// variables are internal plumbing and are hidden from role-predicate argument
+/// lists. User constants with this spelling are quoted before this boundary.
 pub(crate) fn is_event_skolem(s: &str) -> bool {
     s.strip_prefix("sk_")
         .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
@@ -50,9 +53,10 @@ pub(crate) fn is_event_skolem(s: &str) -> bool {
 /// group key regardless of dependency. (Distinct from [`is_event_skolem`], which
 /// is correctly strict where a `sk_N(arg)` is an exposed witness, not plumbing.)
 pub(crate) fn is_event_skolem_arg(s: &str) -> bool {
-    s.strip_prefix("sk_")
-        .and_then(|r| r.bytes().next())
-        .is_some_and(|b| b.is_ascii_digit())
+    s.strip_prefix("sk_").is_some_and(|rest| {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && (digits == rest.len() || rest.as_bytes().get(digits) == Some(&b'('))
+    })
 }
 
 /// Humanize a Skolem token for display: `sk_N` -> `#N`, `sk_N(arg)` -> `#N(arg)`.
@@ -118,6 +122,8 @@ mod tests {
         assert!(!is_event_skolem("sk_1(adam)")); // witness Skolem, not an event var
         assert!(!is_event_skolem("adam"));
         assert!(!is_event_skolem("sk_"));
+        assert!(!is_event_skolem_arg("sk_0x"));
+        assert!(is_event_skolem_arg("sk_0(adam)"));
     }
 
     #[test]

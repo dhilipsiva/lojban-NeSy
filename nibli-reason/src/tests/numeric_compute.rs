@@ -720,7 +720,7 @@ fn an_arithmetically_false_body_finds_the_numeric_counterexample() {
         "5 ≠ 2 + 2 — the member is checked and fails: {result:?}"
     );
     let counter = trace.steps.iter().find_map(|s| match &s.rule {
-        ProofRule::ForallCounterexample { entity } => Some(entity.clone()),
+        ProofRule::ForallCounterexample { entity } => Some(entity.term.clone()),
         _ => None,
     });
     assert!(

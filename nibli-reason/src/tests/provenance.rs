@@ -377,12 +377,40 @@ fn test_proof_trace_existential_import_presup_is_asserted() {
     let kb = new_kb();
     kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
-    // existential-import presupposition creates sk_0 as a gerku
-    let (result, trace) = query_with_proof(&kb, make_query("sk_0", "gerku"));
+    // The friendly witness label is `sk_0`, but a user constant with that spelling
+    // must not name the internal witness.
+    let (colliding_user_result, _) = query_with_proof(&kb, make_query("sk_0", "gerku"));
+    assert!(!colliding_user_result);
+
+    let mut nodes = Vec::new();
+    let body = pred(
+        &mut nodes,
+        "gerku",
+        vec![LogicalTerm::Variable("x".into()), LogicalTerm::Unspecified],
+    );
+    let root = exists(&mut nodes, "x", body);
+    let (result, trace) = query_with_proof(
+        &kb,
+        LogicBuffer {
+            nodes,
+            roots: vec![root],
+        },
+    );
     assert!(result);
     let root_step = &trace.steps[trace.root as usize];
     assert!(root_step.holds);
-    assert!(matches!(&root_step.rule, ProofRule::Asserted { .. }));
+    assert!(matches!(
+        &root_step.rule,
+        ProofRule::ExistsWitness {
+            term: LogicalTerm::Constant(name),
+            origin: nibli_types::logic::WitnessOrigin::ExistentialImport,
+            ..
+        } if name == "sk_0"
+    ));
+    assert!(matches!(
+        trace.steps[root_step.children[0] as usize].rule,
+        ProofRule::Asserted { .. }
+    ));
 }
 
 // ─── Conjunction Introduction (Guarded) Tests ────────────────────

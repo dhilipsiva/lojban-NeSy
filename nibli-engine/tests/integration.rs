@@ -1950,6 +1950,10 @@ fn ground_conditional_with_existential_conclusion() {
         &engine.query_holds("big(some cat).").unwrap(),
         "the fired conclusion itself holds",
     );
+    let witnesses = engine.query_find_text("cat($c).").unwrap();
+    assert!(witnesses.iter().flatten().any(|binding| {
+        binding.variable == "$c" && binding.origin == EngineWitnessOrigin::GeneratedWitness
+    }));
 }
 
 #[test]
@@ -3040,6 +3044,134 @@ fn persistent_engine_replays_asserted_facts_after_reopen() {
 }
 
 #[test]
+fn persistent_direct_and_text_assertions_share_source_ids_and_replay() {
+    let path = temp_db_path("persistent_direct_shared_ids");
+    cleanup(&path);
+
+    let (direct_id, text_id) = {
+        let engine = fresh_open(&path, "Persistent engine should open");
+        let direct_id = engine
+            .assert_fact_direct(
+                "dog".to_string(),
+                vec![EngineLogicalTerm::Constant("adam".to_string())],
+            )
+            .expect("direct assertion should use the persistent path");
+        let text_id = engine
+            .assert_text("cat(Elis).")
+            .expect("text assertion should share the allocator")[0];
+
+        assert_eq!(direct_id, 0);
+        assert_eq!(text_id, 1);
+        assert_true(
+            &engine.query_holds("dog(Adam).").unwrap(),
+            "direct assertion should hold before reopen",
+        );
+        assert_true(
+            &engine.query_holds("cat(Elis).").unwrap(),
+            "text assertion should hold before reopen",
+        );
+        (direct_id, text_id)
+    };
+
+    {
+        let reopened = fresh_open(&path, "both assertion forms should replay");
+        assert_true(
+            &reopened.query_holds("dog(Adam).").unwrap(),
+            "direct assertion must be durable",
+        );
+        assert_true(
+            &reopened.query_holds("cat(Elis).").unwrap(),
+            "text assertion must remain durable",
+        );
+        reopened
+            .retract_fact(direct_id)
+            .expect("the direct assertion should retract by its durable id");
+    }
+
+    {
+        let reopened = fresh_open(&path, "direct retraction should survive reopen");
+        assert_false(
+            &reopened.query_holds("dog(Adam).").unwrap(),
+            "retracted direct assertion must not resurrect",
+        );
+        assert_true(
+            &reopened.query_holds("cat(Elis).").unwrap(),
+            "the independently sourced text fact must remain",
+        );
+        assert_eq!(
+            reopened
+                .list_facts()
+                .unwrap()
+                .into_iter()
+                .map(|fact| fact.id)
+                .collect::<Vec<_>>(),
+            vec![text_id]
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn rejected_persistent_assertion_is_deleted_before_reopen() {
+    let path = temp_db_path("persistent_assertion_rollback");
+    cleanup(&path);
+
+    {
+        let engine = fresh_open(&path, "Persistent engine should open");
+        assert_eq!(
+            engine
+                .assert_text("derived_only(\"permits\").")
+                .expect("closure declaration should persist"),
+            vec![0]
+        );
+
+        let error = engine
+            .assert_fact_direct(
+                "permits".to_string(),
+                vec![
+                    EngineLogicalTerm::Constant("review".to_string()),
+                    EngineLogicalTerm::Constant("sock".to_string()),
+                ],
+            )
+            .expect_err("direct assertion of a derived-only relation must fail");
+        assert!(error.to_string().contains("derived-only"), "{error}");
+
+        // The live allocator advanced while attempting id 1; the next success
+        // must not reuse that semantic source even though durable rollback
+        // removed the rejected row.
+        assert_eq!(
+            engine
+                .assert_text("person(Adam).")
+                .expect("a later assertion should remain usable"),
+            vec![2]
+        );
+    }
+
+    {
+        let store = NibliStore::open(&path, "local".into()).expect("store should reopen");
+        assert!(
+            store.get_fact(1).unwrap().is_none(),
+            "the rejected row must be physically rolled back"
+        );
+    }
+
+    {
+        let reopened = fresh_open(&path, "rollback should leave a replayable registry");
+        assert_false(
+            &reopened.query_holds("permits(Review, Sock).").unwrap(),
+            "a failed assertion must not resurrect from persistence",
+        );
+        assert_true(
+            &reopened.query_holds("person(Adam).").unwrap(),
+            "later successful state must replay",
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
 fn assertion_coreference_survives_rebuild_reopen_and_retraction() {
     let path = temp_db_path("assertion_coreference_replay");
     cleanup(&path);
@@ -3089,6 +3221,86 @@ fn assertion_coreference_survives_rebuild_reopen_and_retraction() {
             &reopened.query_holds("animal($who).").unwrap(),
             "the retracted compound must not resurrect after reopen",
         );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn internal_skolem_and_user_sk_0_remain_distinct_across_reopen_and_retraction() {
+    let path = temp_db_path("typed_skolem_identity_replay");
+    cleanup(&path);
+
+    let (generated_id, user_id) = {
+        let engine = fresh_open(&path, "Persistent engine should open");
+        let generated_id = engine
+            .assert_text("dog($generated).")
+            .expect("generated witness should persist")[0];
+        let user_id = engine
+            .assert_text("dog(\"sk_0\").")
+            .expect("equal-looking user constant should persist")[0];
+
+        let found = engine.query_find_text("dog($d).").unwrap();
+        assert_eq!(found.len(), 2, "both semantic identities must enumerate");
+        assert_eq!(
+            found
+                .iter()
+                .flatten()
+                .filter(|binding| {
+                    binding.variable == "$d"
+                        && binding.origin == EngineWitnessOrigin::GeneratedWitness
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            found
+                .iter()
+                .flatten()
+                .filter(|binding| {
+                    binding.variable == "$d" && binding.origin == EngineWitnessOrigin::KnowledgeBase
+                })
+                .count(),
+            1
+        );
+        assert_eq!(engine.count_witnesses_text("dog($d).").unwrap(), 2);
+        assert_true(
+            &engine.query_holds("dog(\"sk_0\").").unwrap(),
+            "the user-authored constant must be queryable by its own spelling",
+        );
+        (generated_id, user_id)
+    };
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should replay both identities");
+        assert_eq!(reopened.count_witnesses_text("dog($d).").unwrap(), 2);
+        reopened
+            .retract_fact(user_id)
+            .expect("the user-authored constant should retract independently");
+        assert_eq!(reopened.count_witnesses_text("dog($d).").unwrap(), 1);
+        assert_false(
+            &reopened.query_holds("dog(\"sk_0\").").unwrap(),
+            "an internal witness with the same display label must not satisfy the user query",
+        );
+    }
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should retain the user tombstone");
+        let found = reopened.query_find_text("dog($d).").unwrap();
+        assert_eq!(found.len(), 1);
+        let subject = found[0]
+            .iter()
+            .find(|binding| binding.variable == "$d")
+            .expect("the requested witness variable must be returned");
+        assert_eq!(subject.origin, EngineWitnessOrigin::GeneratedWitness);
+        reopened
+            .retract_fact(generated_id)
+            .expect("the generated witness assertion should retract independently");
+    }
+
+    {
+        let reopened = fresh_open(&path, "Persistent engine should retain both tombstones");
+        assert_eq!(reopened.count_witnesses_text("dog($d).").unwrap(), 0);
     }
 
     cleanup(&path);

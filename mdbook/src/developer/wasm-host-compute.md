@@ -101,6 +101,10 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
 - **No backend configured?** A registered external predicate answers
   `UNKNOWN (backend-unavailable)` — an outage is never a derived falsehood
   (pinned by the `smoke-host-backend-unavailable` gate).
+- **Opaque generated argument?** Internal `Skolem`/`SkolemFn` identity has no
+  lossless representation in this string-only protocol. Dispatch therefore
+  fails closed as `UNKNOWN (backend-unavailable)` before the host callback runs.
+  A user constant whose literal text is `sk_0` is not internal and is forwarded.
 - **Client behavior:** lazy connect, reused connection (idle reap after 300 s,
   read timeout 10 s, write 5 s — `NIBLI_BACKEND_*` env overrides), retry-once
   on connection errors, and a batch path that pipelines all requests in one

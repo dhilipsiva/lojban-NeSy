@@ -76,24 +76,34 @@ use pipeline_bind::nibli::engine::logic_types::LogicalTerm as EngineLogicalTerm;
 use pipeline_bind::nibli::engine::logic_types::{
     LogicBuffer as EngineLogicBuffer, LogicNode as EngineLogicNode, ProofRule, ProofTrace,
     QueryResult as EngineQueryResult, ResourceKind as EngineResourceKind,
-    UnknownReason as EngineUnknownReason, WitnessOrigin as EngineWitnessOrigin,
+    UnknownReason as EngineUnknownReason, WitnessBinding as EngineWitnessBinding,
+    WitnessOrigin as EngineWitnessOrigin,
 };
 // Target types for the WIT → canonical reverse converter (so the host can render
 // the `:debug` logic buffer via nibli-render).
 use nibli_types::logic::{
     LogicBuffer as NibliBuffer, LogicNode as NibliNode, LogicalTerm as NibliTerm,
-    WitnessOrigin as NibliWitnessOrigin,
+    WitnessBinding as NibliWitnessBinding, WitnessOrigin as NibliWitnessOrigin,
 };
 
 fn wit_origin_to_types(origin: &EngineWitnessOrigin) -> NibliWitnessOrigin {
     match origin {
         EngineWitnessOrigin::KnowledgeBase => NibliWitnessOrigin::KnowledgeBase,
+        EngineWitnessOrigin::GeneratedWitness => NibliWitnessOrigin::GeneratedWitness,
         EngineWitnessOrigin::ExistentialImport => NibliWitnessOrigin::ExistentialImport,
     }
 }
 
 fn format_witness_origin(origin: &EngineWitnessOrigin) -> &'static str {
     wit_origin_to_types(origin).label()
+}
+
+fn wit_binding_to_types(binding: &EngineWitnessBinding) -> NibliWitnessBinding {
+    NibliWitnessBinding {
+        variable: binding.variable.clone(),
+        term: wit_term_to_types(&binding.term),
+        origin: wit_origin_to_types(&binding.origin),
+    }
 }
 
 /// Format a LogicalTerm from the engine bindings for display.
@@ -250,10 +260,10 @@ fn rule_to_proto(rule: &ProofRule) -> ProtoRule {
         ProofRule::ExistsFailed => ProtoRule::ExistsFailed,
         ProofRule::ForallVacuous => ProtoRule::ForallVacuous,
         ProofRule::ForallVerified(r) => ProtoRule::ForallVerified {
-            entities: r.entities.iter().map(wit_term_to_types).collect(),
+            entities: r.entities.iter().map(wit_binding_to_types).collect(),
         },
         ProofRule::ForallCounterexample(r) => ProtoRule::ForallCounterexample {
-            entity: wit_term_to_types(&r.entity),
+            entity: wit_binding_to_types(&r.entity),
         },
         ProofRule::CountResult(r) => ProtoRule::CountResult {
             expected: r.expected,
@@ -2036,6 +2046,22 @@ mod tests {
 
     // Pure-client dispatch tests (success/false/error/no-addr) now live in
     // `nibli_protocol::compute_client::tests`, which owns the shared client.
+
+    #[test]
+    fn witness_origin_formatting_preserves_all_public_origins() {
+        assert_eq!(
+            format_witness_origin(&EngineWitnessOrigin::KnowledgeBase),
+            "knowledge-base"
+        );
+        assert_eq!(
+            format_witness_origin(&EngineWitnessOrigin::GeneratedWitness),
+            "generated-witness"
+        );
+        assert_eq!(
+            format_witness_origin(&EngineWitnessOrigin::ExistentialImport),
+            "existential-import"
+        );
+    }
 
     #[test]
     fn test_builtin_arithmetic_bypasses_backend() {

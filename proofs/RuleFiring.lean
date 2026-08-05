@@ -30,15 +30,21 @@ namespace Nibli.RuleFiring
 
 /- ── Term-level unifier, duplicated verbatim from `Unify.lean` (self-contained) ───────────── -/
 
-/-- A ground term, mirroring nibli-reason's `GroundTerm` (`nibli-reason/src/kb.rs:130`). -/
+/-- The equality-bearing part of Rust's `SkolemSymbol`; its display ordinal is non-semantic. -/
+abbrev SkolemSymbol := Nat
+
+/-- A ground term, mirroring nibli-reason's `GroundTerm` (`nibli-reason/src/kb.rs`). Internal
+    `skolem` identity is a distinct constructor from user `const`, even when both render `sk_N`. -/
 inductive GTerm where
   | const : String → GTerm
+  | skolem : SkolemSymbol → GTerm
   | num : Nat → GTerm
   | descr : String → GTerm
   | unspec : GTerm
-  | skolem : String → GTerm → GTerm
+  | skolemFn : SkolemSymbol → GTerm → GTerm
   | depPair : GTerm → GTerm → GTerm
   | pvar : String → GTerm
+  | skolemPlaceholder : SkolemSymbol → GTerm
 deriving DecidableEq, Repr
 
 abbrev Subst := List (String × GTerm)
@@ -49,23 +55,27 @@ def lookup : Subst → String → Option GTerm
 
 def NoVar : GTerm → Prop
   | .const _ => True
+  | .skolem _ => True
   | .num _ => True
   | .descr _ => True
   | .unspec => True
   | .pvar _ => False
-  | .skolem _ d => NoVar d
+  | .skolemFn _ d => NoVar d
   | .depPair a b => NoVar a ∧ NoVar b
+  | .skolemPlaceholder _ => False
 
 def subst (σ : Subst) : GTerm → GTerm
   | .const a => .const a
+  | .skolem a => .skolem a
   | .num a => .num a
   | .descr a => .descr a
   | .unspec => .unspec
   | .pvar name => match lookup σ name with
     | some t => t
     | none => .pvar name
-  | .skolem n d => .skolem n (subst σ d)
+  | .skolemFn n d => .skolemFn n (subst σ d)
   | .depPair a b => .depPair (subst σ a) (subst σ b)
+  | .skolemPlaceholder n => .skolemPlaceholder n
 
 def unify : GTerm → GTerm → Subst → Option Subst
   | .pvar name, c, σ =>
@@ -74,6 +84,9 @@ def unify : GTerm → GTerm → Subst → Option Subst
     | none => some ((name, c) :: σ)
   | .const a, c, σ => match c with
     | .const b => if a = b then some σ else none
+    | _ => none
+  | .skolem a, c, σ => match c with
+    | .skolem b => if a = b then some σ else none
     | _ => none
   | .num a, c, σ => match c with
     | .num b => if a = b then some σ else none
@@ -84,14 +97,15 @@ def unify : GTerm → GTerm → Subst → Option Subst
   | .unspec, c, σ => match c with
     | .unspec => some σ
     | _ => none
-  | .skolem na da, c, σ => match c with
-    | .skolem nb db => if na = nb then unify da db σ else none
+  | .skolemFn na da, c, σ => match c with
+    | .skolemFn nb db => if na = nb then unify da db σ else none
     | _ => none
   | .depPair a1 a2, c, σ => match c with
     | .depPair b1 b2 => match unify a1 b1 σ with
       | some σ' => unify a2 b2 σ'
       | none => none
     | _ => none
+  | .skolemPlaceholder _, _, _ => none
 
 theorem lookup_cons_self (name : String) (c : GTerm) (σ : Subst) :
     lookup ((name, c) :: σ) name = some c := by
@@ -102,6 +116,12 @@ theorem unify_extends (t : GTerm) :
       unify t c σ = some σ' → ∀ k v, lookup σ k = some v → lookup σ' k = some v := by
   induction t with
   | const a =>
+    intro c σ σ' h k v hkv
+    cases c <;> simp only [unify] at h <;> try contradiction
+    split at h
+    · injection h with h; subst h; exact hkv
+    · contradiction
+  | skolem a =>
     intro c σ σ' h k v hkv
     cases c <;> simp only [unify] at h <;> try contradiction
     split at h
@@ -136,7 +156,7 @@ theorem unify_extends (t : GTerm) :
       by_cases hk : name = k
       · rw [← hk] at hkv; rw [hl] at hkv; contradiction
       · simp only [lookup, if_neg hk]; exact hkv
-  | skolem na da ih =>
+  | skolemFn na da ih =>
     intro c σ σ' h k v hkv
     cases c <;> simp only [unify] at h <;> try contradiction
     rename_i nb db
@@ -153,6 +173,10 @@ theorem unify_extends (t : GTerm) :
       rw [hh] at h
       have h1 := ih1 b1 σ σ1 hh k v hkv
       exact ih2 b2 σ1 σ' h k v h1
+  | skolemPlaceholder a =>
+    intro c σ σ' h k v hkv
+    simp only [unify] at h
+    contradiction
 
 theorem subst_stable (t : GTerm) :
     ∀ (σ σ' : Subst),
@@ -160,6 +184,7 @@ theorem subst_stable (t : GTerm) :
       NoVar (subst σ t) → subst σ' t = subst σ t := by
   induction t with
   | const a => intro _ _ _ _; rfl
+  | skolem a => intro _ _ _ _; rfl
   | num a => intro _ _ _ _; rfl
   | descr a => intro _ _ _ _; rfl
   | unspec => intro _ _ _ _; rfl
@@ -170,7 +195,7 @@ theorem subst_stable (t : GTerm) :
     | some w =>
       have hl' : lookup σ' name = some w := hext name w hl
       simp only [subst, hl, hl']
-  | skolem n d ih =>
+  | skolemFn n d ih =>
     intro σ σ' hext hg
     simp only [subst] at hg ⊢
     rw [ih σ σ' hext hg]
@@ -179,12 +204,21 @@ theorem subst_stable (t : GTerm) :
     simp only [subst] at hg ⊢
     obtain ⟨hga, hgb⟩ := hg
     rw [iha σ σ' hext hga, ihb σ σ' hext hgb]
+  | skolemPlaceholder n =>
+    intro σ σ' hext hg
+    simp only [subst, NoVar] at hg
 
 theorem unify_sound (t : GTerm) :
     ∀ (c : GTerm) (σ σ' : Subst),
       NoVar c → unify t c σ = some σ' → subst σ' t = c := by
   induction t with
   | const a =>
+    intro c σ σ' _ h
+    cases c <;> simp only [unify] at h <;> try contradiction
+    split at h
+    · next hab => injection h with h; subst h; simp only [subst]; rw [hab]
+    · contradiction
+  | skolem a =>
     intro c σ σ' _ h
     cases c <;> simp only [unify] at h <;> try contradiction
     split at h
@@ -218,7 +252,7 @@ theorem unify_sound (t : GTerm) :
     | none =>
       simp only [unify, hl] at h; injection h with h; subst h
       simp only [subst, lookup_cons_self]
-  | skolem na da ih =>
+  | skolemFn na da ih =>
     intro c σ σ' hc h
     cases c <;> simp only [unify] at h <;> try contradiction
     rename_i nb db
@@ -243,6 +277,10 @@ theorem unify_sound (t : GTerm) :
       have e1 : subst σ' a1 = subst σ1 a1 :=
         subst_stable a1 σ1 σ' hext (by rw [e1σ1]; exact hb1)
       simp only [subst]; rw [e1, e1σ1, e2]
+  | skolemPlaceholder a =>
+    intro c σ σ' hc h
+    simp only [unify] at h
+    contradiction
 
 /- ── Atom-level unifier: the arg-wise fold that mirrors `unify_facts` ─────────────────────── -/
 

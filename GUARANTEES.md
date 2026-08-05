@@ -148,13 +148,36 @@ There is no confident-sounding middle ground. The engine never guesses. (One del
 
 **Cost:** O(KB_size) per clone (acceptable for v1). Copy-on-write overlay is future work.
 
+## Internal Witness Identity
+
+Generated witnesses are structurally distinct from user constants. Internally, an
+independent witness is `GroundTerm::Skolem` and a dependent witness is
+`GroundTerm::SkolemFn`; its semantic id contains the source assertion id,
+binder-local ordinal, individual/event sort, and generated/import origin. The
+friendly `sk_N` or `sk_N(argument)` rendering is presentation only and is never
+parsed to recover identity or provenance. Consequently, user constants whose text
+is `sk_0` or `sk_0(adam)` remain different entities through matching, equality,
+event-role joins, rule deduplication, find/count, proof memoization, persistence,
+retraction, and rebuild. Public witness bindings and existential/universal proof
+payloads expose `knowledge-base`, `generated-witness`, or `existential-import`
+origin explicitly.
+
+The typed fact-store schema is v2. An authoritative older or populated unversioned
+store fails closed; the engine's disposable mirror is instead erased and replayed
+from its authoritative `LogicBuffer` assertion registry. A custom nonempty store
+cannot be installed directly because typed rows alone cannot reconstruct rules,
+domain/equality indexes, source provenance, or retraction semantics. Finally, the
+string-only compute protocol never receives an internal witness: such a call is
+`UNKNOWN (backend-unavailable)`, while an equal-looking user constant still
+dispatches normally.
+
 ## Aggregation
 
 **Counting is ENTITY-level (decided 2026-07-02).** Everywhere a quantity is produced — exact-count queries (`PA lo X cu Y`), witness enumeration (`??` / `query_find`), `count_witnesses`, `aggregate` — the unit is the *entity*, not the name or the derivation:
 
 - **Identity classes collapse:** two names merged by `=` are ONE entity and count once (the tally enumerates one representative per equivalence class; `[Find]` shows a real asserted name, not a canonical rewrite). Verified against clingo's `#count` over canonicalized constants (the ASP count oracle no longer skips identity-bearing KBs).
 - **Derivation events don't multiply:** a witness tuple's identity is its entity bindings — the internal `_ev*` event variables are engine bookkeeping (pre-decision, one dog answered `?? da gerku` once per derivation event).
-- **Existential import is profile-explicit and algebraically consistent (2026-08-05).** The default is **clean-core (existential import OFF)**: a description universal (`animal(every dog).`) adds a rule but does not assert that any dog exists, so `some` remains plain ∃. `NIBLI_EXISTENTIAL_IMPORT=1`, `:existential-import on`, or the fallible programmatic setter explicitly enables the legacy xorlo profile. In that profile the fresh import witness is a real member of the logical domain: it participates consistently in ∃, ∀, `??`/`query_find`, exact-count, `count_witnesses`, and aggregate enumeration. There is no hidden "boolean-only" entity class. Every enumerated binding carries `WitnessOrigin::{KnowledgeBase, ExistentialImport}`; existential proof steps carry the same origin, and `CountResult` reports `existential_imported` alongside `actual`, so a consumer never has to infer provenance from the internal `sk_` spelling. Switching the profile transactionally rebuilds the active KB, making an already-asserted universal gain or lose its imported witness immediately; a failed replay restores the prior profile and state. The host prints the active profile at startup and on `:existential-import`; the UI labels its active profile. Metamorphic tests pin `some`, find, `exactly 0/1`, count, aggregate, toggle, and retraction behavior in both profiles. The clingo differential remains a clean-core oracle; the legacy witness algebra is pinned by the dedicated engine/reasoner battery rather than attributed to an ASP program that never minted it.
+- **Existential import is profile-explicit and algebraically consistent (2026-08-05).** The default is **clean-core (existential import OFF)**: a description universal (`animal(every dog).`) adds a rule but does not assert that any dog exists, so `some` remains plain ∃. `NIBLI_EXISTENTIAL_IMPORT=1`, `:existential-import on`, or the fallible programmatic setter explicitly enables the legacy xorlo profile. In that profile the fresh import witness is a real member of the logical domain: it participates consistently in ∃, ∀, `??`/`query_find`, exact-count, `count_witnesses`, and aggregate enumeration. There is no hidden "boolean-only" entity class. Every enumerated binding carries `WitnessOrigin::{KnowledgeBase, GeneratedWitness, ExistentialImport}`; existential proof steps carry the same origin, and `CountResult` reports `existential_imported` alongside `actual`, so a consumer never has to infer provenance from the internal `sk_` spelling. Switching the profile transactionally rebuilds the active KB, making an already-asserted universal gain or lose its imported witness immediately; a failed replay restores the prior profile and state. The host prints the active profile at startup and on `:existential-import`; the UI labels its active profile. Metamorphic tests pin `some`, find, `exactly 0/1`, count, aggregate, toggle, and retraction behavior in both profiles. The clingo differential remains a clean-core oracle; the legacy witness algebra is pinned by the dedicated engine/reasoner battery rather than attributed to an ASP program that never minted it.
 
 **Exact-count ASSERTIONS materialize witnesses (decided 2026-07-02).** `pa lo gerku cu barda` asserts one fresh witness that is a dog and is big — so the assertion is SELF-DERIVABLE (`? pa lo gerku cu barda` is TRUE) and composes with the closed world (asserting more big dogs later changes the count the query reports, as CWA requires). `re lo …` materializes two DISTINCT witnesses with distinct events. Count 0 (`no lo …`) materializes nothing: under CWA "no X are Y" already holds unless the store contradicts it. Scope: count assertions are defined for top-level assertions; a count inside a rule consequent is not a supported shape.
 

@@ -2,7 +2,7 @@
 
 The component boundary, as declared in
 [`wit/world.wit`](https://github.com/dhilipsiva/nibli/blob/main/wit/world.wit)
-— package **`nibli:engine@0.8.0`**, world **`nibli-pipeline`**:
+— package **`nibli:engine@0.9.0`**, world **`nibli-pipeline`**:
 
 ```wit
 world nibli-pipeline {
@@ -36,7 +36,7 @@ The IR and verdict types ([Pipeline & IR](pipeline-and-ir.md)):
   `resource-exceeded(resource-kind)`, with `unknown-reason` ∈ {`cycle-cut`,
   `incomplete-knowledge`, `naf-dependent`, `backend-unavailable`,
   `non-finite`} and `resource-kind` ∈ {`depth`, `fuel`, `memory`}.
-- `witness-origin`: `knowledge-base` | `existential-import`;
+- `witness-origin`: `knowledge-base` | `generated-witness` | `existential-import`;
   `witness-binding { variable, term, origin }`, `fact-id` (u64),
   `fact-summary { id, label, root-count }`.
 - `proof-rule` (19 cases) + 15 named-field payload records (WIT variant cases
@@ -111,7 +111,7 @@ hand-written `convert_proof_rule` bridge in `nibli-pipeline/src/lib.rs`
 (`proof-step`/`proof-trace` reference it and stay generated too).
 
 **Version-bump checklist:** the remap keys pin the interface version
-(`nibli:engine/logic-types@0.8.0/…`). Any WIT version change must bump **all
+(`nibli:engine/logic-types@0.9.0/…`). Any WIT version change must bump **all
 eleven keys** — a missed key silently stops remapping and resurrects the mirror
 types.
 
@@ -119,6 +119,7 @@ types.
 
 | WIT | Change |
 |-----|--------|
+| 0.9.0 | Added `generated-witness` origin and changed universal proof payloads from bare terms to origin-bearing witness bindings, separating reasoner-minted witnesses from user constants at every public result/proof surface |
 | 0.8.0 | Witness origin on find/exists proofs, imported contribution on count proofs, fallible `set-existential-import`, and `existential-import-enabled` |
 | 0.7.0 | `set-materialization` + `materialization-report` |
 | 0.6.0 | `export authorizer` (wrapping native `nibli-auth`) |

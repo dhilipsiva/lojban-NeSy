@@ -102,26 +102,14 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   `smoke-host-existential-import` pins the component path; the independent oracle
   engines explicitly select clean-core. **Remaining work:** in the separate `book/`
   repository, update Chapters 5, 8, and 12 plus Appendices A, B, E, and K to describe
-  this exact algebra, the default/opt-in controls, structural witness origin, WIT 0.8.0,
+  this exact algebra, the default/opt-in controls, structural witness origin, WIT 0.9.0
+  (including generated origin on find/existential/universal proof surfaces),
   and the fact that ON→OFF/OFF→ON applies immediately to already-loaded rules. Chapter
   12's consent capture currently depends on the historical import profile (the engine's
   `ch12_consent_case_study_traced_query_completes` watchdog now selects it explicitly),
   so either mark that profile in the capture or recast the example for clean-core. Run the
   book validator, reference checker, capture checker, and two byte-idempotence passes
   before removing this residual with the `book-todo` workflow.
-
-- **Separate internal Skolem identity from user constants.** `GroundTerm::Constant`
-  represents both user data and generated witnesses (`nibli-reason/src/kb.rs`:145-165),
-  the generator emits unchecked `sk_<counter>` strings (:956-965), and reasoning uses
-  that spelling as a semantic classifier (`nibli-reason/src/reasoning.rs`:2440-2452).
-  Direct LogicBuffer/WIT, replay, and compute paths can supply the same string even if the
-  KR surface normally cannot, aliasing user data with an internal witness. Introduce a
-  tagged/opaque Skolem term, or reserve and reject the namespace at every ingress and stop
-  inferring origin from a prefix. **Exit:** adversarial `sk_0` constants remain distinct
-  through equality, event roles, find/count, proof, persistence, and retraction/rebuild;
-  rendering may show a friendly `sk_N` without using that display as identity; direct,
-  component, replay, and compute collision tests pass with `just test`,
-  `just test-engine`, `just ci-wasm`, and `just verify-soundness`.
 
 - **Stop presenting generative exact-count assertions as persistent cardinality
   constraints.** A top-level `big(exactly 1 dog).` currently creates one fresh matching

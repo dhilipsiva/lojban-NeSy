@@ -1169,7 +1169,7 @@ fn forall_does_not_quantify_over_event_skolems() {
     assert_buf(&kb, fact);
     {
         let mut inner = kb.inner.borrow_mut();
-        inner.note_event_entity("sk_ev0");
+        inner.note_event_entity(GroundTerm::Skolem(SkolemSymbol::event_for_test(0)));
         inner.domain_members_dirty = true;
     }
     let bare_forall = {

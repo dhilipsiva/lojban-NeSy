@@ -129,8 +129,10 @@ impl LogicBuffer {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum WitnessOrigin {
-    /// A term already present in the asserted or rule-derived knowledge base.
+    /// A non-generated term supplied by asserted data or a rule template.
     KnowledgeBase,
+    /// An opaque witness minted by the reasoner for an existential.
+    GeneratedWitness,
     /// A witness minted by the optional legacy existential-import profile.
     ExistentialImport,
 }
@@ -139,6 +141,7 @@ impl WitnessOrigin {
     pub fn label(self) -> &'static str {
         match self {
             Self::KnowledgeBase => "knowledge-base",
+            Self::GeneratedWitness => "generated-witness",
             Self::ExistentialImport => "existential-import",
         }
     }
@@ -152,6 +155,7 @@ impl Default for WitnessOrigin {
 
 /// A single witness binding: variable name → logical term value, with origin.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WitnessBinding {
     pub variable: String,
     pub term: LogicalTerm,
@@ -168,7 +172,8 @@ pub enum UnknownReason {
     /// Result depends on negation-as-failure and is therefore not classically proved.
     NafDependent,
     /// An external compute predicate could not be evaluated because its backend was
-    /// unreachable or unregistered — the result is genuinely undetermined, NOT false.
+    /// unreachable or unregistered, or because dispatch would expose an opaque
+    /// engine-generated witness — the result is genuinely undetermined, NOT false.
     BackendUnavailable,
     /// A numeric operand or computed result is non-finite (±inf/NaN) — e.g. a literal
     /// too large for an f64 (~309+ digits overflows to ±inf). The comparison/arithmetic
@@ -263,9 +268,9 @@ pub enum ProofRule {
     #[cfg_attr(feature = "serde", serde(rename = "forall_vacuous"))]
     ForallVacuous,
     #[cfg_attr(feature = "serde", serde(rename = "forall_verified"))]
-    ForallVerified { entities: Vec<LogicalTerm> },
+    ForallVerified { entities: Vec<WitnessBinding> },
     #[cfg_attr(feature = "serde", serde(rename = "forall_counterexample"))]
-    ForallCounterexample { entity: LogicalTerm },
+    ForallCounterexample { entity: WitnessBinding },
     #[cfg_attr(feature = "serde", serde(rename = "count_result"))]
     CountResult {
         expected: u32,
@@ -472,6 +477,16 @@ mod tests {
             &LogicNode::NotNode(0),
             &LogicalTerm::Unspecified,
             &ProofRule::Conjunction,
+        );
+    }
+
+    #[test]
+    fn witness_origin_labels_are_stable_and_unambiguous() {
+        assert_eq!(WitnessOrigin::KnowledgeBase.label(), "knowledge-base");
+        assert_eq!(WitnessOrigin::GeneratedWitness.label(), "generated-witness");
+        assert_eq!(
+            WitnessOrigin::ExistentialImport.label(),
+            "existential-import"
         );
     }
 

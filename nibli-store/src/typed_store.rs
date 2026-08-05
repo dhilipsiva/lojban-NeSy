@@ -13,7 +13,7 @@ use std::path::Path;
 use crate::StoreError;
 use nibli_reason::fact_store::FactStore;
 use nibli_reason::kb::StoredFact;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
 
 const TYPED_FACTS_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("typed_facts");
 const TYPED_PRED_INDEX_TABLE: TableDefinition<&str, &[u8]> =
@@ -24,7 +24,7 @@ const TYPED_META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("typ
 /// `StoredFact`). Bump on any incompatible layout change; a mismatch fails
 /// `open` closed (`StoreError::SchemaVersion`) instead of silently dropping
 /// undecodable rows. Mirrors the sibling `NibliStore` guard.
-const TYPED_SCHEMA_VERSION: u32 = 1;
+const TYPED_SCHEMA_VERSION: u32 = 2;
 
 /// Persistent `FactStore` backed by redb.
 ///
@@ -52,8 +52,11 @@ impl RedbFactStore {
         {
             let txn = db.begin_write()?;
             {
-                let _ = txn.open_table(TYPED_FACTS_TABLE)?;
-                let _ = txn.open_table(TYPED_PRED_INDEX_TABLE)?;
+                let has_unversioned_rows = {
+                    let facts = txn.open_table(TYPED_FACTS_TABLE)?;
+                    let pred_index = txn.open_table(TYPED_PRED_INDEX_TABLE)?;
+                    facts.len()? != 0 || pred_index.len()? != 0
+                };
                 let mut meta = txn.open_table(TYPED_META_TABLE)?;
 
                 let existing_version: Option<u32> = meta
@@ -68,8 +71,16 @@ impl RedbFactStore {
                         });
                     }
                     None => {
-                        // Fresh store, or a pre-versioning store (whose layout
-                        // IS version 1): stamp it.
+                        // An unversioned populated store has the original v1
+                        // postcard layout. It cannot be adopted as v2: enum
+                        // discriminants may decode as the wrong GroundTerm.
+                        // Only a genuinely empty database may be initialized.
+                        if has_unversioned_rows {
+                            return Err(StoreError::SchemaVersion {
+                                expected: TYPED_SCHEMA_VERSION,
+                                found: 1,
+                            });
+                        }
                         let bytes = postcard::to_allocvec(&TYPED_SCHEMA_VERSION)?;
                         meta.insert("schema_version", bytes.as_slice())?;
                     }
@@ -82,13 +93,55 @@ impl RedbFactStore {
         Ok(db)
     }
 
+    /// Open a disposable typed mirror, erase every encoded row, and stamp the
+    /// current schema in one transaction.
+    ///
+    /// Unlike [`Self::open_database`], this does not require a matching schema
+    /// stamp because the caller has an independent source of truth. The old
+    /// fact bytes are removed without ever being deserialized. The clear and
+    /// restamp are atomic so a failed rebuild cannot leave legacy bytes
+    /// advertised as the current layout.
+    fn open_database_for_rebuild(path: &Path) -> Result<Database, StoreError> {
+        let db = Database::create(path)?;
+
+        {
+            let txn = db.begin_write()?;
+            {
+                let mut facts = txn.open_table(TYPED_FACTS_TABLE)?;
+                let ids: Vec<u64> = facts
+                    .iter()?
+                    .map(|entry| entry.map(|(key, _)| key.value()))
+                    .collect::<Result<_, _>>()?;
+                for id in ids {
+                    facts.remove(id)?;
+                }
+
+                let mut pred_index = txn.open_table(TYPED_PRED_INDEX_TABLE)?;
+                let relations: Vec<String> = pred_index
+                    .iter()?
+                    .map(|entry| entry.map(|(key, _)| key.value().to_string()))
+                    .collect::<Result<_, _>>()?;
+                for relation in relations {
+                    pred_index.remove(relation.as_str())?;
+                }
+
+                let mut meta = txn.open_table(TYPED_META_TABLE)?;
+                let bytes = postcard::to_allocvec(&TYPED_SCHEMA_VERSION)?;
+                meta.insert("schema_version", bytes.as_slice())?;
+            }
+            txn.commit()?;
+        }
+
+        Ok(db)
+    }
+
     /// Open or create a persistent typed fact store at the given path.
     ///
     /// Fails CLOSED (`StoreError`) on a schema-version mismatch, an
     /// undecodable persisted fact, or an unsound opaque-abstraction marker — a
     /// corrupt or incompatible store must never silently load a subset of its
-    /// rows. Valid v1 rows with a non-canonical digest prefix are normalized
-    /// from their complete key and rewritten durably.
+    /// rows. Valid opaque-abstraction-v1 markers with a non-canonical digest
+    /// prefix are normalized from their complete key and rewritten durably.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let db = Self::open_database(path)?;
 
@@ -114,6 +167,11 @@ impl RedbFactStore {
                     StoreError::Serialization(format!(
                         "typed store fact {id} failed to decode ({e}) — refusing to load a \
                          partial store"
+                    ))
+                })?;
+                nibli_reason::kb::validate_stored_fact_groundness(&fact).map_err(|e| {
+                    StoreError::Serialization(format!(
+                        "typed store fact {id} is not ground ({e}) — refusing to load a partial store"
                     ))
                 })?;
                 let persisted = fact.clone();
@@ -159,8 +217,8 @@ impl RedbFactStore {
         })
     }
 
-    /// Open the typed store as a disposable mirror and erase all existing rows
-    /// without decoding them.
+    /// Open the typed store as a disposable mirror, erase all existing rows
+    /// without decoding them, and stamp the current schema version.
     ///
     /// This is intentionally destructive and is only correct when another
     /// durable registry is the source of truth and will immediately replay the
@@ -168,14 +226,12 @@ impl RedbFactStore {
     /// rows without weakening [`Self::open`]'s fail-closed contract for callers
     /// that treat the typed store itself as authoritative.
     pub fn open_for_rebuild(path: &Path) -> Result<Self, StoreError> {
-        let store = Self {
-            db: Self::open_database(path)?,
+        Ok(Self {
+            db: Self::open_database_for_rebuild(path)?,
             pred_index: HashMap::new(),
             cache: HashMap::new(),
             next_id: 0,
-        };
-        store.clear_disk()?;
-        Ok(store)
+        })
     }
 
     /// Persist the predicate index to disk.
@@ -255,6 +311,10 @@ impl FactStore for RedbFactStore {
     }
 
     fn insert(&mut self, mut fact: StoredFact) {
+        if let Err(e) = nibli_reason::kb::validate_stored_fact_groundness(&fact) {
+            eprintln!("[Persist Error] rejected non-ground typed fact: {e}");
+            return;
+        }
         if let Err(e) = nibli_reason::kb::canonicalize_stored_fact_abstraction_marker(&mut fact) {
             eprintln!(
                 "[Persist Error] rejected typed fact with invalid opaque-abstraction identity: \
@@ -397,6 +457,28 @@ mod schema_guard_tests {
         txn.commit().unwrap();
     }
 
+    fn stamp_schema(path: &Path, version: u32) {
+        let db = Database::create(path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut meta = txn.open_table(TYPED_META_TABLE).unwrap();
+            let bytes = postcard::to_allocvec(&version).unwrap();
+            meta.insert("schema_version", bytes.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
+    fn read_schema(path: &Path) -> u32 {
+        let db = Database::create(path).unwrap();
+        let txn = db.begin_read().unwrap();
+        let meta = txn.open_table(TYPED_META_TABLE).unwrap();
+        let encoded = meta
+            .get("schema_version")
+            .unwrap()
+            .expect("schema stamp must exist");
+        postcard::from_bytes(encoded.value()).unwrap()
+    }
+
     #[test]
     fn fresh_store_is_stamped_and_reopens() {
         let path = temp_db_path("stamp_reopen");
@@ -419,16 +501,7 @@ mod schema_guard_tests {
 
         // Stamp the store, then overwrite the version with a future one.
         drop(RedbFactStore::open(&path).unwrap());
-        {
-            let db = Database::create(&path).unwrap();
-            let txn = db.begin_write().unwrap();
-            {
-                let mut meta = txn.open_table(TYPED_META_TABLE).unwrap();
-                let bytes = postcard::to_allocvec(&(TYPED_SCHEMA_VERSION + 1)).unwrap();
-                meta.insert("schema_version", bytes.as_slice()).unwrap();
-            }
-            txn.commit().unwrap();
-        }
+        stamp_schema(&path, TYPED_SCHEMA_VERSION + 1);
 
         match RedbFactStore::open(&path) {
             Err(StoreError::SchemaVersion { expected, found }) => {
@@ -438,6 +511,50 @@ mod schema_guard_tests {
             Err(other) => panic!("expected SchemaVersion error, got {other}"),
             Ok(_) => panic!("expected SchemaVersion error, got a loaded store"),
         }
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn v1_fails_closed_but_disposable_rebuild_wipes_and_restamps() {
+        let path = temp_db_path("v1_rebuild");
+        cleanup(&path);
+
+        drop(RedbFactStore::open(&path).unwrap());
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                // This row is deliberately not valid under either layout. A
+                // successful rebuild proves it was erased, not decoded.
+                let mut facts = txn.open_table(TYPED_FACTS_TABLE).unwrap();
+                facts
+                    .insert(41u64, [0xffu8, 0xff, 0xff, 0xff].as_slice())
+                    .unwrap();
+                let mut pred_index = txn.open_table(TYPED_PRED_INDEX_TABLE).unwrap();
+                let ids = postcard::to_allocvec(&vec![41u64]).unwrap();
+                pred_index.insert("legacy", ids.as_slice()).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        stamp_schema(&path, 1);
+
+        match RedbFactStore::open(&path) {
+            Err(StoreError::SchemaVersion { expected, found }) => {
+                assert_eq!(expected, TYPED_SCHEMA_VERSION);
+                assert_eq!(found, 1);
+            }
+            Err(other) => panic!("expected SchemaVersion error, got {other}"),
+            Ok(_) => panic!("authoritative open must reject a v1 store"),
+        }
+        assert_eq!(read_schema(&path), 1, "a rejected open must not restamp v1");
+
+        let rebuilt = RedbFactStore::open_for_rebuild(&path)
+            .expect("a disposable mirror may discard v1 bytes without decoding them");
+        assert!(rebuilt.is_empty());
+        drop(rebuilt);
+        assert_eq!(read_schema(&path), TYPED_SCHEMA_VERSION);
+        assert!(RedbFactStore::open(&path).unwrap().is_empty());
 
         cleanup(&path);
     }
@@ -546,8 +663,8 @@ mod schema_guard_tests {
     }
 
     #[test]
-    fn pre_versioning_store_is_adopted_as_v1() {
-        let path = temp_db_path("adopt_legacy");
+    fn populated_pre_versioning_store_fails_closed_until_rebuilt() {
+        let path = temp_db_path("reject_unversioned_legacy");
         cleanup(&path);
 
         // Simulate a store created before the schema guard: fact + index
@@ -564,13 +681,55 @@ mod schema_guard_tests {
             txn.commit().unwrap();
         }
 
-        // The legacy layout IS version 1: open must adopt (stamp) and load it.
-        let store = RedbFactStore::open(&path).expect("pre-versioning store must be adopted");
-        assert_eq!(store.len(), 1);
-        drop(store);
-        // And the stamp must persist for the next open.
-        assert!(RedbFactStore::open(&path).is_ok());
+        // The unversioned populated layout is known to be v1. Treating it as
+        // v2 would let old postcard discriminants be misread as new terms.
+        match RedbFactStore::open(&path) {
+            Err(StoreError::SchemaVersion { expected, found }) => {
+                assert_eq!(expected, TYPED_SCHEMA_VERSION);
+                assert_eq!(found, 1);
+            }
+            Err(other) => panic!("expected SchemaVersion error, got {other}"),
+            Ok(_) => panic!("populated pre-versioning store must fail closed"),
+        }
 
+        let rebuilt = RedbFactStore::open_for_rebuild(&path).unwrap();
+        assert!(rebuilt.is_empty());
+        drop(rebuilt);
+        assert_eq!(read_schema(&path), TYPED_SCHEMA_VERSION);
+        assert!(RedbFactStore::open(&path).unwrap().is_empty());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn current_schema_rejects_persisted_compiler_only_terms() {
+        let path = temp_db_path("reject_non_ground_v2");
+        cleanup(&path);
+
+        let non_ground = StoredFact::Bare(GroundFact::new(
+            "p",
+            vec![nibli_reason::kb::GroundTerm::PatternVar("x".to_string())],
+        ));
+        raw_insert(&path, 0, &non_ground);
+        stamp_schema(&path, TYPED_SCHEMA_VERSION);
+
+        match RedbFactStore::open(&path) {
+            Err(StoreError::Serialization(message)) => {
+                assert!(
+                    message.contains("not ground"),
+                    "unexpected error: {message}"
+                );
+                assert!(
+                    message.contains("compiler-only"),
+                    "unexpected error: {message}"
+                );
+            }
+            Err(other) => panic!("expected Serialization error, got {other}"),
+            Ok(_) => panic!("a persisted PatternVar must never enter the concrete fact store"),
+        }
+
+        let rebuilt = RedbFactStore::open_for_rebuild(&path).unwrap();
+        assert!(rebuilt.is_empty());
         cleanup(&path);
     }
 }

@@ -197,9 +197,14 @@ fn summarize_false(trace: &ProofTrace, register: Register) -> Option<String> {
                 return Some(format!("Nothing known establishes that {what}."));
             }
             ProofRule::ForallCounterexample { entity } => {
+                let origin = match entity.origin {
+                    nibli_protocol::WitnessOrigin::KnowledgeBase => String::new(),
+                    other => format!(" [{}]", other.label()),
+                };
                 return Some(format!(
-                    "It is not true for every case — counterexample: {}.",
-                    entity.display()
+                    "It is not true for every case — counterexample: {}{}.",
+                    entity.term.display(),
+                    origin
                 ));
             }
             ProofRule::ExistsFailed => {

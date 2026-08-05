@@ -64,7 +64,7 @@ fn test_skolem_fn_registry_populated() {
         !inner.skolem_fn_registry.is_empty(),
         "SkolemFn registry should have entries"
     );
-    assert_eq!(inner.skolem_fn_registry[0].base_name, "sk_0");
+    assert_eq!(inner.skolem_fn_registry[0].symbol.display_name(), "sk_0");
     assert_eq!(inner.skolem_fn_registry[0].dep_count, 1);
 }
 

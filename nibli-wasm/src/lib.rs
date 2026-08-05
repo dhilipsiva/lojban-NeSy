@@ -247,6 +247,22 @@ mod tests {
     }
 
     #[test]
+    fn generated_witness_origin_is_exposed() {
+        let session = Session::new();
+        session.assert_text("dog(Adam) -> big(some cat).").unwrap();
+        session.assert_text("dog(Adam).").unwrap();
+
+        let found: serde_json::Value =
+            serde_json::from_str(&session.query_find("cat($c).").unwrap()).unwrap();
+        let bindings = found["bindings"].as_array().unwrap();
+        assert!(bindings.iter().any(|row| {
+            row.as_array().unwrap().iter().any(|binding| {
+                binding["variable"] == "$c" && binding["origin"] == "generated-witness"
+            })
+        }));
+    }
+
+    #[test]
     fn syllogism_two_hop_proof() {
         // Book Ch 19's minimal worked example — the demo's first tab.
         let session = load("animal(every dog).\neats(every animal).\ndog(Adam).");

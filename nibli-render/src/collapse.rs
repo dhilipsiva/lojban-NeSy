@@ -741,7 +741,7 @@ mod tests {
                     ProofRule::ExistsWitness {
                         var: "_ev0".to_string(),
                         term: nibli_protocol::LogicalTerm::Constant("sk_3(adam)".to_string()),
-                        origin: nibli_protocol::WitnessOrigin::KnowledgeBase,
+                        origin: nibli_protocol::WitnessOrigin::GeneratedWitness,
                     },
                     true,
                     vec![13],
@@ -875,7 +875,7 @@ mod tests {
                     ProofRule::ExistsWitness {
                         var: "_e".into(),
                         term: nibli_protocol::LogicalTerm::Constant("sk_1".into()),
-                        origin: nibli_protocol::WitnessOrigin::KnowledgeBase,
+                        origin: nibli_protocol::WitnessOrigin::GeneratedWitness,
                     },
                     true,
                     vec![2],
@@ -887,7 +887,7 @@ mod tests {
                     ProofRule::ExistsWitness {
                         var: "_e".into(),
                         term: nibli_protocol::LogicalTerm::Constant("sk_2".into()),
-                        origin: nibli_protocol::WitnessOrigin::KnowledgeBase,
+                        origin: nibli_protocol::WitnessOrigin::GeneratedWitness,
                     },
                     true,
                     vec![6],
@@ -899,7 +899,7 @@ mod tests {
                     ProofRule::ExistsWitness {
                         var: "_e".into(),
                         term: nibli_protocol::LogicalTerm::Constant("sk_3".into()),
-                        origin: nibli_protocol::WitnessOrigin::KnowledgeBase,
+                        origin: nibli_protocol::WitnessOrigin::GeneratedWitness,
                     },
                     true,
                     vec![10],

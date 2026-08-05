@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 // them so every consumer keeps using `nibli_protocol::{ProofRule, ProofStep,
 // ProofTrace, LogicalTerm}` unchanged. The JSON (de)serialization helpers live
 // below as free functions (`proof_trace_to_json` / `proof_trace_from_json`).
-pub use nibli_types::logic::{LogicalTerm, ProofRule, ProofStep, ProofTrace, WitnessOrigin};
+pub use nibli_types::logic::{
+    LogicalTerm, ProofRule, ProofStep, ProofTrace, WitnessBinding, WitnessOrigin,
+};
 
 /// The native TCP compute-backend JSON-Lines client, shared by nibli-host (the WASM
 /// host) and nibli-engine (the native embedder). Gated behind the
@@ -141,5 +143,38 @@ mod tests {
             json.contains(r#""term":{"constant":"adam"}"#),
             "json: {json}"
         );
+    }
+
+    #[test]
+    fn generated_witness_origin_json_encoding_is_pinned() {
+        let trace = one_step(ProofRule::ExistsWitness {
+            var: "x".to_string(),
+            term: LogicalTerm::Constant("sk_0".to_string()),
+            origin: WitnessOrigin::GeneratedWitness,
+        });
+        let json = proof_trace_to_json(&trace);
+        assert!(
+            json.contains(r#""origin":"generated_witness""#),
+            "json: {json}"
+        );
+        assert_eq!(proof_trace_from_json(&json), Some(trace));
+    }
+
+    #[test]
+    fn forall_entities_carry_origin_in_json() {
+        let trace = one_step(ProofRule::ForallVerified {
+            entities: vec![WitnessBinding {
+                variable: "x".to_string(),
+                term: LogicalTerm::Constant("sk_0".to_string()),
+                origin: WitnessOrigin::GeneratedWitness,
+            }],
+        });
+        let json = proof_trace_to_json(&trace);
+        assert!(json.contains(r#""type":"forall_verified""#), "json: {json}");
+        assert!(
+            json.contains(r#""origin":"generated_witness""#),
+            "json: {json}"
+        );
+        assert_eq!(proof_trace_from_json(&json), Some(trace));
     }
 }

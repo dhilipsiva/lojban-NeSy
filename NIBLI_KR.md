@@ -149,9 +149,12 @@ but does not establish that a dog exists; `some` is plain ∃. An embedder or op
 may explicitly enable the legacy profile (`NIBLI_EXISTENTIAL_IMPORT=1`,
 `:existential-import on`, or the programmatic setter). Then the rule also mints a
 presupposition witness, and that witness participates consistently in ∃, ∀, find,
-exact-count, `count_witnesses`, and aggregate enumeration. Find bindings and existential
-proof steps expose `WitnessOrigin::ExistentialImport`; count proof steps expose the
-`existential_imported` contribution. Switching the profile rebuilds the active KB
+exact-count, `count_witnesses`, and aggregate enumeration. Find bindings and
+existential/universal proof payloads use `WitnessOrigin::GeneratedWitness` for ordinary
+reasoner-minted witnesses and `WitnessOrigin::ExistentialImport` for this legacy-profile
+witness; count proof steps expose the `existential_imported` contribution. Internally,
+these are source-scoped typed terms; the friendly `sk_N` spelling is display only and
+cannot alias an equal-looking user constant. Switching the profile rebuilds the active KB
 transactionally, so already-asserted universals change semantics immediately rather
 than waiting to be reasserted. This replaces the v0.1 default-ON, count-excluded behavior.
 

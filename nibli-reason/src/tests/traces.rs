@@ -357,7 +357,7 @@ fn non_ground_fact_is_dropped_at_the_assert_boundary() {
         StoredFact::Bare(GroundFact {
             relation: "mlatu".into(),
             args: vec![GroundTerm::SkolemFn(
-                "sk_9".into(),
+                SkolemSymbol::for_test(9),
                 Box::new(GroundTerm::PatternVar("y__v1".into())),
             )],
         }),
@@ -368,7 +368,7 @@ fn non_ground_fact_is_dropped_at_the_assert_boundary() {
         StoredFact::Bare(GroundFact {
             relation: "cipni".into(),
             args: vec![GroundTerm::SkolemFn(
-                "sk_10".into(),
+                SkolemSymbol::for_test(10),
                 Box::new(GroundTerm::DepPair(
                     Box::new(GroundTerm::Constant("adam".into())),
                     Box::new(GroundTerm::PatternVar("z__v2".into())),
@@ -388,7 +388,7 @@ fn non_ground_fact_is_dropped_at_the_assert_boundary() {
         StoredFact::Bare(GroundFact {
             relation: "gerku".into(),
             args: vec![GroundTerm::SkolemFn(
-                "sk_0".into(),
+                SkolemSymbol::for_test(0),
                 Box::new(GroundTerm::Constant("adam".into())),
             )],
         }),

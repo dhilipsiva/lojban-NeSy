@@ -97,8 +97,10 @@ impl CoreSession {
         Self::with_kb(nibli_reason::KnowledgeBase::new())
     }
 
-    /// Wrap an already-constructed KB (e.g. one built with a persistent
-    /// write-through fact store via `KnowledgeBase::with_store`).
+    /// Wrap an already-constructed KB (for example, one built with an empty
+    /// persistent write-through mirror via `KnowledgeBase::with_store`, then
+    /// populated by replaying its authoritative `LogicBuffer` registry with
+    /// stable ids). Typed mirror rows alone are not a complete KB snapshot.
     pub fn with_kb(kb: nibli_reason::KnowledgeBase) -> Self {
         CoreSession {
             kb,

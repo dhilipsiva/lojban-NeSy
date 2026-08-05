@@ -458,7 +458,6 @@ fn stratification_rollback_pops_flat_plus_group_edges() {
             }],
             false,
             false,
-            &HashSet::new(),
         );
         assert!(
             result.is_err(),
@@ -614,7 +613,6 @@ fn flat_naf_group_skipped_when_positive_condition_definitively_fails() {
             }],
             false,
             false,
-            &HashSet::new(),
         )
         .expect("the flat NAF-group rule must register (stratifiable)");
     }
@@ -771,25 +769,29 @@ fn description_import_survives_a_duplicate_first_dnf_branch() {
 }
 
 #[test]
-fn retracting_a_description_clears_presupposition_origin_state() {
+fn retracting_a_description_does_not_taint_equal_looking_user_constant_origin() {
     let kb = new_kb();
     kb.set_existential_import(true).unwrap();
     let description_id = assert_id(&kb, compile_surface("animal(every dog)."), "description");
     let old_witness = kb
         .inner
         .borrow()
-        .presupposition_witnesses
+        .known_entities
         .iter()
-        .next()
+        .find_map(|term| match term {
+            GroundTerm::Skolem(symbol)
+                if symbol.origin() == crate::kb::SkolemOrigin::ExistentialImport =>
+            {
+                Some(symbol.display_name())
+            }
+            _ => None,
+        })
         .expect("description must mint a presupposition witness")
         .clone();
 
     kb.retract_fact_inner(description_id)
         .expect("description should retract by rebuilding");
-    assert!(
-        kb.inner.borrow().presupposition_witnesses.is_empty(),
-        "rebuild must remove origin metadata for retracted witnesses"
-    );
+    assert!(kb.inner.borrow().known_entities.is_empty());
 
     // Reuse the exact old internal spelling as an ordinary real entity. A
     // stale origin entry would mislabel the otherwise-correct find result.
@@ -858,7 +860,6 @@ fn rule_identity_distinguishes_flat_naf_polarity_under_one_digest() {
             "animal",
             vec![variable, GroundTerm::Unspecified],
         ));
-        let generated = HashSet::new();
         assert!(
             crate::rules::register_rule(
                 &mut inner,
@@ -871,7 +872,6 @@ fn rule_identity_distinguishes_flat_naf_polarity_under_one_digest() {
                 vec![],
                 false,
                 false,
-                &generated,
             )
             .unwrap()
             .rule_registered
@@ -900,7 +900,6 @@ fn rule_identity_distinguishes_flat_naf_polarity_under_one_digest() {
                 vec![],
                 false,
                 false,
-                &generated,
             )
             .unwrap()
             .rule_registered

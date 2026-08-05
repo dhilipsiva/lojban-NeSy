@@ -238,29 +238,200 @@ pub(super) fn is_abstraction_marker(buffer: &LogicBuffer, node_id: u32) -> bool 
 // These types replace the internal representation string layer. Facts are stored and
 // matched structurally instead of via string serialization/tokenization.
 
-/// A ground term — the typed representation of a ground term.
-/// Implements Hash/Eq for direct use in HashSet-based fact stores.
+/// The semantic sort of an engine-generated witness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SkolemSort {
+    Individual,
+    Event,
+}
+
+/// Why an engine-generated witness exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SkolemOrigin {
+    Generated,
+    ExistentialImport,
+}
+
+/// Exact, non-display identity of an engine-generated witness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SkolemId {
+    source: SkolemSource,
+    binder_ordinal: u32,
+    sort: SkolemSort,
+    origin: SkolemOrigin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+enum SkolemSource {
+    Assertion(u64),
+    CycleSentinel,
+}
+
+/// Exact Skolem identity plus a presentation-only `sk_N` serial.
+///
+/// Equality, hashing, and ordering deliberately ignore `display_ordinal`: a
+/// rebuild may renumber the friendly label without changing semantic identity.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SkolemSymbol {
+    id: SkolemId,
+    display_ordinal: u64,
+}
+
+impl SkolemSymbol {
+    pub fn display_name(self) -> String {
+        format!("sk_{}", self.display_ordinal)
+    }
+
+    pub fn sort(self) -> SkolemSort {
+        self.id.sort
+    }
+
+    pub fn origin(self) -> SkolemOrigin {
+        self.id.origin
+    }
+
+    pub fn id(self) -> SkolemId {
+        self.id
+    }
+
+    pub(super) fn new(
+        assertion_id: u64,
+        binder_ordinal: u32,
+        display_ordinal: u64,
+        sort: SkolemSort,
+        origin: SkolemOrigin,
+    ) -> Self {
+        Self {
+            id: SkolemId {
+                source: SkolemSource::Assertion(assertion_id),
+                binder_ordinal,
+                sort,
+                origin,
+            },
+            display_ordinal,
+        }
+    }
+
+    pub(super) fn cycle_sentinel() -> Self {
+        Self {
+            id: SkolemId {
+                source: SkolemSource::CycleSentinel,
+                binder_ordinal: 0,
+                sort: SkolemSort::Event,
+                origin: SkolemOrigin::Generated,
+            },
+            display_ordinal: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(display_ordinal: u64) -> Self {
+        Self::new(
+            0,
+            display_ordinal as u32,
+            display_ordinal,
+            SkolemSort::Individual,
+            SkolemOrigin::Generated,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn event_for_test(display_ordinal: u64) -> Self {
+        Self::new(
+            0,
+            display_ordinal as u32,
+            display_ordinal,
+            SkolemSort::Event,
+            SkolemOrigin::Generated,
+        )
+    }
+}
+
+impl PartialEq for SkolemSymbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for SkolemSymbol {}
+
+impl Hash for SkolemSymbol {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl PartialOrd for SkolemSymbol {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SkolemSymbol {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+/// A ground term — the typed representation of a concrete term.
+/// Implements `Hash`/`Eq` for direct use in hash-indexed fact stores.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GroundTerm {
-    /// Named constant (e.g., "adam", "paris", "sk_0").
-    /// Also used for Skolem constants — the internal format does not distinguish them.
+    /// User-authored named constant (e.g., "adam", "paris", or the legal
+    /// equal-looking spelling "sk_0"). Never used for an internal witness.
     Constant(String),
+    /// Engine-generated independent witness. Its display spelling is not identity.
+    Skolem(SkolemSymbol),
     /// Floating-point number stored as bit pattern for Hash/Eq.
     Number(u64),
     /// Opaque description term (le-determiner).
     Description(String),
     /// Unspecified argument (zo'e).
     Unspecified,
-    /// Dependent Skolem function (e.g., SkolemFn("sk_1", Constant("adam"))).
-    SkolemFn(String, Box<GroundTerm>),
+    /// Dependent Skolem function (e.g., a typed symbol applied to `adam`).
+    SkolemFn(SkolemSymbol, Box<GroundTerm>),
     /// Multi-dependency pairing for SkolemFn with multiple universals.
     DepPair(Box<GroundTerm>, Box<GroundTerm>),
     /// Pattern variable — only used in rule templates, never in the fact store.
     PatternVar(String),
+    /// Typed compiler placeholder for an existential nested under a universal.
+    SkolemPlaceholder(SkolemSymbol),
 }
 
 impl GroundTerm {
+    fn contains_compiler_only_term(&self) -> bool {
+        match self {
+            GroundTerm::PatternVar(_) | GroundTerm::SkolemPlaceholder(_) => true,
+            GroundTerm::SkolemFn(_, dependency) => dependency.contains_compiler_only_term(),
+            GroundTerm::DepPair(left, right) => {
+                left.contains_compiler_only_term() || right.contains_compiler_only_term()
+            }
+            GroundTerm::Constant(_)
+            | GroundTerm::Skolem(_)
+            | GroundTerm::Number(_)
+            | GroundTerm::Description(_)
+            | GroundTerm::Unspecified => false,
+        }
+    }
+
+    fn user_constant_display(s: &str) -> String {
+        let skolem_like = s.strip_prefix("sk_").is_some_and(|rest| {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            digits > 0 && (digits == rest.len() || rest.as_bytes().get(digits) == Some(&b'('))
+        });
+        if skolem_like {
+            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        } else {
+            s.to_string()
+        }
+    }
+
     /// Create a Number term from f64.
     pub fn from_f64(v: f64) -> Self {
         GroundTerm::Number(v.to_bits())
@@ -277,7 +448,8 @@ impl GroundTerm {
     /// Human-readable display string.
     pub fn to_display_string(&self) -> String {
         match self {
-            GroundTerm::Constant(s) => s.clone(),
+            GroundTerm::Constant(s) => Self::user_constant_display(s),
+            GroundTerm::Skolem(symbol) => symbol.display_name(),
             GroundTerm::Number(bits) => {
                 let v = f64::from_bits(*bits);
                 if v == v.floor() && v.abs() < 1e15 {
@@ -290,13 +462,16 @@ impl GroundTerm {
             // `LogicalTerm::Description`'s `trace_display` (nibli-types/src/logic.rs).
             GroundTerm::Description(s) => format!("the {s}"),
             GroundTerm::Unspecified => "_".to_string(),
-            GroundTerm::SkolemFn(name, dep) => {
-                format!("{name}({})", dep.to_display_string())
+            GroundTerm::SkolemFn(symbol, dep) => {
+                format!("{}({})", symbol.display_name(), dep.to_display_string())
             }
             GroundTerm::DepPair(a, b) => {
                 format!("({}, {})", a.to_display_string(), b.to_display_string())
             }
             GroundTerm::PatternVar(s) => format!("?{s}"),
+            GroundTerm::SkolemPlaceholder(symbol) => {
+                format!("?{}(universal-dependent)", symbol.display_name())
+            }
         }
     }
 }
@@ -414,6 +589,25 @@ impl StoredFact {
     }
 }
 
+/// Enforce the concrete-side groundness precondition at persistence and store
+/// ingress. Pattern variables and dependent-Skolem placeholders are compiler
+/// staging terms for rule templates; accepting either as a concrete fact would
+/// invalidate structural unification's `NoVar` premise.
+pub fn validate_stored_fact_groundness(fact: &StoredFact) -> Result<(), String> {
+    if fact
+        .inner()
+        .args
+        .iter()
+        .any(GroundTerm::contains_compiler_only_term)
+    {
+        return Err(format!(
+            "stored fact '{}' contains a compiler-only pattern variable or Skolem placeholder",
+            fact.to_display_string()
+        ));
+    }
+    Ok(())
+}
+
 /// Validate and canonicalize an opaque-abstraction relation carried by a
 /// compiled fact. This is the storage/programmatic-ingress twin of
 /// [`canonicalize_abstraction_markers`]: persisted `StoredFact` rows and
@@ -498,6 +692,7 @@ fn unify_terms(
         }
         // Structural match for non-variable terms.
         GroundTerm::Constant(a) => matches!(concrete, GroundTerm::Constant(b) if a == b),
+        GroundTerm::Skolem(a) => matches!(concrete, GroundTerm::Skolem(b) if a == b),
         GroundTerm::Number(a) => matches!(concrete, GroundTerm::Number(b) if a == b),
         GroundTerm::Description(a) => matches!(concrete, GroundTerm::Description(b) if a == b),
         GroundTerm::Unspecified => matches!(concrete, GroundTerm::Unspecified),
@@ -515,6 +710,7 @@ fn unify_terms(
                 false
             }
         }
+        GroundTerm::SkolemPlaceholder(_) => false,
     }
 }
 
@@ -557,7 +753,7 @@ pub fn substitute_term<'a>(
             let new_dep = substitute_term(dep, bindings);
             match new_dep {
                 Cow::Borrowed(_) => Cow::Borrowed(term),
-                Cow::Owned(d) => Cow::Owned(GroundTerm::SkolemFn(name.clone(), Box::new(d))),
+                Cow::Owned(d) => Cow::Owned(GroundTerm::SkolemFn(*name, Box::new(d))),
             }
         }
         GroundTerm::DepPair(a, b) => {
@@ -582,14 +778,12 @@ pub fn substitute_term<'a>(
 /// Used by query-side existential checking to generate SkolemFn witness terms.
 #[derive(Clone)]
 pub(super) struct SkolemFnEntry {
-    pub(super) base_name: String,
+    pub(super) symbol: SkolemSymbol,
     pub(super) dep_count: usize,
 }
 
 /// Prefix used for dependent Skolem placeholder variables.
 /// A dependent Skolem is an ∃ variable nested under a ∀.
-pub(super) const SKDEP_PREFIX: &str = "__skdep__";
-
 /// Build a human-readable rule label from typed conditions and conclusions.
 pub(super) fn build_typed_rule_label(
     conditions: &[StoredFact],
@@ -642,11 +836,20 @@ pub(super) enum RuleKind {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum RuleTermIdentity {
     Constant(String),
-    GeneratedGroundSkolem(usize),
+    GeneratedGroundSkolem {
+        ordinal: usize,
+        sort: SkolemSort,
+        origin: SkolemOrigin,
+    },
     Number(u64),
     Description(String),
     Unspecified,
-    SkolemFn(usize, Box<RuleTermIdentity>),
+    SkolemFn {
+        ordinal: usize,
+        sort: SkolemSort,
+        origin: SkolemOrigin,
+        dependency: Box<RuleTermIdentity>,
+    },
     DepPair(Box<RuleTermIdentity>, Box<RuleTermIdentity>),
     PatternVar(usize),
 }
@@ -702,50 +905,52 @@ struct RuleIdentityEntry {
 #[derive(Default)]
 struct RuleIdentityNormalizer {
     pattern_vars: HashMap<String, usize>,
-    skolem_fns: HashMap<String, usize>,
-    generated_ground_skolems: HashSet<String>,
-    ground_skolems: HashMap<String, usize>,
+    skolem_fns: HashMap<SkolemId, usize>,
+    ground_skolems: HashMap<SkolemId, usize>,
 }
 
 impl RuleIdentityNormalizer {
-    fn new(generated_ground_skolems: &HashSet<String>) -> Self {
-        Self {
-            generated_ground_skolems: generated_ground_skolems.clone(),
-            ..Self::default()
-        }
-    }
-
     fn pattern_var(&mut self, name: &str) -> usize {
         let next = self.pattern_vars.len();
         *self.pattern_vars.entry(name.to_string()).or_insert(next)
     }
 
-    fn skolem_fn(&mut self, name: &str) -> usize {
+    fn skolem_fn(&mut self, symbol: SkolemSymbol) -> usize {
         let next = self.skolem_fns.len();
-        *self.skolem_fns.entry(name.to_string()).or_insert(next)
+        *self.skolem_fns.entry(symbol.id()).or_insert(next)
     }
 
-    fn ground_skolem(&mut self, name: &str) -> usize {
+    fn ground_skolem(&mut self, symbol: SkolemSymbol) -> usize {
         let next = self.ground_skolems.len();
-        *self.ground_skolems.entry(name.to_string()).or_insert(next)
+        *self.ground_skolems.entry(symbol.id()).or_insert(next)
     }
 
     fn term(&mut self, term: &GroundTerm) -> RuleTermIdentity {
         match term {
-            GroundTerm::Constant(name) if self.generated_ground_skolems.contains(name) => {
-                RuleTermIdentity::GeneratedGroundSkolem(self.ground_skolem(name))
-            }
             GroundTerm::Constant(name) => RuleTermIdentity::Constant(name.clone()),
+            GroundTerm::Skolem(symbol) => RuleTermIdentity::GeneratedGroundSkolem {
+                ordinal: self.ground_skolem(*symbol),
+                sort: symbol.sort(),
+                origin: symbol.origin(),
+            },
             GroundTerm::Number(bits) => RuleTermIdentity::Number(*bits),
             GroundTerm::Description(name) => RuleTermIdentity::Description(name.clone()),
             GroundTerm::Unspecified => RuleTermIdentity::Unspecified,
-            GroundTerm::SkolemFn(name, dependency) => {
-                RuleTermIdentity::SkolemFn(self.skolem_fn(name), Box::new(self.term(dependency)))
-            }
+            GroundTerm::SkolemFn(symbol, dependency) => RuleTermIdentity::SkolemFn {
+                ordinal: self.skolem_fn(*symbol),
+                sort: symbol.sort(),
+                origin: symbol.origin(),
+                dependency: Box::new(self.term(dependency)),
+            },
             GroundTerm::DepPair(left, right) => {
                 RuleTermIdentity::DepPair(Box::new(self.term(left)), Box::new(self.term(right)))
             }
             GroundTerm::PatternVar(name) => RuleTermIdentity::PatternVar(self.pattern_var(name)),
+            GroundTerm::SkolemPlaceholder(symbol) => RuleTermIdentity::GeneratedGroundSkolem {
+                ordinal: self.ground_skolem(*symbol),
+                sort: symbol.sort(),
+                origin: symbol.origin(),
+            },
         }
     }
 
@@ -776,9 +981,8 @@ impl RuleIdentity {
         negated_condition_indices: &[usize],
         negated_exists_groups: &[NegatedExistsGroup],
         forward: bool,
-        generated_ground_skolems: &HashSet<String>,
     ) -> Self {
-        let mut normalizer = RuleIdentityNormalizer::new(generated_ground_skolems);
+        let mut normalizer = RuleIdentityNormalizer::default();
         let pattern_var_names = pattern_var_names
             .iter()
             .map(|name| normalizer.pattern_var(name))
@@ -938,12 +1142,15 @@ pub(super) struct FactRecord {
 
 /// All mutable KB state behind a single RefCell.
 pub(super) struct KnowledgeBaseInner {
-    pub(super) skolem_counter: usize,
-    pub(super) known_entities: HashSet<String>,
-    /// Event Skolem constants (from `_ev*` variables). Tracked for witness search
+    /// Presentation-only `sk_N` serial. Semantic identity is source-scoped.
+    pub(super) skolem_counter: u64,
+    /// Binder-local ordinal reset for each asserted LogicBuffer.
+    pub(super) skolem_local_counter: u32,
+    pub(super) known_entities: HashSet<GroundTerm>,
+    /// Event-sort Skolem witnesses (from `_ev*` variables). Tracked for witness search
     /// and proof tracing, but NOT registered in `known_entities`
     /// to prevent quadratic blowup in guarded conjunction introduction.
-    pub(super) known_event_entities: HashSet<String>,
+    pub(super) known_event_entities: HashSet<GroundTerm>,
     /// Known description terms (from `le` determiner), tracked separately for InDomain.
     pub(super) known_descriptions: HashSet<String>,
     /// Finite numbers asserted into predicate facts (f64 bit patterns) —
@@ -1098,9 +1305,9 @@ pub(super) struct KnowledgeBaseInner {
     pub(super) strict: bool,
     /// Legacy EXISTENTIAL-IMPORT MODE (default OFF). When true, a DESCRIPTION
     /// universal (`animal(every dog).`)
-    /// mints a presupposition witness (see `presupposition_witnesses`) so
-    /// `∃x. dog(x)` holds and the witness participates in every logical
-    /// find/count surface. Clean-core injects no entity (NIBLI_KR §14.4 item 3).
+    /// mints an origin-tagged internal witness so `∃x. dog(x)` holds and the
+    /// witness participates in every logical find/count surface. Clean-core
+    /// injects no entity (NIBLI_KR §14.4 item 3).
     /// Like `strict`,
     /// this is CONFIGURATION — NOT cleared by `reset()`.
     pub(super) existential_import: bool,
@@ -1148,7 +1355,6 @@ pub(super) struct KnowledgeBaseInner {
     /// ≥1 dog under the explicit legacy profile). They satisfy and are exposed
     /// by ∃/∀/find/count like every other logical domain member; the set exists
     /// to disclose their origin, not to exclude them.
-    pub(super) presupposition_witnesses: HashSet<String>,
     /// Violations collected by `assert_typed_fact` while strict mode rejects
     /// facts; drained by `process_assertion` into its error return. Internal
     /// insertions (forward chaining, compute auto-assert) also reject loudly
@@ -1195,6 +1401,7 @@ impl Clone for KnowledgeBaseInner {
     fn clone(&self) -> Self {
         Self {
             skolem_counter: self.skolem_counter,
+            skolem_local_counter: self.skolem_local_counter,
             known_entities: self.known_entities.clone(),
             known_event_entities: self.known_event_entities.clone(),
             known_descriptions: self.known_descriptions.clone(),
@@ -1238,7 +1445,6 @@ impl Clone for KnowledgeBaseInner {
             derived_only: self.derived_only.clone(),
             admitted: self.admitted.clone(),
             strict_violations: Vec::new(),
-            presupposition_witnesses: self.presupposition_witnesses.clone(),
             materialized: RefCell::new(None),
             materialization: self.materialization,
             positive_lookup: Cell::new(true),
@@ -1251,6 +1457,7 @@ impl KnowledgeBaseInner {
     pub(super) fn new() -> Self {
         Self {
             skolem_counter: 0,
+            skolem_local_counter: 0,
             known_entities: HashSet::new(),
             known_event_entities: HashSet::new(),
             known_descriptions: HashSet::new(),
@@ -1296,7 +1503,6 @@ impl KnowledgeBaseInner {
             derived_only: HashSet::new(),
             admitted: HashSet::new(),
             strict_violations: Vec::new(),
-            presupposition_witnesses: HashSet::new(),
             materialized: RefCell::new(None),
             // Materialisation defaults ON. Turning it off restores the pure
             // backward-chaining path byte-for-byte, which is what makes the ON/OFF
@@ -1309,6 +1515,7 @@ impl KnowledgeBaseInner {
 
     pub(super) fn reset(&mut self) {
         self.skolem_counter = 0;
+        self.skolem_local_counter = 0;
         self.known_entities.clear();
         self.known_event_entities.clear();
         self.known_descriptions.clear();
@@ -1333,7 +1540,6 @@ impl KnowledgeBaseInner {
         self.forward_depth = 0;
         self.negative_facts.clear();
         self.disjunctive_constraints.clear();
-        self.presupposition_witnesses.clear();
         // `derived_only` IS cleared here, unlike `strict`/`existential_import`:
         // it is KB CONTENT (declared by a `derived_only("…")` statement in the KB
         // text), not session configuration, so a wiped KB must start with no
@@ -1351,8 +1557,8 @@ impl KnowledgeBaseInner {
         // verbose, strict, existential_import, and materialization are NOT cleared on
         // reset —
         // they're structural declarations / configuration, not derived state.
-        // (The `presupposition_witnesses` SET above IS cleared — it's derived,
-        // re-minted on replay — but the flag that gates minting survives.)
+        // Imported-witness origin is carried structurally by each typed Skolem;
+        // reset clears the witnesses while the flag that gates minting survives.
         // Clear explicitly if needed.
     }
 
@@ -1364,28 +1570,59 @@ impl KnowledgeBaseInner {
         !self.rebuilding && self.verbose
     }
 
-    pub(super) fn fresh_fact_id(&mut self) -> u64 {
+    pub(super) fn fresh_fact_id(&mut self) -> Result<u64, String> {
         let id = self.fact_counter;
-        self.fact_counter += 1;
-        id
+        self.fact_counter = self.fact_counter.checked_add(1).ok_or_else(|| {
+            "fact-id space exhausted; assertion ids are monotonic semantic Skolem sources"
+                .to_string()
+        })?;
+        Ok(id)
     }
 
-    pub(super) fn fresh_skolem(&mut self) -> String {
-        let sk = format!("sk_{}", self.skolem_counter);
-        self.skolem_counter += 1;
-        sk
+    pub(super) fn begin_skolem_scope(&mut self) {
+        self.skolem_local_counter = 0;
     }
 
-    pub(super) fn note_entity(&mut self, name: &str) {
-        if self.known_entities.insert(name.to_string()) {
+    pub(super) fn fresh_skolem(&mut self, sort: SkolemSort, origin: SkolemOrigin) -> SkolemSymbol {
+        let assertion_id = self
+            .current_assertion_id
+            .expect("Skolem witnesses are minted only inside an attributed assertion");
+        let symbol = SkolemSymbol::new(
+            assertion_id,
+            self.skolem_local_counter,
+            self.skolem_counter,
+            sort,
+            origin,
+        );
+        self.skolem_local_counter = self
+            .skolem_local_counter
+            .checked_add(1)
+            .expect("one assertion exhausted the Skolem binder-ordinal space");
+        self.skolem_counter = self
+            .skolem_counter
+            .checked_add(1)
+            .expect("the knowledge base exhausted the Skolem display space");
+        symbol
+    }
+
+    pub(super) fn note_entity(&mut self, term: GroundTerm) {
+        debug_assert!(matches!(
+            term,
+            GroundTerm::Constant(_) | GroundTerm::Skolem(_)
+        ));
+        if self.known_entities.insert(term) {
             self.domain_members_dirty = true;
         }
     }
 
     /// Track an event Skolem constant for witness search and proof tracing,
     /// without registering it in `known_entities`.
-    pub(super) fn note_event_entity(&mut self, name: &str) {
-        if self.known_event_entities.insert(name.to_string()) {
+    pub(super) fn note_event_entity(&mut self, term: GroundTerm) {
+        debug_assert!(matches!(
+            term,
+            GroundTerm::Skolem(symbol) if symbol.sort() == SkolemSort::Event
+        ));
+        if self.known_event_entities.insert(term) {
             self.domain_members_dirty = true;
         }
     }
@@ -1417,13 +1654,12 @@ impl KnowledgeBaseInner {
         // Skolems. Built in the SAME pass — individual-sort members go into both.
         let mut non_event_members = Vec::new();
         for e in &self.known_entities {
-            let t = GroundTerm::Constant(e.clone());
-            typed_members.push(t.clone());
-            non_event_members.push(t);
+            typed_members.push(e.clone());
+            non_event_members.push(e.clone());
         }
         for e in &self.known_event_entities {
             // Event Skolems are a distinct sort — full cache only.
-            typed_members.push(GroundTerm::Constant(e.clone()));
+            typed_members.push(e.clone());
         }
         for d in &self.known_descriptions {
             let t = GroundTerm::Description(d.clone());
@@ -1781,7 +2017,7 @@ pub(super) fn register_ground_material_conditional(
             // valid; the new node sits at the max index, preserving the post-order
             // invariant). Condition-side event existentials become `ev__` pattern vars,
             // so the rule FIRES on later assertions (this arm used to bake the
-            // assertion's own event-Skolem constants — an inert rule; and for a
+            // assertion's own event-sort Skolems — an inert rule; and for a
             // non-leaf Not body it registered a zero-condition rule that derived the
             // consequent unconditionally — both repaired by the swap route).
             else if matches!(get_node(buffer, *r), Ok(LogicNode::NotNode(_))) {
@@ -2048,7 +2284,7 @@ pub(super) fn record_negative_ground_fact(
         return;
     }
 
-    let mut event_var_map: HashMap<String, String> = HashMap::new();
+    let mut event_var_map: HashMap<GroundTerm, String> = HashMap::new();
     let templates: Vec<StoredFact> = leaves
         .iter()
         .map(|f| generalize_event_args(f, &inner.known_event_entities, &mut event_var_map))
@@ -2056,25 +2292,25 @@ pub(super) fn record_negative_ground_fact(
     inner.negative_facts.insert(templates);
 }
 
-/// Replace event-Skolem constants in a fact with pattern variables (one per
-/// distinct event constant), so a negative template matches a contrary positive
+/// Replace event-sort Skolems in a fact with pattern variables (one per
+/// distinct event witness), so a negative template matches a contrary positive
 /// regardless of which fresh event Skolem that positive assertion received.
 /// `PatternVar` never occurs in stored ground facts, so the generalized form
 /// cannot collide with a genuine stored fact.
 fn generalize_event_args(
     fact: &StoredFact,
-    event_entities: &HashSet<String>,
-    event_var_map: &mut HashMap<String, String>,
+    event_entities: &HashSet<GroundTerm>,
+    event_var_map: &mut HashMap<GroundTerm, String>,
 ) -> StoredFact {
     let gf = fact.inner();
     let args: Vec<GroundTerm> = gf
         .args
         .iter()
         .map(|arg| match arg {
-            GroundTerm::Constant(c) if event_entities.contains(c.as_str()) => {
+            GroundTerm::Skolem(_) if event_entities.contains(arg) => {
                 let next_idx = event_var_map.len();
                 let pvar = event_var_map
-                    .entry(c.clone())
+                    .entry(arg.clone())
                     .or_insert_with(|| format!("__neg_ev{next_idx}"))
                     .clone();
                 GroundTerm::PatternVar(pvar)
@@ -2298,6 +2534,7 @@ pub(super) fn process_assertion(
 ) -> Result<(), String> {
     validate_single_flavor_paths(logic)?;
     canonicalize_abstraction_markers(logic)?;
+    inner.begin_skolem_scope();
     // Strict-mode violations from PREVIOUS work (e.g. a mid-query compute
     // auto-assert, which has no error channel) must not bleed into THIS
     // assertion's verdict.
@@ -2319,7 +2556,7 @@ pub(super) fn process_assertion(
             root_id,
             &mut skolem_subs,
             &mut enclosing_universals,
-            &mut inner.skolem_counter,
+            inner,
         );
 
         // Log Skolem substitutions (suppressed during rebuild + when not verbose)
@@ -2331,8 +2568,8 @@ pub(super) fn process_assertion(
             let mapping: Vec<String> = entries
                 .iter()
                 .map(|(v, gt)| {
-                    if let Some(base) = skdep_base_name(gt) {
-                        format!("{} ↦ {}(∀-dependent)", v, base)
+                    if let Some(symbol) = skdep_symbol(gt) {
+                        format!("{} ↦ {}(∀-dependent)", v, symbol.display_name())
                     } else {
                         format!("{} ↦ {}", v, gt.to_display_string())
                     }
@@ -2349,11 +2586,11 @@ pub(super) fn process_assertion(
         // dispatch path below, so done once up front.
         for (var, gt) in &skolem_subs {
             if !is_skdep(gt) {
-                if let GroundTerm::Constant(sk) = gt {
+                if let GroundTerm::Skolem(symbol) = gt {
                     if var.starts_with("_ev") {
-                        inner.note_event_entity(sk);
+                        inner.note_event_entity(GroundTerm::Skolem(*symbol));
                     } else {
-                        inner.note_entity(sk);
+                        inner.note_entity(GroundTerm::Skolem(*symbol));
                     }
                 }
             }
@@ -2987,7 +3224,7 @@ fn extract_rule_candidates_for_entailment(
                     candidates.extend(members.iter().cloned());
                     for entry in &inner.skolem_fn_registry {
                         for combo in GroundTermCartesianProduct::new(members, entry.dep_count) {
-                            candidates.insert(build_skolem_fn_term(&entry.base_name, &combo));
+                            candidates.insert(build_skolem_fn_term(entry.symbol, &combo));
                         }
                     }
                 }
@@ -2996,11 +3233,11 @@ fn extract_rule_candidates_for_entailment(
                     let dep_count = inner
                         .skolem_fn_registry
                         .iter()
-                        .find(|e| e.base_name == *base)
+                        .find(|e| e.symbol == *base)
                         .map(|e| e.dep_count)
                         .unwrap_or(1);
                     for combo in GroundTermCartesianProduct::new(members, dep_count) {
-                        candidates.insert(build_skolem_fn_term(base, &combo));
+                        candidates.insert(build_skolem_fn_term(*base, &combo));
                     }
                 }
                 other => {

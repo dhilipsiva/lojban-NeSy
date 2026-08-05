@@ -1,14 +1,16 @@
 use super::*;
 
-fn witness_origin(
-    inner: &KnowledgeBaseInner,
-    term: &GroundTerm,
-) -> nibli_types::logic::WitnessOrigin {
-    match term {
-        GroundTerm::Constant(name) if inner.presupposition_witnesses.contains(name) => {
+pub(super) fn witness_origin(term: &GroundTerm) -> nibli_types::logic::WitnessOrigin {
+    let origin = match term {
+        GroundTerm::Skolem(symbol) | GroundTerm::SkolemFn(symbol, _) => Some(symbol.origin()),
+        _ => None,
+    };
+    match origin {
+        Some(SkolemOrigin::ExistentialImport) => {
             nibli_types::logic::WitnessOrigin::ExistentialImport
         }
-        _ => nibli_types::logic::WitnessOrigin::KnowledgeBase,
+        Some(SkolemOrigin::Generated) => nibli_types::logic::WitnessOrigin::GeneratedWitness,
+        None => nibli_types::logic::WitnessOrigin::KnowledgeBase,
     }
 }
 
@@ -41,7 +43,7 @@ fn build_all_candidates(inner: &KnowledgeBaseInner) -> Vec<GroundTerm> {
     let mut candidates: Vec<GroundTerm> = members.to_vec();
     for entry in &inner.skolem_fn_registry {
         for combo in GroundTermCartesianProduct::new(members, entry.dep_count) {
-            candidates.push(build_skolem_fn_term(&entry.base_name, &combo));
+            candidates.push(build_skolem_fn_term(entry.symbol, &combo));
         }
     }
     candidates
@@ -435,7 +437,7 @@ pub(super) fn check_formula_holds_recording(
     inner: &mut KnowledgeBaseInner,
     steps: &mut Vec<ProofStep>,
     tense: Option<&str>,
-    memo: &mut HashMap<String, u32>,
+    memo: &mut HashMap<StoredFact, u32>,
 ) -> Result<(QueryResult, u32), String> {
     check_cancelled(inner)?;
     let mut sink = RecordingSink { steps, memo };
@@ -716,7 +718,7 @@ fn check_formula_holds_core<S: TraceSink>(
                                     rule: ProofRule::ExistsWitness {
                                         var: v.clone(),
                                         term: witness_term_to_logical_term(&winning_member),
-                                        origin: witness_origin(inner, &winning_member),
+                                        origin: witness_origin(&winning_member),
                                     },
                                     holds: true,
                                     children: vec![body_idx],
@@ -805,7 +807,7 @@ fn check_formula_holds_core<S: TraceSink>(
                         for entry in &inner.skolem_fn_registry {
                             for combo in GroundTermCartesianProduct::new(&members, entry.dep_count)
                             {
-                                all.push(build_skolem_fn_term(&entry.base_name, &combo));
+                                all.push(build_skolem_fn_term(entry.symbol, &combo));
                             }
                         }
                         all
@@ -836,7 +838,7 @@ fn check_formula_holds_core<S: TraceSink>(
                             rule: ProofRule::ExistsWitness {
                                 var: v.clone(),
                                 term: witness_term_to_logical_term(candidate),
-                                origin: witness_origin(inner, candidate),
+                                origin: witness_origin(candidate),
                             },
                             holds: true,
                             children: vec![body_idx],
@@ -925,7 +927,11 @@ fn check_formula_holds_core<S: TraceSink>(
                                 .1;
                                 sink.push(ProofStep {
                                     rule: ProofRule::ForallCounterexample {
-                                        entity: ground_term_to_logical_term(&counter),
+                                        entity: WitnessBinding {
+                                            variable: v.clone(),
+                                            term: witness_term_to_logical_term(&counter),
+                                            origin: witness_origin(&counter),
+                                        },
                                     },
                                     holds: false,
                                     children: vec![body_idx],
@@ -990,7 +996,11 @@ fn check_formula_holds_core<S: TraceSink>(
                     .1;
                     sink.push(ProofStep {
                         rule: ProofRule::ForallCounterexample {
-                            entity: ground_term_to_logical_term(&counter),
+                            entity: WitnessBinding {
+                                variable: v.clone(),
+                                term: witness_term_to_logical_term(&counter),
+                                origin: witness_origin(&counter),
+                            },
                         },
                         holds: false,
                         children: vec![body_idx],
@@ -1054,8 +1064,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 candidates.sort_by_cached_key(|m| {
                     (
                         find_canonical_readonly(&inner.equivalence_parent, m),
-                        witness_origin(inner, m)
-                            == nibli_types::logic::WitnessOrigin::ExistentialImport,
+                        witness_origin(m) == nibli_types::logic::WitnessOrigin::ExistentialImport,
                         m.clone(),
                     )
                 });
@@ -1083,7 +1092,7 @@ fn check_formula_holds_core<S: TraceSink>(
                             .zip(&batch.results)
                             .filter(|(member, holds)| {
                                 **holds
-                                    && witness_origin(inner, member)
+                                    && witness_origin(member)
                                         == nibli_types::logic::WitnessOrigin::ExistentialImport
                             })
                             .count() as u32;
@@ -1128,7 +1137,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 match result {
                     QueryResult::True => {
                         satisfying += 1;
-                        if witness_origin(inner, member)
+                        if witness_origin(member)
                             == nibli_types::logic::WitnessOrigin::ExistentialImport
                         {
                             existential_imported += 1;
@@ -1335,8 +1344,9 @@ fn check_formula_holds_core<S: TraceSink>(
                 };
                 return Ok((verdict, idx));
             }
-            let resolved = resolve_args_for_dispatch(args, subs);
-            if let Ok(result) = dispatch_to_backend(&*inner, rel, &resolved) {
+            if let Ok(resolved) = resolve_args_for_dispatch(args, subs)
+                && let Ok(result) = dispatch_to_backend(&*inner, rel, &resolved)
+            {
                 if result {
                     if let Some(fact) = build_stored_fact_from_node(buffer, node_id, subs, tense) {
                         assert_typed_fact(fact, inner);
@@ -1423,7 +1433,7 @@ fn forall_record_all_members<S: TraceSink>(
     inner: &mut KnowledgeBaseInner,
     tense: Option<&str>,
     sink: &mut S,
-) -> Result<(Vec<u32>, Vec<LogicalTerm>), String> {
+) -> Result<(Vec<u32>, Vec<WitnessBinding>), String> {
     let mut child_indices = Vec::new();
     let mut entity_terms = Vec::new();
     for member in members {
@@ -1432,7 +1442,11 @@ fn forall_record_all_members<S: TraceSink>(
         })?
         .1;
         child_indices.push(body_idx);
-        entity_terms.push(ground_term_to_logical_term(member));
+        entity_terms.push(WitnessBinding {
+            variable: v.to_string(),
+            term: witness_term_to_logical_term(member),
+            origin: witness_origin(member),
+        });
     }
     Ok((child_indices, entity_terms))
 }
@@ -1480,7 +1494,7 @@ pub(super) fn find_witnesses(
                         for entry in &inner.skolem_fn_registry {
                             for combo in GroundTermCartesianProduct::new(&members, entry.dep_count)
                             {
-                                all.push(build_skolem_fn_term(&entry.base_name, &combo));
+                                all.push(build_skolem_fn_term(entry.symbol, &combo));
                             }
                         }
                         all
@@ -2108,7 +2122,7 @@ impl TraceSink for NoOpSink {
 /// provenance tracer for each proven child derivation.
 struct RecordingSink<'a> {
     steps: &'a mut Vec<ProofStep>,
-    memo: &'a mut HashMap<String, u32>,
+    memo: &'a mut HashMap<StoredFact, u32>,
 }
 impl TraceSink for RecordingSink<'_> {
     const RECORDING: bool = true;
@@ -2383,23 +2397,15 @@ fn process_phase<S: TraceSink>(
     None
 }
 
-/// Reserved sentinel that collapses every event Skolem term when keying the
-/// `visited` cycle guard. Prefixed with a control char so it cannot collide with a
-/// real constant/entity name.
-const CYCLE_SKOLEM_SENTINEL: &str = "\u{1}__cyc_skolem__";
-
 /// An engine-minted event Skolem term: a dependent `SkolemFn` (`sk_5(rex)`) or an
 /// independent Skolem constant (`sk_<n>`, from [`KnowledgeBaseInner::fresh_skolem`]
 /// / `rules.rs`). These vary per derivation step; collapsing them is what lets the
 /// cycle guard recognize a relation-level cycle (see [`cycle_key`]).
 fn is_event_skolem_term(t: &GroundTerm) -> bool {
     match t {
-        GroundTerm::SkolemFn(_, _) => true,
-        // Skolem constants are `sk_<digits>`; a real entity is never numeric-suffixed
-        // this way, so the naming match cannot collapse a user individual.
-        GroundTerm::Constant(s) => s
-            .strip_prefix("sk_")
-            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())),
+        GroundTerm::Skolem(symbol) | GroundTerm::SkolemFn(symbol, _) => {
+            symbol.sort() == SkolemSort::Event
+        }
         _ => false,
     }
 }
@@ -2411,10 +2417,11 @@ fn is_event_skolem_term(t: &GroundTerm) -> bool {
 /// exact `StoredFact`: the raw guard never fires and the search re-derives the same
 /// relation exponentially out to the depth horizon (a query-level hang / DoS).
 /// Collapsing every event-Skolem argument ([`is_event_skolem_term`]) to a single
-/// sentinel makes a re-entered relation+individual goal hash-equal, so the second
+/// typed sentinel makes a re-entered relation+individual goal hash-equal, so the second
 /// visit on the SAME PATH is cut (`CycleCut`). Constant/individual args are preserved,
-/// so distinct individuals stay distinct (no over-cut of legitimate per-individual
-/// recursion). Facts with no event-Skolem arg are returned unchanged (fast path) —
+/// so distinct individuals—including equal-looking user `sk_N` text—stay distinct
+/// (no over-cut of legitimate per-individual recursion). Facts with no event-Skolem
+/// arg are returned unchanged (fast path) —
 /// behavior is identical to the old raw key for the overwhelming majority of goals.
 fn cycle_key(fact: &StoredFact) -> StoredFact {
     let gf = fact.inner();
@@ -2426,7 +2433,7 @@ fn cycle_key(fact: &StoredFact) -> StoredFact {
         .iter()
         .map(|a| {
             if is_event_skolem_term(a) {
-                GroundTerm::Constant(CYCLE_SKOLEM_SENTINEL.to_string())
+                GroundTerm::Skolem(SkolemSymbol::cycle_sentinel())
             } else {
                 a.clone()
             }
@@ -2606,12 +2613,12 @@ pub(super) fn trace_predicate_provenance_typed(
     inner: &KnowledgeBaseInner,
     steps: &mut Vec<ProofStep>,
     depth: usize,
-    memo: &mut HashMap<String, u32>,
+    memo: &mut HashMap<StoredFact, u32>,
     visited: &mut HashSet<StoredFact>,
 ) -> u32 {
     let display = fact.to_display_string();
 
-    if let Some(&cached_idx) = memo.get(&display) {
+    if let Some(&cached_idx) = memo.get(fact) {
         // Memo hit — emit a lightweight ProofRef leaf instead of
         // re-deriving the full proof sub-tree. The original derivation
         // lives at steps[cached_idx]. We store cached_idx in children
@@ -2635,7 +2642,7 @@ pub(super) fn trace_predicate_provenance_typed(
             holds: true,
             children: vec![],
         });
-        memo.insert(display, idx);
+        memo.insert(fact.clone(), idx);
         return idx;
     }
 
@@ -2670,7 +2677,7 @@ pub(super) fn trace_predicate_provenance_typed(
                 holds: true,
                 children: vec![child],
             });
-            memo.insert(display, idx);
+            memo.insert(fact.clone(), idx);
             return idx;
         }
     }
@@ -2690,7 +2697,7 @@ pub(super) fn trace_predicate_provenance_typed(
             &mut RecordingSink { steps, memo },
         );
         if let Some(idx) = root {
-            memo.insert(display, idx);
+            memo.insert(fact.clone(), idx);
             return idx;
         }
     }
@@ -2771,7 +2778,7 @@ pub(super) fn trace_predicate_provenance_typed(
                     holds: true,
                     children: vec![child],
                 });
-                memo.insert(display, idx);
+                memo.insert(fact.clone(), idx);
                 return idx;
             }
         }

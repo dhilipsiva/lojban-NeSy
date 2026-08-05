@@ -214,6 +214,15 @@ mod tests {
     }
 
     #[test]
+    fn quoted_equal_looking_user_constant_is_not_hidden_as_event_plumbing() {
+        assert_eq!(humanize_fact("dog(\"sk_2\")"), "dog(\"sk_2\")");
+        assert_eq!(
+            humanize_fact("dog_x1(\"sk_2\", adam)"),
+            "dog.dog(\"sk_2\", adam)"
+        );
+    }
+
+    #[test]
     fn witness_skolem_becomes_hash() {
         assert_eq!(humanize_fact("animal(sk_1(adam))"), "animal(#1(adam))");
     }

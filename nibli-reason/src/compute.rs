@@ -64,27 +64,34 @@ pub(super) fn try_arithmetic_evaluation(
     nibli_types::eval_arithmetic(rel, &[x1, x2, x3])
 }
 
-/// Convert a GroundTerm back to a LogicalTerm for compute backend dispatch.
+/// Project a ground term onto the public `LogicalTerm` surface.
+///
+/// Compute dispatch calls this only after its structural guard has rejected
+/// internal `Skolem`/`SkolemFn`/`DepPair` terms. The generated-term arms are a
+/// presentation fallback for non-dispatch consumers; they do not authorize
+/// sending a display name to the backend.
 pub(super) fn ground_term_to_logical_term(gt: &GroundTerm) -> LogicalTerm {
     match gt {
         GroundTerm::Constant(c) => LogicalTerm::Constant(c.clone()),
+        GroundTerm::Skolem(symbol) => LogicalTerm::Constant(symbol.display_name()),
         GroundTerm::Number(bits) => LogicalTerm::Number(f64::from_bits(*bits)),
         GroundTerm::Description(d) => LogicalTerm::Description(d.clone()),
         GroundTerm::Unspecified => LogicalTerm::Unspecified,
         GroundTerm::PatternVar(v) => LogicalTerm::Variable(v.clone()),
-        GroundTerm::SkolemFn(name, _) => LogicalTerm::Constant(name.clone()),
+        GroundTerm::SkolemFn(symbol, _) => LogicalTerm::Constant(symbol.display_name()),
         GroundTerm::DepPair(_, _) => LogicalTerm::Unspecified,
+        GroundTerm::SkolemPlaceholder(symbol) => LogicalTerm::Variable(symbol.display_name()),
     }
 }
 
-/// Witness-surface conversion: unlike the compute-dispatch conversion above
-/// (which only needs an opaque token), dependent Skolem terms keep their
-/// functional form — SkolemFn("sk_1", adam) renders as `sk_1(adam)` — so
+/// Witness-surface conversion. Dependent Skolem terms keep their functional
+/// display form — SkolemFn("sk_1", adam) renders as `sk_1(adam)` — so
 /// distinct dependent witnesses stay distinguishable in `[Find]` results and
-/// `ExistsWitness` proof steps.
+/// proof steps. Identity and origin are carried separately and never recovered
+/// from this presentation string.
 pub(super) fn witness_term_to_logical_term(gt: &GroundTerm) -> LogicalTerm {
     match gt {
-        GroundTerm::SkolemFn(..) | GroundTerm::DepPair(..) => {
+        GroundTerm::Skolem(..) | GroundTerm::SkolemFn(..) | GroundTerm::DepPair(..) => {
             LogicalTerm::Constant(gt.to_display_string())
         }
         other => ground_term_to_logical_term(other),
@@ -270,7 +277,7 @@ pub(super) fn try_evaluate_numeric_group(
     }
     if head_is_compute {
         // External dispatch: every non-Unspecified role must resolve numeric.
-        let resolved = resolve_args_for_dispatch(&collected, subs);
+        let resolved = resolve_args_for_dispatch(&collected, subs).ok()?;
         let dispatchable = resolved
             .iter()
             .all(|t| matches!(t, LogicalTerm::Number(_) | LogicalTerm::Unspecified));
@@ -308,8 +315,26 @@ fn bool_verdict(holds: bool) -> QueryResult {
 pub(super) fn resolve_args_for_dispatch(
     args: &[LogicalTerm],
     subs: &HashMap<String, GroundTerm>,
-) -> Vec<LogicalTerm> {
-    args.iter()
+) -> Result<Vec<LogicalTerm>, String> {
+    for arg in args {
+        if let LogicalTerm::Variable(v) = arg
+            && let Some(gt) = subs.get(v.as_str())
+            && matches!(
+                gt,
+                GroundTerm::Skolem(_)
+                    | GroundTerm::SkolemFn(_, _)
+                    | GroundTerm::DepPair(_, _)
+                    | GroundTerm::SkolemPlaceholder(_)
+            )
+        {
+            return Err(format!(
+                "compute dispatch cannot represent internal witness `{}` as a user constant",
+                gt.to_display_string()
+            ));
+        }
+    }
+    Ok(args
+        .iter()
         .map(|a| match a {
             LogicalTerm::Variable(v) => {
                 if let Some(gt) = subs.get(v.as_str()) {
@@ -320,7 +345,7 @@ pub(super) fn resolve_args_for_dispatch(
             }
             _ => a.clone(),
         })
-        .collect()
+        .collect())
 }
 
 /// Forward a single predicate to the operator-configured external backend.
@@ -413,13 +438,13 @@ pub(super) fn batch_evaluate_compute_for_members(
         if let Some(r) = try_arithmetic_evaluation(rel, args, &s) {
             results[i] = r;
             if r {
-                let resolved = resolve_args_for_dispatch(args, &s);
+                let resolved = resolve_args_for_dispatch(args, &s).ok()?;
                 if let Some(fact) = build_ground_fact_from_resolved(rel, &resolved) {
                     deferred_facts.push(fact);
                 }
             }
         } else {
-            let resolved = resolve_args_for_dispatch(args, &s);
+            let resolved = resolve_args_for_dispatch(args, &s).ok()?;
             pending.push((i, resolved));
         }
     }

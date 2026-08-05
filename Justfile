@@ -297,7 +297,8 @@ smoke-host-strict: build-wasm build-host
 
 # Existential-import profile: import defaults OFF (clean-core). Explicit legacy ON makes
 # imported witnesses participate in boolean, find, and exact-count surfaces,
-# and toggling a loaded KB rebuilds it immediately.
+# toggling a loaded KB rebuilds it immediately, and public origin metadata keeps
+# an internal witness distinct from an equal-looking direct user constant.
 smoke-host-existential-import: build-wasm build-host
     @echo "Smoke-testing gasnu existential-import flag (env + :existential-import toggle)..."
     @off=$(printf 'animal(every dog).\n? dog(?).\n?? dog($d).\n? dog(no dog).\n' \
@@ -306,6 +307,12 @@ smoke-host-existential-import: build-wasm build-host
         echo "$off" | grep -qF 'Existential import: OFF (clean-core' || { echo 'FAIL: clean-core default banner missing'; exit 1; }; \
         echo "$off" | grep -qF '[Query] FALSE' || { echo 'FAIL: clean-core must not presuppose a dog'; exit 1; }; \
         echo "$off" | grep -qF '[Find] No witnesses found.' || { echo 'FAIL: clean-core find must be empty'; exit 1; }; \
+        collision=$(printf ':assert cat sk_0\n?? cat($c).\n:proof-verbose cat(some cat).\n' \
+        | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$collision"; \
+        echo "$collision" | grep -qF '[Find] _ev0 = sk_0 [generated-witness], $c = sk_0 [knowledge-base]' || { echo 'FAIL: equal-looking internal/user terms lost distinct find origins'; exit 1; }; \
+        echo "$collision" | grep -qF 'Exists: _v0 = sk_0 -> TRUE' || { echo 'FAIL: proof did not retain the user constant witness'; exit 1; }; \
+        echo "$collision" | grep -qF 'Exists: _ev0 = sk_0 [generated-witness] -> TRUE' || { echo 'FAIL: proof did not expose generated-witness origin'; exit 1; }; \
         toggle=$(printf 'animal(every dog).\n:existential-import on\n:existential-import\n? dog(?).\n?? dog($d).\n? dog(exactly 1 dog).\n:existential-import off\n? dog(?).\n' \
         | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
         echo "$toggle"; \
@@ -319,7 +326,7 @@ smoke-host-existential-import: build-wasm build-host
         echo "$env" | grep -qF 'Existential import: ON (legacy' || { echo 'FAIL: NIBLI_EXISTENTIAL_IMPORT=1 startup banner missing'; exit 1; }; \
         echo "$env" | grep -qF '[Query] TRUE' || { echo 'FAIL: explicit import must make some/exactly-one true'; exit 1; }; \
         echo "$env" | grep -qF '[existential-import]' || { echo 'FAIL: env-enabled import origin missing'; exit 1; }; \
-        echo 'PASS: clean-core default + coherent import algebra + retroactive toggles work end to end'
+        echo 'PASS: clean-core default + typed witness origins + coherent import algebra + retroactive toggles work end to end'
 
 # Stratum-ordered materialisation across the WIT boundary: the `:materialize` toggle,
 # the NIBLI_MATERIALIZE=0 startup opt-out, and the saturation REPORT — the last is the

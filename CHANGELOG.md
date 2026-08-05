@@ -15,6 +15,36 @@ here first.
 
 ### Changed
 
+- **WIT `nibli:engine@0.9.0` exposes generated-witness provenance:**
+  `witness-origin` gains `generated-witness`, so find bindings and existential
+  proof steps distinguish opaque reasoner-minted witnesses from user constants
+  without interpreting the display-only `sk_N` spelling. Universal proof
+  payloads now carry origin-bearing `witness-binding` records too, instead of
+  bare terms. These are breaking component, native Rust, and proof-JSON changes
+  during 0.x.
+- **Internal Skolem identity is structural and source-scoped:** generated
+  independent and dependent witnesses are typed terms keyed by assertion id,
+  binder ordinal, sort, and origin. A user constant such as `"sk_0"` or
+  `"sk_0(adam)"` can no longer alias a generated witness through equality,
+  event joins, rule identity, find/count, proof memoization, retraction, or
+  rebuild. `sk_N` remains presentation only. Compute dispatch refuses opaque
+  generated arguments as `UNKNOWN (backend-unavailable)` instead of leaking
+  them into the string-only backend protocol; equal-looking user constants are
+  still dispatched normally.
+- **Typed fact-store schema is v2:** authoritative v1/unversioned populated
+  stores fail closed. The engine's disposable typed mirror is erased and
+  restamped atomically, then rebuilt from the authoritative `LogicBuffer`
+  registry without decoding legacy rows. Compiler-only pattern/placeholder terms
+  are rejected at persistence ingress.
+- **Persistent native direct/text assertions now share one source-id space:**
+  `assert_fact_direct` is durable when `NibliEngine` is opened with a store, and
+  both assertion paths reconcile the live and durable allocators. A reasoning
+  rejection physically deletes the row written before evaluation, so a failed
+  call cannot resurrect on reopen.
+- **`KnowledgeBase::with_store` accepts only an empty custom store:** typed rows
+  alone cannot restore rules, domain/equality indexes, source
+  provenance, or retraction semantics. Embedders must install an empty mirror and
+  replay their authoritative buffers with stable ids via `assert_fact_with_id`.
 - **Existential import is now an explicit, coherent legacy profile:** clean-core
   is the default, so a description universal does not manufacture existence and
   `some` is plain ∃. `NIBLI_EXISTENTIAL_IMPORT=1`,

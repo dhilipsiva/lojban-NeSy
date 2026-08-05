@@ -59,14 +59,14 @@ fn test_unify_skolem_fn_nested() {
     let template = StoredFact::Bare(GroundFact::new(
         "rel",
         vec![GroundTerm::SkolemFn(
-            "sk_0".into(),
+            SkolemSymbol::for_test(0),
             Box::new(GroundTerm::PatternVar("x".into())),
         )],
     ));
     let concrete = StoredFact::Bare(GroundFact::new(
         "rel",
         vec![GroundTerm::SkolemFn(
-            "sk_0".into(),
+            SkolemSymbol::for_test(0),
             Box::new(GroundTerm::Constant("alis".into())),
         )],
     ));
@@ -113,14 +113,14 @@ fn test_unify_skolem_fn_name_mismatch() {
     let template = StoredFact::Bare(GroundFact::new(
         "rel",
         vec![GroundTerm::SkolemFn(
-            "sk_0".into(),
+            SkolemSymbol::for_test(0),
             Box::new(GroundTerm::Constant("a".into())),
         )],
     ));
     let concrete = StoredFact::Bare(GroundFact::new(
         "rel",
         vec![GroundTerm::SkolemFn(
-            "sk_1".into(),
+            SkolemSymbol::for_test(1),
             Box::new(GroundTerm::Constant("a".into())),
         )],
     ));
@@ -128,6 +128,25 @@ fn test_unify_skolem_fn_name_mismatch() {
         unify_facts(&template, &concrete).is_none(),
         "SkolemFn name mismatch should fail"
     );
+}
+
+#[test]
+fn generated_skolem_is_disjoint_from_equal_looking_user_constant() {
+    use super::kb::*;
+
+    let generated = StoredFact::Bare(GroundFact::new(
+        "rel",
+        vec![GroundTerm::Skolem(SkolemSymbol::for_test(0))],
+    ));
+    let user = StoredFact::Bare(GroundFact::new(
+        "rel",
+        vec![GroundTerm::Constant("sk_0".to_string())],
+    ));
+
+    assert!(unify_facts(&generated, &user).is_none());
+    assert!(unify_facts(&user, &generated).is_none());
+    assert_eq!(generated.to_display_string(), "rel(sk_0)");
+    assert_eq!(user.to_display_string(), "rel(\"sk_0\")");
 }
 
 /// Conformance bridge to `proofs/Unify.lean` (`unify_sound`): over hand-crafted + random
@@ -177,7 +196,7 @@ fn unify_conformance() {
             gen_leaf(rng, allow_pvar)
         } else if rng.below(2) == 0 {
             GroundTerm::SkolemFn(
-                format!("sk{}", rng.below(2)),
+                SkolemSymbol::for_test(rng.below(2)),
                 Box::new(gen_term(rng, depth - 1, allow_pvar)),
             )
         } else {
@@ -207,7 +226,7 @@ fn unify_conformance() {
         match t {
             GroundTerm::PatternVar(n) => theta.get(n).cloned().unwrap_or(GroundTerm::Unspecified),
             GroundTerm::SkolemFn(nm, d) => {
-                GroundTerm::SkolemFn(nm.clone(), Box::new(instantiate(d, theta)))
+                GroundTerm::SkolemFn(*nm, Box::new(instantiate(d, theta)))
             }
             GroundTerm::DepPair(a, b) => GroundTerm::DepPair(
                 Box::new(instantiate(a, theta)),
@@ -319,14 +338,14 @@ fn unify_non_ground_concrete_envelope() {
     let template_sk = StoredFact::Bare(GroundFact::new(
         "rel",
         vec![GroundTerm::SkolemFn(
-            "sk_1".to_string(),
+            SkolemSymbol::for_test(1),
             Box::new(GroundTerm::Constant("adam".to_string())),
         )],
     ));
     let concrete_sk_pv = StoredFact::Bare(GroundFact::new(
         "rel",
         vec![GroundTerm::SkolemFn(
-            "sk_1".to_string(),
+            SkolemSymbol::for_test(1),
             Box::new(GroundTerm::PatternVar("x".to_string())),
         )],
     ));

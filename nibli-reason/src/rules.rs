@@ -2,13 +2,13 @@ use super::*;
 
 /// Check if a GroundTerm represents a dependent Skolem placeholder.
 pub(super) fn is_skdep(gt: &GroundTerm) -> bool {
-    matches!(gt, GroundTerm::PatternVar(s) if s.starts_with(SKDEP_PREFIX))
+    matches!(gt, GroundTerm::SkolemPlaceholder(_))
 }
 
-/// Extract the base Skolem name from a dependent Skolem placeholder.
-pub(super) fn skdep_base_name(gt: &GroundTerm) -> Option<&str> {
+/// Extract the typed symbol from a dependent Skolem placeholder.
+pub(super) fn skdep_symbol(gt: &GroundTerm) -> Option<SkolemSymbol> {
     match gt {
-        GroundTerm::PatternVar(s) => s.strip_prefix(SKDEP_PREFIX),
+        GroundTerm::SkolemPlaceholder(symbol) => Some(*symbol),
         _ => None,
     }
 }
@@ -18,7 +18,7 @@ pub(super) fn collect_exists_for_skolem(
     node_id: u32,
     subs: &mut HashMap<String, GroundTerm>,
     enclosing_universals: &mut Vec<String>,
-    counter: &mut usize,
+    kb: &mut KnowledgeBaseInner,
 ) {
     let Ok(node) = get_node(buffer, node_id) else {
         return;
@@ -34,44 +34,58 @@ pub(super) fn collect_exists_for_skolem(
             // here to choose ground versus universal-dependent Skolem scope.
             if !subs.contains_key(v.as_str()) {
                 if enclosing_universals.is_empty() {
-                    let sk = format!("sk_{}", *counter);
-                    *counter += 1;
-                    subs.insert(v.clone(), GroundTerm::Constant(sk));
+                    let sort = if v.starts_with("_ev") {
+                        SkolemSort::Event
+                    } else {
+                        SkolemSort::Individual
+                    };
+                    let symbol = kb.fresh_skolem(sort, SkolemOrigin::Generated);
+                    subs.insert(v.clone(), GroundTerm::Skolem(symbol));
                 } else {
-                    let base = format!("sk_{}", *counter);
-                    *counter += 1;
-                    let placeholder = format!("{}{}", SKDEP_PREFIX, base);
-                    subs.insert(v.clone(), GroundTerm::PatternVar(placeholder));
+                    let sort = if v.starts_with("_ev") {
+                        SkolemSort::Event
+                    } else {
+                        SkolemSort::Individual
+                    };
+                    let symbol = kb.fresh_skolem(sort, SkolemOrigin::Generated);
+                    subs.insert(v.clone(), GroundTerm::SkolemPlaceholder(symbol));
                 }
             }
-            collect_exists_for_skolem(buffer, *body, subs, enclosing_universals, counter);
+            collect_exists_for_skolem(buffer, *body, subs, enclosing_universals, kb);
         }
         LogicNode::ForAllNode((v, body)) => {
             enclosing_universals.push(v.clone());
-            collect_exists_for_skolem(buffer, *body, subs, enclosing_universals, counter);
+            collect_exists_for_skolem(buffer, *body, subs, enclosing_universals, kb);
             enclosing_universals.pop();
         }
         LogicNode::AndNode((l, r)) | LogicNode::OrNode((l, r)) => {
-            collect_exists_for_skolem(buffer, *l, subs, enclosing_universals, counter);
-            collect_exists_for_skolem(buffer, *r, subs, enclosing_universals, counter);
+            collect_exists_for_skolem(buffer, *l, subs, enclosing_universals, kb);
+            collect_exists_for_skolem(buffer, *r, subs, enclosing_universals, kb);
         }
         LogicNode::NotNode(inner) => {
-            collect_exists_for_skolem(buffer, *inner, subs, enclosing_universals, counter);
+            collect_exists_for_skolem(buffer, *inner, subs, enclosing_universals, kb);
         }
         LogicNode::CountNode((v, count, body)) => {
             if *count > 0 && !subs.contains_key(v.as_str()) {
                 if enclosing_universals.is_empty() {
-                    let sk = format!("sk_{}", *counter);
-                    *counter += 1;
-                    subs.insert(v.clone(), GroundTerm::Constant(sk));
+                    let sort = if v.starts_with("_ev") {
+                        SkolemSort::Event
+                    } else {
+                        SkolemSort::Individual
+                    };
+                    let symbol = kb.fresh_skolem(sort, SkolemOrigin::Generated);
+                    subs.insert(v.clone(), GroundTerm::Skolem(symbol));
                 } else {
-                    let base = format!("sk_{}", *counter);
-                    *counter += 1;
-                    let placeholder = format!("{}{}", SKDEP_PREFIX, base);
-                    subs.insert(v.clone(), GroundTerm::PatternVar(placeholder));
+                    let sort = if v.starts_with("_ev") {
+                        SkolemSort::Event
+                    } else {
+                        SkolemSort::Individual
+                    };
+                    let symbol = kb.fresh_skolem(sort, SkolemOrigin::Generated);
+                    subs.insert(v.clone(), GroundTerm::SkolemPlaceholder(symbol));
                 }
             }
-            collect_exists_for_skolem(buffer, *body, subs, enclosing_universals, counter);
+            collect_exists_for_skolem(buffer, *body, subs, enclosing_universals, kb);
         }
         LogicNode::Predicate(_) | LogicNode::ComputeNode(_) => {}
         LogicNode::PastNode(inner)
@@ -79,7 +93,7 @@ pub(super) fn collect_exists_for_skolem(
         | LogicNode::FutureNode(inner)
         | LogicNode::ObligatoryNode(inner)
         | LogicNode::PermittedNode(inner) => {
-            collect_exists_for_skolem(buffer, *inner, subs, enclosing_universals, counter);
+            collect_exists_for_skolem(buffer, *inner, subs, enclosing_universals, kb);
         }
     }
 }
@@ -434,8 +448,8 @@ fn build_positive_clause_conditions(
     buffer: &LogicBuffer,
     clause: &[u32],
     pattern_vars: &HashMap<String, String>,
-    ground_skolems: &HashMap<String, String>,
-    dependent_skolems: &HashMap<String, (String, Vec<String>)>,
+    ground_skolems: &HashMap<String, SkolemSymbol>,
+    dependent_skolems: &HashMap<String, (SkolemSymbol, Vec<String>)>,
     rule_desc: &str,
 ) -> Result<Vec<StoredFact>, String> {
     let mut clause_exists: HashSet<String> = HashSet::new();
@@ -490,7 +504,7 @@ pub(super) fn collect_and_note_constants(
         LogicNode::Predicate((_, args)) | LogicNode::ComputeNode((_, args)) => {
             for arg in args {
                 match arg {
-                    LogicalTerm::Constant(c) => inner.note_entity(c),
+                    LogicalTerm::Constant(c) => inner.note_entity(GroundTerm::Constant(c.clone())),
                     LogicalTerm::Description(d) => inner.note_description(d),
                     LogicalTerm::Number(n) => inner.note_number(*n),
                     _ => {}
@@ -535,7 +549,6 @@ pub(super) fn register_rule(
     negated_exists_groups: Vec<NegatedExistsGroup>,
     requests_existential_import: bool,
     forward: bool,
-    generated_ground_skolems: &HashSet<String>,
 ) -> Result<RuleRegistration, String> {
     // FAIL CLOSED: a rule with no extractable conclusions can never fire
     // (backward chaining indexes rules by conclusion relation). Such a rule
@@ -556,7 +569,6 @@ pub(super) fn register_rule(
         &negated_condition_indices,
         &negated_exists_groups,
         forward,
-        generated_ground_skolems,
     );
     if inner.known_rules.contains(&identity) {
         let existential_import_required =
@@ -687,16 +699,16 @@ pub(super) fn register_rule(
 
 fn register_dependent_skolem_functions(
     inner: &mut KnowledgeBaseInner,
-    dependent_skolems: &HashMap<String, (String, Vec<String>)>,
+    dependent_skolems: &HashMap<String, (SkolemSymbol, Vec<String>)>,
 ) {
     for (base, pvars) in dependent_skolems.values() {
         if !inner
             .skolem_fn_registry
             .iter()
-            .any(|entry| entry.base_name == *base)
+            .any(|entry| entry.symbol == *base)
         {
             inner.skolem_fn_registry.push(SkolemFnEntry {
-                base_name: base.clone(),
+                symbol: *base,
                 dep_count: pvars.len(),
             });
         }
@@ -708,30 +720,6 @@ fn register_dependent_skolem_functions(
 /// counter mints that same spelling in this buffer, the runtime `GroundTerm`
 /// no longer carries enough provenance to distinguish the two occurrences.
 /// Leave that name literal rather than risk conflating it with user data.
-fn identity_ground_skolem_names(
-    buffer: &LogicBuffer,
-    ground_skolems: &HashMap<String, String>,
-) -> HashSet<String> {
-    let literal_constants: HashSet<&str> = buffer
-        .nodes
-        .iter()
-        .filter_map(|node| match node {
-            LogicNode::Predicate((_, args)) | LogicNode::ComputeNode((_, args)) => Some(args),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|term| match term {
-            LogicalTerm::Constant(name) => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
-    ground_skolems
-        .values()
-        .filter(|name| !literal_constants.contains(name.as_str()))
-        .cloned()
-        .collect()
-}
-
 /// Compute the strongly-connected components of the predicate dependency graph.
 ///
 /// Iterative (explicit-stack) Tarjan — a recursive DFS would risk a stack
@@ -856,18 +844,6 @@ fn check_stratification(graph: &HashMap<String, Vec<(String, bool)>>) -> Result<
 
 /// Assert a typed fact into the fact store.
 /// Validates predicate arity against the registry (permissive mode: warns on mismatch).
-/// True if the term (recursively) contains a pattern variable — including one hiding
-/// inside a `SkolemFn` dependency or a `DepPair` component, which a flat top-level-args
-/// scan would miss.
-fn term_contains_pattern_var(t: &GroundTerm) -> bool {
-    match t {
-        GroundTerm::PatternVar(_) => true,
-        GroundTerm::SkolemFn(_, dep) => term_contains_pattern_var(dep),
-        GroundTerm::DepPair(a, b) => term_contains_pattern_var(a) || term_contains_pattern_var(b),
-        _ => false,
-    }
-}
-
 /// Surgical inverse of `assert_typed_fact`'s insert (STRICT-mode rollback):
 /// remove the fact from the store and its arg-position index leaves, invalidate
 /// the verdict cache, and mark the domain caches dirty. Only sound for a fact
@@ -901,11 +877,10 @@ pub(super) fn assert_typed_fact(fact: StoredFact, inner: &mut KnowledgeBaseInner
     // insert boundary. A non-ground fact is dropped FAIL-CLOSED (the engine under-derives
     // — a dropped fact can only move verdicts toward FALSE/UNKNOWN, never fabricate a
     // TRUE) with a warning, mirroring the permissive arity/constraint paths.
-    if fact.inner().args.iter().any(term_contains_pattern_var) {
+    if let Err(error) = validate_stored_fact_groundness(&fact) {
         eprintln!(
-            "[Groundness] Dropped non-ground fact '{}' (unbound pattern variable); \
-             stored facts must be ground.",
-            fact.to_display_string()
+            "[Groundness] Dropped non-ground fact '{}': {error}",
+            fact.to_display_string(),
         );
         return;
     }
@@ -1217,9 +1192,8 @@ fn register_clause_rule(
     universals: &[String],
     pattern_vars: &HashMap<String, String>,
     pattern_var_names: &[String],
-    ground_skolems: &HashMap<String, String>,
-    dependent_skolems: &HashMap<String, (String, Vec<String>)>,
-    generated_ground_skolems: &HashSet<String>,
+    ground_skolems: &HashMap<String, SkolemSymbol>,
+    dependent_skolems: &HashMap<String, (SkolemSymbol, Vec<String>)>,
     typed_concls: &[StoredFact],
     rule_desc: &str,
     inner: &mut KnowledgeBaseInner,
@@ -1366,7 +1340,6 @@ fn register_clause_rule(
         negated_exists_groups,
         requests_existential_import,
         false, // forward chaining disabled by default
-        generated_ground_skolems,
     ) {
         Ok(registration) => registration,
         Err(e) => {
@@ -1407,30 +1380,33 @@ fn register_clause_rule(
         // universal → one witness).
         let mut xp_subs: HashMap<String, GroundTerm> = HashMap::new();
         for v in universals {
-            let xp_name = inner.fresh_skolem();
-            inner.note_entity(&xp_name);
+            let xp = inner.fresh_skolem(SkolemSort::Individual, SkolemOrigin::ExistentialImport);
+            inner.note_entity(GroundTerm::Skolem(xp));
             // Mark as an imported witness so every public witness/count surface
             // can report its origin. Under the explicit import profile it is an
             // ordinary logical domain member for ∃/∀/find/count alike.
-            inner.presupposition_witnesses.insert(xp_name.clone());
-            xp_subs.insert(v.clone(), GroundTerm::Constant(xp_name));
+            xp_subs.insert(v.clone(), GroundTerm::Skolem(xp));
         }
         for (k, v) in ground_skolems {
             xp_subs
                 .entry(k.clone())
-                .or_insert_with(|| GroundTerm::Constant(v.clone()));
+                .or_insert_with(|| GroundTerm::Skolem(*v));
         }
         for var in &clause_exists {
-            let ev_sk = inner.fresh_skolem();
-            if var.starts_with("_ev") {
-                inner.note_event_entity(&ev_sk);
+            let sort = if var.starts_with("_ev") {
+                SkolemSort::Event
             } else {
-                inner.note_entity(&ev_sk);
+                SkolemSort::Individual
+            };
+            let ev_sk = inner.fresh_skolem(sort, SkolemOrigin::ExistentialImport);
+            if var.starts_with("_ev") {
+                inner.note_event_entity(GroundTerm::Skolem(ev_sk));
+            } else {
+                inner.note_entity(GroundTerm::Skolem(ev_sk));
             }
             // Event/existential skolems created solely to realize the imported
             // restrictor share that origin too; raw-IR find may bind them.
-            inner.presupposition_witnesses.insert(ev_sk.clone());
-            xp_subs.insert(var.clone(), GroundTerm::Constant(ev_sk));
+            xp_subs.insert(var.clone(), GroundTerm::Skolem(ev_sk));
         }
         for &(cid, tense) in &all_conditions {
             if let Some(fact) = build_stored_fact_from_node(buffer, cid, &xp_subs, tense) {
@@ -1518,12 +1494,12 @@ pub(super) fn compile_forall_to_rule(
         .map(|(i, v)| (v.clone(), format!("x__v{}", i)))
         .collect();
 
-    let mut ground_skolems: HashMap<String, String> = skolem_subs
+    let mut ground_skolems: HashMap<String, SkolemSymbol> = skolem_subs
         .iter()
         .filter(|(_, gt)| !is_skdep(gt))
         .filter_map(|(k, gt)| {
-            if let GroundTerm::Constant(s) = gt {
-                Some((k.clone(), s.clone()))
+            if let GroundTerm::Skolem(symbol) = gt {
+                Some((k.clone(), *symbol))
             } else {
                 None
             }
@@ -1532,11 +1508,10 @@ pub(super) fn compile_forall_to_rule(
 
     let pattern_var_names: Vec<String> =
         universals.iter().map(|v| pattern_vars[v].clone()).collect();
-    let mut dependent_skolems: HashMap<String, (String, Vec<String>)> = skolem_subs
+    let mut dependent_skolems: HashMap<String, (SkolemSymbol, Vec<String>)> = skolem_subs
         .iter()
         .filter_map(|(k, gt)| {
-            skdep_base_name(gt)
-                .map(|base| (k.clone(), (base.to_string(), pattern_var_names.clone())))
+            skdep_symbol(gt).map(|symbol| (k.clone(), (symbol, pattern_var_names.clone())))
         })
         .collect();
 
@@ -1766,7 +1741,6 @@ pub(super) fn compile_forall_to_rule(
             // One rule per DNF clause; all clauses share the consequent + universals
             // + dependent-Skolem analysis, only the conditions differ.
             let clause_count = clauses.len();
-            let generated_ground_skolems = identity_ground_skolem_names(buffer, &ground_skolems);
             let mut registered_any = false;
             for (branch_idx, clause) in clauses.iter().enumerate() {
                 registered_any |= register_clause_rule(
@@ -1779,7 +1753,6 @@ pub(super) fn compile_forall_to_rule(
                     &pattern_var_names,
                     &ground_skolems,
                     &dependent_skolems,
-                    &generated_ground_skolems,
                     &typed_concls,
                     &rule_desc,
                     inner,
@@ -1822,7 +1795,6 @@ pub(super) fn compile_forall_to_rule(
             };
 
             let label = build_typed_rule_label(&[], &typed_concls);
-            let generated_ground_skolems = identity_ground_skolem_names(buffer, &ground_skolems);
             let registration = match register_rule(
                 inner,
                 RuleKind::BareUniversal,
@@ -1834,7 +1806,6 @@ pub(super) fn compile_forall_to_rule(
                 vec![], // bare universal — no negated-exists groups
                 false,  // prenex universal — no existential import
                 false,  // forward chaining disabled by default
-                &generated_ground_skolems,
             ) {
                 Ok(registration) => registration,
                 Err(e) => {
@@ -1875,15 +1846,16 @@ pub(super) fn generate_count_extra_witnesses(
         LogicNode::CountNode((v, count, body)) => {
             if *count > 1 {
                 for _ in 1..*count {
-                    let extra_sk = inner.fresh_skolem();
-                    inner.note_entity(&extra_sk);
+                    let extra_sk =
+                        inner.fresh_skolem(SkolemSort::Individual, SkolemOrigin::Generated);
+                    inner.note_entity(GroundTerm::Skolem(extra_sk));
 
                     let mut typed_extra_subs: HashMap<String, GroundTerm> = skolem_subs
                         .iter()
                         .filter(|(_, gt)| !is_skdep(gt))
                         .map(|(k, gt)| (k.clone(), gt.clone()))
                         .collect();
-                    typed_extra_subs.insert(v.clone(), GroundTerm::Constant(extra_sk.clone()));
+                    typed_extra_subs.insert(v.clone(), GroundTerm::Skolem(extra_sk));
 
                     // FRESH event/description constants for THIS witness: the
                     // body's existentials must not share events with witness 1
@@ -1892,13 +1864,18 @@ pub(super) fn generate_count_extra_witnesses(
                     let mut body_exists = HashSet::new();
                     collect_condition_exists(buffer, *body, &mut body_exists);
                     for var in &body_exists {
-                        let ev_sk = inner.fresh_skolem();
-                        if var.starts_with("_ev") {
-                            inner.note_event_entity(&ev_sk);
+                        let sort = if var.starts_with("_ev") {
+                            SkolemSort::Event
                         } else {
-                            inner.note_entity(&ev_sk);
+                            SkolemSort::Individual
+                        };
+                        let ev_sk = inner.fresh_skolem(sort, SkolemOrigin::Generated);
+                        if var.starts_with("_ev") {
+                            inner.note_event_entity(GroundTerm::Skolem(ev_sk));
+                        } else {
+                            inner.note_entity(GroundTerm::Skolem(ev_sk));
                         }
-                        typed_extra_subs.insert(var.clone(), GroundTerm::Constant(ev_sk));
+                        typed_extra_subs.insert(var.clone(), GroundTerm::Skolem(ev_sk));
                     }
 
                     // Materialize the full body (restrictor ∧ main), not a
@@ -2078,16 +2055,16 @@ pub(super) fn collect_ground_facts(
 
 /// Build a typed rule template fact from a LogicBuffer node.
 /// `pattern_vars` maps variable names → pattern var names (e.g., "_v0" → "x__v0").
-/// `ground_skolems` maps variable names → Skolem constant names.
-/// `dependent_skolems` maps variable names → (base_name, [pattern_var_names]).
+/// `ground_skolems` maps variable names → typed independent Skolem symbols.
+/// `dependent_skolems` maps variable names → (typed symbol, [pattern_var_names]).
 /// Like `build_rule_template_fact`, but also returns whether the atom was
 /// originally under negation. Used for stratification tracking.
 pub(super) fn build_rule_template_fact_with_negation(
     buffer: &LogicBuffer,
     node_id: u32,
     pattern_vars: &HashMap<String, String>,
-    ground_skolems: &HashMap<String, String>,
-    dependent_skolems: &HashMap<String, (String, Vec<String>)>,
+    ground_skolems: &HashMap<String, SkolemSymbol>,
+    dependent_skolems: &HashMap<String, (SkolemSymbol, Vec<String>)>,
     tense: Option<&str>,
 ) -> Option<(StoredFact, bool)> {
     let Ok(node) = get_node(buffer, node_id) else {
@@ -2122,8 +2099,8 @@ pub(super) fn build_rule_template_fact(
     buffer: &LogicBuffer,
     node_id: u32,
     pattern_vars: &HashMap<String, String>,
-    ground_skolems: &HashMap<String, String>,
-    dependent_skolems: &HashMap<String, (String, Vec<String>)>,
+    ground_skolems: &HashMap<String, SkolemSymbol>,
+    dependent_skolems: &HashMap<String, (SkolemSymbol, Vec<String>)>,
     tense: Option<&str>,
 ) -> Option<StoredFact> {
     let Ok(node) = get_node(buffer, node_id) else {
@@ -2138,13 +2115,13 @@ pub(super) fn build_rule_template_fact(
                         if let Some(pvar) = pattern_vars.get(v.as_str()) {
                             GroundTerm::PatternVar(pvar.clone())
                         } else if let Some(sk) = ground_skolems.get(v.as_str()) {
-                            GroundTerm::Constant(sk.clone())
+                            GroundTerm::Skolem(*sk)
                         } else if let Some((base, pvars)) = dependent_skolems.get(v.as_str()) {
                             let deps: Vec<GroundTerm> = pvars
                                 .iter()
                                 .map(|pv| GroundTerm::PatternVar(pv.clone()))
                                 .collect();
-                            build_skolem_fn_term(base, &deps)
+                            build_skolem_fn_term(*base, &deps)
                         } else {
                             GroundTerm::PatternVar(v.clone())
                         }
@@ -2200,7 +2177,7 @@ pub(super) fn build_rule_template_fact(
 }
 
 /// Build a GroundTerm representing a SkolemFn with given dependencies.
-pub(super) fn build_skolem_fn_term(base_name: &str, deps: &[GroundTerm]) -> GroundTerm {
+pub(super) fn build_skolem_fn_term(symbol: SkolemSymbol, deps: &[GroundTerm]) -> GroundTerm {
     let dep_term = match deps.len() {
         0 => GroundTerm::Unspecified,
         1 => deps[0].clone(),
@@ -2213,7 +2190,7 @@ pub(super) fn build_skolem_fn_term(base_name: &str, deps: &[GroundTerm]) -> Grou
             acc
         }
     };
-    GroundTerm::SkolemFn(base_name.to_string(), Box::new(dep_term))
+    GroundTerm::SkolemFn(symbol, Box::new(dep_term))
 }
 
 #[cfg(test)]

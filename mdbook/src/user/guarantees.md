@@ -42,6 +42,16 @@ metadata label it `existential-import`, count proofs disclose the imported share
 and the host/UI show which profile is active. Toggling the profile rebuilds the
 current KB transactionally, so existing rules change immediately.
 
+Ordinary reasoner-minted witnesses are labeled `generated-witness`; asserted user
+constants remain `knowledge-base`, even when their display text resembles `sk_N`.
+Internally, generated witnesses have source-scoped typed identities (source
+assertion, binder ordinal, sort, and origin). Their friendly `sk_N` or
+`sk_N(argument)` rendering is never semantic, so equal-looking user constants stay
+distinct through equality, event joins, find/count, proof, persistence, retraction,
+and rebuild. A compute call that would expose an internal witness to the
+string-only backend protocol fails closed as `UNKNOWN (backend-unavailable)`; an
+equal-looking user constant still dispatches normally.
+
 ## Four-valued outcomes
 
 How to read a query result (product README wording):

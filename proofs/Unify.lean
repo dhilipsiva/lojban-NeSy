@@ -10,8 +10,8 @@
   (:326) delegated per-argument by `unify_facts` (:290); `substitute_term` (:389) applies a
   substitution. Only the template carries `PatternVar`s — the concrete side is always GROUND (facts
   in the store are ground). This file models the term-level recursion (where all the subtlety
-  lives: consistency of repeated variables, and threading the accumulator through `DepPair` /
-  `SkolemFn`) and proves:
+  lives: consistency of repeated variables, typed Skolem identity distinct from user constants,
+  and threading the accumulator through `DepPair` / `SkolemFn`) and proves:
 
       unify t c σ₀ = some σ  →  subst σ t = c        (for ground `c`)
 
@@ -27,16 +27,24 @@ set_option linter.unusedSimpArgs false
 
 namespace Nibli.Unify
 
-/-- A ground term, mirroring nibli-reason's `GroundTerm` (`nibli-reason/src/kb.rs:130`). Only `pvar` (a
-    template pattern variable) is ever bound; the concrete side is always `NoVar` (ground). -/
+/-- The equality-bearing part of `SkolemSymbol`. Rust carries a presentation-only ordinal too, but
+    semantic equality and unification use only the opaque `SkolemId`; `Nat` abstracts that ID here. -/
+abbrev SkolemSymbol := Nat
+
+/-- A ground term, mirroring nibli-reason's `GroundTerm` (`nibli-reason/src/kb.rs`). Only `pvar` (a
+    template pattern variable) is ever bound; the concrete side is always `NoVar` (ground).
+    `skolem` is deliberately a different constructor from `const`: equal-looking display text can
+    never make an internal witness equal to a user constant. -/
 inductive GTerm where
   | const : String → GTerm
+  | skolem : SkolemSymbol → GTerm
   | num : Nat → GTerm
   | descr : String → GTerm
   | unspec : GTerm
-  | skolem : String → GTerm → GTerm
+  | skolemFn : SkolemSymbol → GTerm → GTerm
   | depPair : GTerm → GTerm → GTerm
   | pvar : String → GTerm
+  | skolemPlaceholder : SkolemSymbol → GTerm
 deriving DecidableEq, Repr
 
 /-- A substitution: an association list from pattern-variable names to terms. `unify` inserts a key
@@ -50,24 +58,28 @@ def lookup : Subst → String → Option GTerm
 /-- No pattern variable anywhere — the ground-concrete invariant. -/
 def NoVar : GTerm → Prop
   | .const _ => True
+  | .skolem _ => True
   | .num _ => True
   | .descr _ => True
   | .unspec => True
   | .pvar _ => False
-  | .skolem _ d => NoVar d
+  | .skolemFn _ d => NoVar d
   | .depPair a b => NoVar a ∧ NoVar b
+  | .skolemPlaceholder _ => False
 
 /-- Apply a substitution (mirrors `substitute_term`, `nibli-reason/src/kb.rs:389`). -/
 def subst (σ : Subst) : GTerm → GTerm
   | .const a => .const a
+  | .skolem a => .skolem a
   | .num a => .num a
   | .descr a => .descr a
   | .unspec => .unspec
   | .pvar name => match lookup σ name with
     | some t => t
     | none => .pvar name
-  | .skolem n d => .skolem n (subst σ d)
+  | .skolemFn n d => .skolemFn n (subst σ d)
   | .depPair a b => .depPair (subst σ a) (subst σ b)
+  | .skolemPlaceholder n => .skolemPlaceholder n
 
 /-- The one-directional unifier (mirrors `unify_terms`, `nibli-reason/src/kb.rs:326`): match `t`
     (template, may contain `pvar`s) against `c` (concrete), threading the accumulator `σ`. A bound
@@ -80,6 +92,9 @@ def unify : GTerm → GTerm → Subst → Option Subst
   | .const a, c, σ => match c with
     | .const b => if a = b then some σ else none
     | _ => none
+  | .skolem a, c, σ => match c with
+    | .skolem b => if a = b then some σ else none
+    | _ => none
   | .num a, c, σ => match c with
     | .num b => if a = b then some σ else none
     | _ => none
@@ -89,14 +104,24 @@ def unify : GTerm → GTerm → Subst → Option Subst
   | .unspec, c, σ => match c with
     | .unspec => some σ
     | _ => none
-  | .skolem na da, c, σ => match c with
-    | .skolem nb db => if na = nb then unify da db σ else none
+  | .skolemFn na da, c, σ => match c with
+    | .skolemFn nb db => if na = nb then unify da db σ else none
     | _ => none
   | .depPair a1 a2, c, σ => match c with
     | .depPair b1 b2 => match unify a1 b1 σ with
       | some σ' => unify a2 b2 σ'
       | none => none
     | _ => none
+  | .skolemPlaceholder _, _, _ => none
+
+/-- Internal witness identity and user constants are disjoint in BOTH unifier positions. Even if
+    a user string is the witness's friendly `sk_N` rendering, that rendering is absent here and
+    cannot participate in equality. -/
+theorem skolem_constant_disjoint
+    (id : SkolemSymbol) (user : String) (σ : Subst) :
+    unify (.skolem id) (.const user) σ = none ∧
+      unify (.const user) (.skolem id) σ = none := by
+  exact ⟨rfl, rfl⟩
 
 /-- `lookup` of an absent key freshly bound: it resolves to the new value. -/
 theorem lookup_cons_self (name : String) (c : GTerm) (σ : Subst) :
@@ -111,6 +136,12 @@ theorem unify_extends (t : GTerm) :
       unify t c σ = some σ' → ∀ k v, lookup σ k = some v → lookup σ' k = some v := by
   induction t with
   | const a =>
+    intro c σ σ' h k v hkv
+    cases c <;> simp only [unify] at h <;> try contradiction
+    split at h
+    · injection h with h; subst h; exact hkv
+    · contradiction
+  | skolem a =>
     intro c σ σ' h k v hkv
     cases c <;> simp only [unify] at h <;> try contradiction
     split at h
@@ -145,7 +176,7 @@ theorem unify_extends (t : GTerm) :
       by_cases hk : name = k
       · rw [← hk] at hkv; rw [hl] at hkv; contradiction
       · simp only [lookup, if_neg hk]; exact hkv
-  | skolem na da ih =>
+  | skolemFn na da ih =>
     intro c σ σ' h k v hkv
     cases c <;> simp only [unify] at h <;> try contradiction
     rename_i nb db
@@ -162,6 +193,10 @@ theorem unify_extends (t : GTerm) :
       rw [hh] at h
       have h1 := ih1 b1 σ σ1 hh k v hkv
       exact ih2 b2 σ1 σ' h k v h1
+  | skolemPlaceholder a =>
+    intro c σ σ' h k v hkv
+    simp only [unify] at h
+    contradiction
 
 /-- SUBST STABILITY: if `subst σ t` is fully ground, extending `σ` to `σ'` does not change the
     result — every variable of `t` is already resolved by `σ`. -/
@@ -171,6 +206,7 @@ theorem subst_stable (t : GTerm) :
       NoVar (subst σ t) → subst σ' t = subst σ t := by
   induction t with
   | const a => intro _ _ _ _; rfl
+  | skolem a => intro _ _ _ _; rfl
   | num a => intro _ _ _ _; rfl
   | descr a => intro _ _ _ _; rfl
   | unspec => intro _ _ _ _; rfl
@@ -181,7 +217,7 @@ theorem subst_stable (t : GTerm) :
     | some w =>
       have hl' : lookup σ' name = some w := hext name w hl
       simp only [subst, hl, hl']
-  | skolem n d ih =>
+  | skolemFn n d ih =>
     intro σ σ' hext hg
     simp only [subst] at hg ⊢
     rw [ih σ σ' hext hg]
@@ -190,6 +226,9 @@ theorem subst_stable (t : GTerm) :
     simp only [subst] at hg ⊢
     obtain ⟨hga, hgb⟩ := hg
     rw [iha σ σ' hext hga, ihb σ σ' hext hgb]
+  | skolemPlaceholder n =>
+    intro σ σ' hext hg
+    simp only [subst, NoVar] at hg
 
 /-- SOUNDNESS: a successful one-directional unification instantiates the template to exactly the
     (ground) concrete term. The property the Rust `unify_conformance` test checks on the real
@@ -199,6 +238,12 @@ theorem unify_sound (t : GTerm) :
       NoVar c → unify t c σ = some σ' → subst σ' t = c := by
   induction t with
   | const a =>
+    intro c σ σ' _ h
+    cases c <;> simp only [unify] at h <;> try contradiction
+    split at h
+    · next hab => injection h with h; subst h; simp only [subst]; rw [hab]
+    · contradiction
+  | skolem a =>
     intro c σ σ' _ h
     cases c <;> simp only [unify] at h <;> try contradiction
     split at h
@@ -232,7 +277,7 @@ theorem unify_sound (t : GTerm) :
     | none =>
       simp only [unify, hl] at h; injection h with h; subst h
       simp only [subst, lookup_cons_self]
-  | skolem na da ih =>
+  | skolemFn na da ih =>
     intro c σ σ' hc h
     cases c <;> simp only [unify] at h <;> try contradiction
     rename_i nb db
@@ -257,11 +302,15 @@ theorem unify_sound (t : GTerm) :
       have e1 : subst σ' a1 = subst σ1 a1 :=
         subst_stable a1 σ1 σ' hext (by rw [e1σ1]; exact hb1)
       simp only [subst]; rw [e1, e1σ1, e2]
+  | skolemPlaceholder a =>
+    intro c σ σ' hc h
+    simp only [unify] at h
+    contradiction
 
 /-- Whether a pattern variable `name` occurs in a term. -/
 def occurs (name : String) : GTerm → Prop
   | .pvar m => m = name
-  | .skolem _ d => occurs name d
+  | .skolemFn _ d => occurs name d
   | .depPair a b => occurs name a ∨ occurs name b
   | _ => False
 
@@ -273,6 +322,12 @@ theorem unify_minimal (t : GTerm) :
         ∀ k, (lookup σ' k).isSome → (lookup σ k).isSome ∨ occurs k t := by
   induction t with
   | const a =>
+    intro c σ σ' h k hk
+    cases c <;> simp only [unify] at h <;> try contradiction
+    split at h
+    · injection h with h; subst h; exact Or.inl hk
+    · contradiction
+  | skolem a =>
     intro c σ σ' h k hk
     cases c <;> simp only [unify] at h <;> try contradiction
     split at h
@@ -307,7 +362,7 @@ theorem unify_minimal (t : GTerm) :
       by_cases hk2 : name = k
       · exact Or.inr hk2
       · left; simp only [lookup, if_neg hk2] at hk; exact hk
-  | skolem na da ih =>
+  | skolemFn na da ih =>
     intro c σ σ' h k hk
     cases c <;> simp only [unify] at h <;> try contradiction
     rename_i nb db
@@ -327,5 +382,9 @@ theorem unify_minimal (t : GTerm) :
         · exact Or.inl hσ
         · exact Or.inr (Or.inl hocc1)
       · exact Or.inr (Or.inr hocc2)
+  | skolemPlaceholder a =>
+    intro c σ σ' h k hk
+    simp only [unify] at h
+    contradiction
 
 end Nibli.Unify
