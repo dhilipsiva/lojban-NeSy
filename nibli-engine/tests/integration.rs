@@ -5,7 +5,7 @@
 
 use nibli_engine::{
     EngineAggregateOp, EngineComputeRequest, EngineError, EngineLogicBuffer, EngineLogicNode,
-    EngineLogicalTerm, EngineQueryResult, NibliEngine,
+    EngineLogicalTerm, EngineQueryResult, EngineWitnessOrigin, NibliEngine,
 };
 use nibli_render::{
     DRUG_INTERACTIONS_OVERLAY, GDPR_OVERLAY, Register, render_collapsed_text_with,
@@ -31,6 +31,19 @@ fn fresh_open(path: &Path, expect_msg: &str) -> NibliEngine {
 /// Helper: create a fresh engine, assert multiple lines, return the engine.
 fn engine_with_facts(lines: &[&str]) -> NibliEngine {
     let engine = fresh_engine();
+    for line in lines {
+        engine
+            .assert_text(line)
+            .unwrap_or_else(|e| panic!("Failed to assert '{}': {}", line, e));
+    }
+    engine
+}
+
+fn engine_with_import_facts(enabled: bool, lines: &[&str]) -> NibliEngine {
+    let engine = fresh_engine();
+    engine
+        .set_existential_import(enabled)
+        .expect("fresh engine must accept the requested import profile");
     for line in lines {
         engine
             .assert_text(line)
@@ -1234,11 +1247,11 @@ fn object_position_universal_negative_control() {
 
 #[test]
 fn object_position_existential_import_no_phantom_entity() {
-    // The existential-import existential-import presupposition for `ro lo gerku cu pendo ro lo
+    // The existential-import presupposition for `ro lo gerku cu pendo ro lo
     // mlatu` must assert a dog witness and a cat witness as DISTINCT entities — NOT
     // one phantom entity that is both. So "is some dog a cat?" is FALSE. RED before
     // the per-universal-witness fix (a single shared witness satisfied both).
-    let engine = engine_with_facts(&["friend(every dog, every cat)."]);
+    let engine = engine_with_import_facts(true, &["friend(every dog, every cat)."]);
     let (holds, _t, _j) = engine.query_text_with_proof("cat(some dog).").unwrap();
     assert_false(&holds, "no single xorlo witness is both a dog and a cat");
 }
@@ -1718,20 +1731,152 @@ fn count_assertion_materializes_witnesses() {
 }
 
 #[test]
-fn exact_count_excludes_existential_import_witness() {
-    // DECIDED 2026-07-02 (GUARANTEES §Aggregation): the existential-import presupposition
-    // witness a description universal asserts satisfies ∃/∀ but is EXCLUDED
-    // from counting — a phantom entity a rule presupposed must not change
-    // "how many". (Engine-probed pre-change: 2 dogs + the taxonomy rule made
-    // `re lo gerku cu danlu` count 3 and fail.)
-    let engine = engine_with_facts(&["dog(Adam).", "dog(Karl).", "animal(every dog)."]);
+fn explicit_import_counts_imported_witness() {
+    // The explicit legacy profile has one coherent logical domain: two asserted
+    // dogs plus the description-import witness count as three everywhere.
+    let engine =
+        engine_with_import_facts(true, &["dog(Adam).", "dog(Karl).", "animal(every dog)."]);
     assert_true(
-        &engine.query_holds("animal(exactly 2 dog).").unwrap(),
-        "two real dogs count as two — the presupposition phantom is not counted",
+        &engine.query_holds("animal(exactly 3 dog).").unwrap(),
+        "two asserted dogs plus one imported dog count as three",
     );
     assert_false(
-        &engine.query_holds("animal(exactly 3 dog).").unwrap(),
-        "the phantom must not push the count to three",
+        &engine.query_holds("animal(exactly 2 dog).").unwrap(),
+        "the imported logical witness cannot disappear from exact count",
+    );
+}
+
+#[test]
+fn existential_import_profiles_are_algebraically_coherent_and_retractable() {
+    for enabled in [false, true] {
+        let engine = fresh_engine();
+        engine.set_existential_import(enabled).unwrap();
+        let description_id = engine.assert_text("animal(every dog).").unwrap()[0];
+
+        let some = engine.query_holds("dog(some dog).").unwrap();
+        let all_dogs_are_cats = engine.query_holds("cat(every dog).").unwrap();
+        let found = engine.query_find_text("dog($d).").unwrap();
+        let counted = engine.count_witnesses_text("dog($d).").unwrap();
+        let exactly_zero = engine.query_holds("dog(no dog).").unwrap();
+        let (exactly_one, _, one_proof_json) =
+            engine.query_text_with_proof("dog(exactly 1 dog).").unwrap();
+        let one_proof = nibli_protocol::proof_trace_from_json(&one_proof_json).unwrap();
+
+        assert_eq!(some.is_true(), enabled, "some/profile mismatch");
+        assert_eq!(
+            all_dogs_are_cats.is_true(),
+            !enabled,
+            "forall/profile mismatch: clean-core is vacuous, import supplies a non-cat dog"
+        );
+        assert_eq!(found.len(), usize::from(enabled), "find/profile mismatch");
+        assert_eq!(counted, usize::from(enabled), "count/profile mismatch");
+        assert_eq!(exactly_zero.is_true(), !enabled, "exactly-0 mismatch");
+        assert_eq!(exactly_one.is_true(), enabled, "exactly-1 mismatch");
+
+        if enabled {
+            assert!(
+                found
+                    .iter()
+                    .flatten()
+                    .any(|binding| { binding.origin == EngineWitnessOrigin::ExistentialImport })
+            );
+            assert!(one_proof.steps.iter().any(|step| {
+                matches!(
+                    &step.rule,
+                    nibli_protocol::ProofRule::CountResult {
+                        actual: 1,
+                        existential_imported: 1,
+                        ..
+                    }
+                )
+            }));
+            let (_, _, some_proof_json) = engine.query_text_with_proof("dog(some dog).").unwrap();
+            let some_proof = nibli_protocol::proof_trace_from_json(&some_proof_json).unwrap();
+            assert!(some_proof.steps.iter().any(|step| {
+                matches!(
+                    &step.rule,
+                    nibli_protocol::ProofRule::ExistsWitness {
+                        origin: EngineWitnessOrigin::ExistentialImport,
+                        ..
+                    }
+                )
+            }));
+        }
+
+        engine.retract_fact(description_id).unwrap();
+        assert_false(
+            &engine.query_holds("dog(some dog).").unwrap(),
+            "post-retract some",
+        );
+        assert_eq!(engine.query_find_text("dog($d).").unwrap().len(), 0);
+        assert_eq!(engine.count_witnesses_text("dog($d).").unwrap(), 0);
+        assert_true(
+            &engine.query_holds("dog(no dog).").unwrap(),
+            "post-retract zero",
+        );
+        assert_false(
+            &engine.query_holds("dog(exactly 1 dog).").unwrap(),
+            "post-retract one",
+        );
+    }
+}
+
+#[test]
+fn existential_import_profile_applies_to_aggregate_enumeration() {
+    for (enabled, expected) in [(false, None), (true, Some(5.0))] {
+        let engine = fresh_engine();
+        engine.set_existential_import(enabled).unwrap();
+        engine.assert_text("quantity(every dog, 5).").unwrap();
+
+        assert_eq!(
+            engine
+                .aggregate_text(
+                    "quantity($dog, $amount).",
+                    "$amount",
+                    EngineAggregateOp::Sum,
+                )
+                .unwrap(),
+            expected,
+            "aggregate/profile mismatch with existential import {enabled}"
+        );
+    }
+}
+
+#[test]
+fn existential_import_profile_switch_rebuilds_loaded_rules_immediately() {
+    let engine = engine_with_facts(&["animal(every dog).", "cat(Milo)."]);
+    assert!(!engine.is_existential_import());
+    assert_false(
+        &engine.query_holds("dog(some dog).").unwrap(),
+        "default clean-core",
+    );
+
+    engine.set_existential_import(true).unwrap();
+    assert!(engine.is_existential_import());
+    assert_true(
+        &engine.query_holds("dog(some dog).").unwrap(),
+        "OFF to ON rebuild",
+    );
+    assert_eq!(engine.count_witnesses_text("dog($d).").unwrap(), 1);
+
+    engine.set_existential_import(false).unwrap();
+    assert_false(
+        &engine.query_holds("dog(some dog).").unwrap(),
+        "ON to OFF rebuild",
+    );
+    assert_eq!(engine.count_witnesses_text("dog($d).").unwrap(), 0);
+
+    let cat_id = engine
+        .list_facts()
+        .unwrap()
+        .into_iter()
+        .find(|fact| fact.label == "cat(Milo).")
+        .expect("unrelated fact")
+        .id;
+    engine.retract_fact(cat_id).unwrap();
+    assert_false(
+        &engine.query_holds("dog(some dog).").unwrap(),
+        "unrelated retraction must preserve the active profile",
     );
 }
 
@@ -1921,14 +2066,12 @@ fn exact_count_ranges_over_asserted_numbers() {
 }
 
 #[test]
-fn presupposition_witnesses_stay_out_of_numeric_counts() {
-    // Asserting a description universal mints an existential-import
-    // presupposition witness for the restrictor; that phantom must not count,
-    // and the number must not leak into an unrelated predicate's tally.
-    let engine = engine_with_facts(&["big(5).", "animal(every big)."]);
+fn imported_and_numeric_witnesses_share_one_counting_algebra() {
+    // Explicit import adds one logical big witness alongside the asserted 5.
+    let engine = engine_with_import_facts(true, &["big(5).", "animal(every big)."]);
     assert_true(
-        &engine.query_holds("animal(exactly 1 big).").unwrap(),
-        "the witness is skipped: only the number 5 counts as big",
+        &engine.query_holds("animal(exactly 2 big).").unwrap(),
+        "the asserted number and imported witness both count",
     );
     assert_true(
         &engine.query_holds("dog(exactly 0 big).").unwrap(),

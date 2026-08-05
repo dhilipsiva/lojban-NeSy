@@ -33,6 +33,15 @@ Inference assumes:
 - **Closed world** — a fact you did not assert is taken to be *false*, not unknown.
 - **Closed domain** — quantifiers range only over entities the knowledge base knows.
 
+The default **clean-core** profile does not infer existence from a universal:
+`animal(every dog).` alone makes no dog, and `some dog` remains plain ∃. Legacy
+xorlo import is an explicit opt-in (`NIBLI_EXISTENTIAL_IMPORT=1` or
+`:existential-import on`). When enabled, the imported witness is a full logical
+entity: it participates consistently in ∃/∀/find/count/aggregate. Find and proof
+metadata label it `existential-import`, count proofs disclose the imported share,
+and the host/UI show which profile is active. Toggling the profile rebuilds the
+current KB transactionally, so existing rules change immediately.
+
 ## Four-valued outcomes
 
 How to read a query result (product README wording):

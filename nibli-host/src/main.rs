@@ -76,13 +76,25 @@ use pipeline_bind::nibli::engine::logic_types::LogicalTerm as EngineLogicalTerm;
 use pipeline_bind::nibli::engine::logic_types::{
     LogicBuffer as EngineLogicBuffer, LogicNode as EngineLogicNode, ProofRule, ProofTrace,
     QueryResult as EngineQueryResult, ResourceKind as EngineResourceKind,
-    UnknownReason as EngineUnknownReason,
+    UnknownReason as EngineUnknownReason, WitnessOrigin as EngineWitnessOrigin,
 };
 // Target types for the WIT → canonical reverse converter (so the host can render
 // the `:debug` logic buffer via nibli-render).
 use nibli_types::logic::{
     LogicBuffer as NibliBuffer, LogicNode as NibliNode, LogicalTerm as NibliTerm,
+    WitnessOrigin as NibliWitnessOrigin,
 };
+
+fn wit_origin_to_types(origin: &EngineWitnessOrigin) -> NibliWitnessOrigin {
+    match origin {
+        EngineWitnessOrigin::KnowledgeBase => NibliWitnessOrigin::KnowledgeBase,
+        EngineWitnessOrigin::ExistentialImport => NibliWitnessOrigin::ExistentialImport,
+    }
+}
+
+fn format_witness_origin(origin: &EngineWitnessOrigin) -> &'static str {
+    wit_origin_to_types(origin).label()
+}
 
 /// Format a LogicalTerm from the engine bindings for display.
 fn format_term(term: &EngineLogicalTerm) -> String {
@@ -233,6 +245,7 @@ fn rule_to_proto(rule: &ProofRule) -> ProtoRule {
         ProofRule::ExistsWitness(r) => ProtoRule::ExistsWitness {
             var: r.var.clone(),
             term: wit_term_to_types(&r.term),
+            origin: wit_origin_to_types(&r.origin),
         },
         ProofRule::ExistsFailed => ProtoRule::ExistsFailed,
         ProofRule::ForallVacuous => ProtoRule::ForallVacuous,
@@ -245,6 +258,7 @@ fn rule_to_proto(rule: &ProofRule) -> ProtoRule {
         ProofRule::CountResult(r) => ProtoRule::CountResult {
             expected: r.expected,
             actual: r.actual,
+            existential_imported: r.existential_imported,
         },
         ProofRule::PredicateCheck(r) => ProtoRule::PredicateCheck {
             method: r.method.clone(),
@@ -628,9 +642,9 @@ struct Repl {
     /// at startup, toggled by `:strict on|off`; forwarded to the guest at
     /// (re)instantiation and re-applied to the live session on toggle.
     strict: bool,
-    /// EXISTENTIAL-IMPORT MODE (default ON — the v0.1 xorlo behavior). When on,
-    /// a description universal mints a presupposition witness. Off gives the
-    /// clean-core `some` = plain ∃ profile. Set from `NIBLI_EXISTENTIAL_IMPORT=0`
+    /// Legacy EXISTENTIAL-IMPORT MODE (default OFF). When on, a description
+    /// universal mints witnesses that count everywhere. Set from
+    /// `NIBLI_EXISTENTIAL_IMPORT=1`
     /// at startup, toggled by `:existential-import on|off`; forwarded to the
     /// guest at (re)instantiation and re-applied to the live session on toggle.
     existential_import: bool,
@@ -669,10 +683,10 @@ impl Repl {
             if strict {
                 b.env("NIBLI_STRICT", "1");
             }
-            // Existential import defaults ON in the guest; forward the opt-OUT
-            // only when clean-core is active.
-            if !existential_import {
-                b.env("NIBLI_EXISTENTIAL_IMPORT", "0");
+            // Clean-core is the guest default; forward only the explicit
+            // opt-in to legacy existential import.
+            if existential_import {
+                b.env("NIBLI_EXISTENTIAL_IMPORT", "1");
             }
             // Stratum-ordered materialisation defaults ON in the guest; forward the
             // opt-OUT only. Unlike strict / existential-import there is no WIT
@@ -1196,13 +1210,24 @@ impl Repl {
                 return false;
             }
             ":existential-import" => {
+                self.prepare_session();
+                let session = self.pipeline.nibli_engine_engine().session();
+                match session.call_existential_import_enabled(&mut self.store, self.session_handle)
+                {
+                    Ok(enabled) => self.existential_import = enabled,
+                    Err(e) => {
+                        println!("{}", format_host_error(&e));
+                        self.needs_rebuild = true;
+                        return false;
+                    }
+                }
                 println!(
-                    "[ExistentialImport] {} (a description universal {})",
+                    "[ExistentialImport] {} ({})",
                     if self.existential_import { "ON" } else { "OFF" },
                     if self.existential_import {
-                        "mints a presupposition witness"
+                        "legacy import; minted witnesses participate in ∃/∀/find/count"
                     } else {
-                        "mints no witness — `some` = plain ∃"
+                        "clean-core; universals mint no witnesses"
                     }
                 );
                 return false;
@@ -1261,9 +1286,22 @@ impl Repl {
             self.prepare_session();
             let session = self.pipeline.nibli_engine_engine().session();
             match session.call_set_existential_import(&mut self.store, self.session_handle, on) {
-                Ok(()) => {
+                Ok(Ok(())) => {
                     self.existential_import = on;
-                    println!("[ExistentialImport] {}", if on { "ON" } else { "OFF" });
+                    println!(
+                        "[ExistentialImport] {}",
+                        if on {
+                            "ON (imported witnesses participate in find/count)"
+                        } else {
+                            "OFF (clean-core)"
+                        }
+                    );
+                }
+                Ok(Err(e)) => {
+                    println!("{}", format_nibli_error(&e));
+                    // The guest attempts an in-place rollback, but a reported
+                    // failure means the host must not trust the live instance.
+                    self.needs_rebuild = true;
                 }
                 Err(e) => {
                     println!("{}", format_host_error(&e));
@@ -1606,7 +1644,14 @@ impl Repl {
                         for bindings in &binding_sets {
                             let parts: Vec<String> = bindings
                                 .iter()
-                                .map(|b| format!("{} = {}", b.variable, format_term(&b.term)))
+                                .map(|b| {
+                                    format!(
+                                        "{} = {} [{}]",
+                                        b.variable,
+                                        format_term(&b.term),
+                                        format_witness_origin(&b.origin)
+                                    )
+                                })
                                 .collect();
                             println!("[Find] {}", parts.join(", "));
                         }
@@ -1782,15 +1827,18 @@ fn main() -> Result<()> {
         println!("Strict mode: ON (arity/constraint violations reject)");
     }
 
-    // Existential import: default ON (v0.1 xorlo). Opt into clean-core (`some` =
-    // plain ∃) via `NIBLI_EXISTENTIAL_IMPORT=0`; toggleable with
+    // Existential import: default OFF (clean core). Opt into legacy import via
+    // `NIBLI_EXISTENTIAL_IMPORT=1`; toggleable with
     // `:existential-import`.
-    let existential_import = std::env::var("NIBLI_EXISTENTIAL_IMPORT").ok().as_deref() != Some("0");
-    if !existential_import {
-        println!(
-            "Existential import: OFF (clean-core — `some` = plain ∃, no presupposition witness)"
-        );
-    }
+    let existential_import = std::env::var("NIBLI_EXISTENTIAL_IMPORT").ok().as_deref() == Some("1");
+    println!(
+        "Existential import: {}",
+        if existential_import {
+            "ON (legacy — imported witnesses participate in find/count)"
+        } else {
+            "OFF (clean-core — universals do not mint witnesses)"
+        }
+    );
 
     // Stratum-ordered materialisation: default ON (each `~p(x)` is a lookup into a
     // saturated extension). `NIBLI_MATERIALIZE=0` forces every NAF back through

@@ -45,13 +45,19 @@ reasons.
 | `NIBLI_DB_PATH` | unset | Optional persistent redb store (migrated + replayed fail-closed at startup) |
 | `NIBLI_QUIET` | off | `=1` suppresses the `[Fact #N]` / `[Skolem]` / `[Rule]` bookkeeping echoes (forwarded into the guest's WASI env) |
 | `NIBLI_STRICT` | off | `=1` makes arity/integrity violations reject atomically instead of warn-and-insert |
-| `NIBLI_EXISTENTIAL_IMPORT` | on | `=0` gives the clean-core profile: no presupposition witness, `some` = plain classical ∃ |
+| `NIBLI_EXISTENTIAL_IMPORT` | off | `=1` opts into legacy xorlo witnesses; imported witnesses participate in ∃/∀/find/count/aggregate |
 | `NIBLI_MATERIALIZE` | on | `=0` opts out of NAF saturation, sending every NAF check back through backward chaining |
 
 Runtime toggles: `:fuel [n]`, `:memory [mb]`, `:backend [addr]`,
 `:strict on|off`, `:existential-import on|off`, `:materialize on|off` (bare
 `:materialize` prints the saturation report). Script mode (`--script <file>`
 or piped stdin) captures transcripts byte-faithfully.
+
+The host prints the effective existential-import profile at startup and after a
+toggle. Changing it is a fallible transactional replay of the active assertion
+registry, so existing universals gain or lose imported witnesses immediately;
+find/proof/count results carry structured import provenance. The browser UI
+labels the same clean-core vs legacy-import profile.
 
 **Resource traps don't brick the session.** Fuel exhaustion
 (`wasmtime::Trap::OutOfFuel`) and memory-grow denials are classified and — for

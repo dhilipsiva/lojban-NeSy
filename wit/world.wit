@@ -11,7 +11,7 @@
 ///
 /// Data crossing the host↔component boundary uses flat index-based arrays
 /// (`u32` indices into parallel lists) — no heap pointers cross the WASM boundary.
-package nibli:engine@0.7.0;
+package nibli:engine@0.8.0;
 
 /// Structured error types shared across all Nibli components.
 interface error-types {
@@ -99,10 +99,17 @@ interface logic-types {
         roots: list<u32>,
     }
 
+    /// Where an enumerated witness came from.
+    enum witness-origin {
+        knowledge-base,
+        existential-import,
+    }
+
     /// A single variable-to-term binding from witness extraction.
     record witness-binding {
         variable: string,
         term: logical-term,
+        origin: witness-origin,
     }
 
     /// Why the engine cannot yet return a definitive TRUE/FALSE answer.
@@ -147,6 +154,8 @@ interface logic-types {
         var: string,
         /// The witness term that satisfied it.
         term: logical-term,
+        /// Whether the witness was already in the KB or minted by import.
+        origin: witness-origin,
     }
     record forall-verified-rule {
         /// The entities verified against the universal body.
@@ -159,6 +168,8 @@ interface logic-types {
     record count-result-rule {
         expected: u32,
         actual: u32,
+        /// Included matches minted by the active import profile.
+        existential-imported: u32,
     }
     record predicate-check-rule {
         method: string,
@@ -393,11 +404,12 @@ interface engine {
         /// warn-and-insert): when on, arity mismatches and integrity-constraint
         /// violations REJECT the offending fact and fail the assertion.
         set-strict: func(strict: bool);
-        /// Enable/disable EXISTENTIAL-IMPORT MODE (default ON — the v0.1 xorlo
-        /// behavior): when on, a description universal (`animal(every dog).`)
-        /// mints a presupposition witness so `∃x. dog(x)` holds. Off gives the
-        /// clean-core `some` = plain classical ∃ profile (no phantom witness).
-        set-existential-import: func(enabled: bool);
+        /// Enable/disable legacy EXISTENTIAL-IMPORT MODE (default OFF): when on,
+        /// a description universal (`animal(every dog).`) mints witnesses that
+        /// participate in ∃, ∀, find, and count alike. Rebuilds the active KB.
+        set-existential-import: func(enabled: bool) -> result<_, nibli-error>;
+        /// Whether legacy existential import is active for this session.
+        existential-import-enabled: func() -> bool;
         /// Enable/disable STRATUM-ORDERED MATERIALISATION (default ON): when on,
         /// the surface relations a query reads under `~` are saturated bottom-up
         /// in stratum order, so each negation-as-failure check is a
@@ -421,7 +433,7 @@ interface engine {
 
 /// Built-in authorization surface (logical auth v0.1).
 ///
-/// Rides package `nibli:engine@0.7.0` for shipping tooling simplicity (single
+/// Rides package `nibli:engine@0.8.0` for shipping tooling simplicity (single
 /// WIT package / world). A future split to `nibli:auth@0.1.0` may re-home this
 /// interface without changing method shapes. Wraps the same policy as the
 /// native `nibli-auth` crate (`authorized` KR head, not corpus `can`).

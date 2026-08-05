@@ -145,10 +145,17 @@ impl CoreSession {
         self.kb.set_strict(strict);
     }
 
-    /// EXISTENTIAL-IMPORT MODE (default ON — the v0.1 xorlo behavior). OFF gives
-    /// the clean-core `some` = plain ∃ profile (no presupposition witnesses).
-    pub fn set_existential_import(&self, on: bool) {
-        self.kb.set_existential_import(on);
+    /// Legacy EXISTENTIAL-IMPORT MODE (default OFF). A profile change
+    /// transactionally rebuilds the active KB so it takes effect immediately.
+    pub fn set_existential_import(&self, on: bool) -> Result<(), NibliError> {
+        self.kb
+            .set_existential_import(on)
+            .map_err(NibliError::Reasoning)
+    }
+
+    /// Whether legacy existential import is active for this whole session.
+    pub fn is_existential_import(&self) -> bool {
+        self.kb.is_existential_import()
     }
 
     /// STRATUM-ORDERED MATERIALISATION (default ON). OFF sends every

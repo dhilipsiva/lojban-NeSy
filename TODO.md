@@ -86,19 +86,29 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Language semantics
 
-- **Reconcile existential import with find/count semantics.** A description universal
-  mints `presupposition_witnesses` when existential import is on
-  (`nibli-reason/src/rules.rs`:1290-1320). Those constants satisfy existential and
-  universal queries, but `CountNode` explicitly removes them
-  (`nibli-reason/src/reasoning.rs`:1046-1068), and the KB contract says `??` does too
-  (`nibli-reason/src/kb.rs`:734-740). The same KB can therefore report that some `P`
-  exists while exposing zero `P` witnesses/count, which is not ordinary FOL counting and
-  is easy to misread as a contradiction. Choose one coherent profile: include imported
-  witnesses everywhere, expose separate logical-versus-observed count/find operations,
-  or make clean-core/no-import the high-assurance default. In every case expose witness
-  origin. **Exit:** metamorphic tests cover `some P`, `?? P`, `exactly 0/1 P`, and count
-  before/after retraction with import on/off; UI/host report the active profile; Chapters
-  5 and 8 plus Appendices A, B, E, and K match the implemented algebra.
+- **Synchronize the manuscript with the resolved existential-import algebra (engine
+  decision complete 2026-08-05; book-repo work only).** The engine now uses clean-core
+  as the high-assurance default: a description universal mints no entity, so `some`,
+  `??`/`query_find`, `count_witnesses`, and `exactly 0/1` all range over the same
+  ordinary domain. Explicit legacy import remains available
+  (`set_existential_import(true)`, `NIBLI_EXISTENTIAL_IMPORT=1`,
+  `:existential-import on`); when enabled, every imported witness participates in
+  ∃/∀/find/count/aggregate-derived enumeration rather than being selectively hidden.
+  `WitnessBinding.origin`, `ExistsWitness.origin`, and
+  `CountResult.existential_imported` expose that contribution; a profile toggle
+  transactionally rebuilds the loaded KB, and the host/browser surfaces report the
+  active profile. Engine evidence: `nibli-engine/tests/integration.rs` pins the ON/OFF
+  `some`/forall/find/exact-0/exact-1/count/aggregate/retraction matrix and live toggles;
+  `smoke-host-existential-import` pins the component path; the independent oracle
+  engines explicitly select clean-core. **Remaining work:** in the separate `book/`
+  repository, update Chapters 5, 8, and 12 plus Appendices A, B, E, and K to describe
+  this exact algebra, the default/opt-in controls, structural witness origin, WIT 0.8.0,
+  and the fact that ON→OFF/OFF→ON applies immediately to already-loaded rules. Chapter
+  12's consent capture currently depends on the historical import profile (the engine's
+  `ch12_consent_case_study_traced_query_completes` watchdog now selects it explicitly),
+  so either mark that profile in the capture or recast the example for clean-core. Run the
+  book validator, reference checker, capture checker, and two byte-idempotence passes
+  before removing this residual with the `book-todo` workflow.
 
 - **Separate internal Skolem identity from user constants.** `GroundTerm::Constant`
   represents both user data and generated witnesses (`nibli-reason/src/kb.rs`:145-165),

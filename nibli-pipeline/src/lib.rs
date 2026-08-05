@@ -79,10 +79,11 @@ fn convert_proof_rule(r: &logic::ProofRule) -> export_logic::ProofRule {
         logic::ProofRule::ModalPassthrough { kind } => {
             e::ProofRule::ModalPassthrough(e::ModalPassthroughRule { kind: kind.clone() })
         }
-        logic::ProofRule::ExistsWitness { var, term } => {
+        logic::ProofRule::ExistsWitness { var, term, origin } => {
             e::ProofRule::ExistsWitness(e::ExistsWitnessRule {
                 var: var.clone(),
                 term: term.clone(),
+                origin: *origin,
             })
         }
         logic::ProofRule::ExistsFailed => e::ProofRule::ExistsFailed,
@@ -97,12 +98,15 @@ fn convert_proof_rule(r: &logic::ProofRule) -> export_logic::ProofRule {
                 entity: entity.clone(),
             })
         }
-        logic::ProofRule::CountResult { expected, actual } => {
-            e::ProofRule::CountResult(e::CountResultRule {
-                expected: *expected,
-                actual: *actual,
-            })
-        }
+        logic::ProofRule::CountResult {
+            expected,
+            actual,
+            existential_imported,
+        } => e::ProofRule::CountResult(e::CountResultRule {
+            expected: *expected,
+            actual: *actual,
+            existential_imported: *existential_imported,
+        }),
         logic::ProofRule::PredicateCheck { method, detail } => {
             e::ProofRule::PredicateCheck(e::PredicateCheckRule {
                 method: method.clone(),
@@ -376,12 +380,13 @@ impl GuestSession for Session {
         if std::env::var("NIBLI_STRICT").ok().as_deref() == Some("1") {
             core.set_strict(true);
         }
-        // EXISTENTIAL IMPORT defaults ON (the v0.1 xorlo behavior). The host
-        // forwards `NIBLI_EXISTENTIAL_IMPORT=0` into the WASI env to opt into
-        // clean-core (`some` = plain ∃); the `:existential-import` REPL toggle
+        // EXISTENTIAL IMPORT defaults OFF (clean core). The host forwards
+        // `NIBLI_EXISTENTIAL_IMPORT=1` into the WASI env to opt into the legacy
+        // import profile; the `:existential-import` REPL toggle
         // re-applies via `set-existential-import` after any post-trap rebuild.
-        if std::env::var("NIBLI_EXISTENTIAL_IMPORT").ok().as_deref() == Some("0") {
-            core.set_existential_import(false);
+        if std::env::var("NIBLI_EXISTENTIAL_IMPORT").ok().as_deref() == Some("1") {
+            core.set_existential_import(true)
+                .expect("a fresh session must accept the import profile");
         }
         // STRATUM-ORDERED MATERIALISATION defaults ON: the relations a query reads
         // under `~` are saturated bottom-up so each NAF check is a lookup. The host
@@ -405,8 +410,12 @@ impl GuestSession for Session {
         self.core.borrow().set_strict(strict);
     }
 
-    fn set_existential_import(&self, enabled: bool) {
-        self.core.borrow().set_existential_import(enabled);
+    fn set_existential_import(&self, enabled: bool) -> Result<(), pipeline_err::NibliError> {
+        self.core.borrow().set_existential_import(enabled)
+    }
+
+    fn existential_import_enabled(&self) -> bool {
+        self.core.borrow().is_existential_import()
     }
 
     fn set_materialization(&self, enabled: bool) {

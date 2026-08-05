@@ -12,7 +12,7 @@ pub use nibli_types::logic::{
     LogicBuffer as EngineLogicBuffer, LogicNode as EngineLogicNode,
     LogicalTerm as EngineLogicalTerm, QueryResult as EngineQueryResult,
     ResourceKind as EngineResourceKind, UnknownReason as EngineUnknownReason,
-    WitnessBinding as EngineWitnessBinding,
+    WitnessBinding as EngineWitnessBinding, WitnessOrigin as EngineWitnessOrigin,
 };
 
 /// The pipeline's typed error (`Syntax`/`Semantic`/`Reasoning`/`Backend`),
@@ -101,13 +101,16 @@ impl NibliEngine {
         self.core.kb().set_strict(strict);
     }
 
-    /// Enable/disable EXISTENTIAL-IMPORT MODE (default ON — the v0.1 xorlo
-    /// behavior). OFF gives the clean-core `some` = plain classical ∃ profile:
-    /// a description universal no longer mints a presupposition witness. The
-    /// runtime surfaces read `NIBLI_EXISTENTIAL_IMPORT=0` (nibli-host forwards it
-    /// into the guest, where `nibli-pipeline::Session::new` applies it).
-    pub fn set_existential_import(&self, on: bool) {
-        self.core.kb().set_existential_import(on);
+    /// Enable/disable legacy EXISTENTIAL-IMPORT MODE (default OFF). ON makes a
+    /// description universal mint logical witnesses that participate in every
+    /// quantifier/find/count surface. The change transactionally rebuilds the KB.
+    pub fn set_existential_import(&self, on: bool) -> Result<(), EngineError> {
+        self.core.set_existential_import(on)
+    }
+
+    /// Whether legacy existential import is active for this whole engine.
+    pub fn is_existential_import(&self) -> bool {
+        self.core.is_existential_import()
     }
 
     /// Enable/disable STRATUM-ORDERED MATERIALISATION (default ON). When on, the

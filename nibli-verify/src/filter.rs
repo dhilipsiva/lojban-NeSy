@@ -161,9 +161,9 @@ pub fn buffer_asp_mappable_query(buf: &LogicBuffer) -> Option<&'static str> {
 /// Case-level guard for an exact-count QUERY. Both former skip conditions were
 /// CANONIZED by the 2026-07-02 count-semantics decision (GUARANTEES
 /// §Aggregation), so nothing is skipped today:
-/// - **KBs with rules**: the engine now EXCLUDES the existential-import presupposition
-///   witness from counting (it still satisfies ∃/∀), and the ASP program never
-///   had one — both sides count the real, derivable entities.
+/// - **KBs with rules**: every verifier engine is explicitly clean-core, so a
+///   universal creates no existential-import witness; the ASP program likewise
+///   has no implicit domain member. Both sides count the derivable entities.
 /// - **KBs with `du`**: the engine now counts one representative per
 ///   du-equivalence class, matching the translator's canonicalization.
 ///

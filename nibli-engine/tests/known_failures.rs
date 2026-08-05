@@ -334,6 +334,11 @@ fn ch12_consent_case_study_traced_query_completes() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let engine = fresh_engine();
+        // This is the historical Chapter 12 xorlo capture, whose anonymous
+        // description universals rely on legacy existential import. Select that
+        // profile explicitly now that clean-core is the engine default; this
+        // watchdog remains a performance pin, not a clean-core semantic oracle.
+        engine.set_existential_import(true).unwrap();
         engine.assert_text("owns(some person, some data).").unwrap();
         engine
             .assert_text("permits(some person, event { uses(tool: some data) }).")

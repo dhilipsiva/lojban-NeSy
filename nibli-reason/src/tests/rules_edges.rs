@@ -142,7 +142,7 @@ fn test_targeted_witness_search_with_fixed_entity() {
     assert_buf(&kb, make_assertion("alis", "gerku"));
     assert_buf(&kb, make_universal_2arg("gerku", "nelci", "bob"));
 
-    // Query: ∃x. nelci(bob, x) — should find alis (+ presupposition Skolem)
+    // Query: ∃x. nelci(bob, x) — clean-core should find only alis.
     let mut nodes = Vec::new();
     let body = pred(
         &mut nodes,
@@ -162,7 +162,7 @@ fn test_targeted_witness_search_with_fixed_entity() {
         },
     );
 
-    assert!(results.len() >= 1);
+    assert_eq!(results.len(), 1);
     let found: Vec<String> = results
         .iter()
         .filter_map(|bs| match &bs[0].term {
@@ -184,7 +184,7 @@ fn test_targeted_witness_search_multiple_matches() {
     assert_buf(&kb, make_assertion("rex", "gerku"));
     assert_buf(&kb, make_universal_2arg("gerku", "nelci", "bob"));
 
-    // Query: ∃x. nelci(bob, x) — should find alis AND rex (+ presupposition Skolem)
+    // Query: ∃x. nelci(bob, x) — clean-core should find alis and rex.
     let mut nodes = Vec::new();
     let body = pred(
         &mut nodes,
@@ -204,7 +204,7 @@ fn test_targeted_witness_search_multiple_matches() {
         },
     );
 
-    assert!(results.len() >= 2);
+    assert_eq!(results.len(), 2);
     let found: Vec<String> = results
         .iter()
         .filter_map(|bs| match &bs[0].term {
@@ -271,6 +271,7 @@ fn test_kb_reset_clears_rules() {
 #[test]
 fn test_kb_reset_resets_skolem_counter() {
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     // Assert a universal to trigger Skolem generation
     assert_buf(&kb, make_universal("gerku", "danlu"));
     let counter_before = kb.inner.borrow().skolem_counter;
@@ -575,11 +576,11 @@ fn naf_groups_skipped_when_positive_conditions_definitively_fail() {
 #[test]
 fn flat_naf_group_skipped_when_positive_condition_definitively_fails() {
     let kb = new_kb();
-    // Clean-core profile: no existential-import witnesses. With the default
+    // Clean-core profile: no existential-import witnesses. With explicit import
     // ON, `∀x animal(x)→cat(x)` would mint a presupposition witness that IS a
     // derivable cat — the ~cat group would then find a witness and return a
     // definitive False, indistinguishable from the skip.
-    kb.set_existential_import(false);
+    kb.set_existential_import(false).unwrap();
     // Positive cycle: cat <-> animal (stratifiable; makes any cat(x) check
     // non-definitive for an underivable x).
     assert_buf(&kb, make_universal("animal", "cat"));
@@ -711,6 +712,7 @@ fn description_import_is_independent_of_alpha_equivalent_rule_dedup() {
     // presupposition. The executable rule remains one canonical identity.
     for description_first in [false, true] {
         let kb = new_kb();
+        kb.set_existential_import(true).unwrap();
         if description_first {
             assert_buf(&kb, compile_surface(description));
             assert_buf(&kb, compile_surface(prenex));
@@ -732,17 +734,15 @@ fn description_import_is_independent_of_alpha_equivalent_rule_dedup() {
     // With existential import disabled, both spellings are genuinely the same
     // plain universal and no phantom witness is introduced.
     let clean_core = new_kb();
-    clean_core.set_existential_import(false);
+    clean_core.set_existential_import(false).unwrap();
     assert_buf(&clean_core, compile_surface(prenex));
     assert_buf(&clean_core, compile_surface(description));
     assert!(query_false(&clean_core, compile_surface("dog(some dog).")));
     assert_eq!(clean_core.inner.borrow().known_rules.identity_count(), 1);
 
-    // The mode is mutable session configuration. Enabling it and replaying the
-    // same description claims the previously-unclaimed side effect without
-    // duplicating the executable rule.
-    clean_core.set_existential_import(true);
-    assert_buf(&clean_core, compile_surface(description));
+    // The mode is mutable session configuration. Enabling it immediately
+    // rebuilds the existing description without requiring a reassertion.
+    clean_core.set_existential_import(true).unwrap();
     assert!(query(&clean_core, compile_surface("dog(some dog).")));
     assert_eq!(clean_core.inner.borrow().known_rules.identity_count(), 1);
 }
@@ -750,6 +750,7 @@ fn description_import_is_independent_of_alpha_equivalent_rule_dedup() {
 #[test]
 fn description_import_survives_a_duplicate_first_dnf_branch() {
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(
         &kb,
         compile_surface("all $x: dog($x) & loves($x) -> animal($x)."),
@@ -770,8 +771,9 @@ fn description_import_survives_a_duplicate_first_dnf_branch() {
 }
 
 #[test]
-fn retracting_a_description_clears_presupposition_exclusion_state() {
+fn retracting_a_description_clears_presupposition_origin_state() {
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     let description_id = assert_id(&kb, compile_surface("animal(every dog)."), "description");
     let old_witness = kb
         .inner
@@ -786,11 +788,11 @@ fn retracting_a_description_clears_presupposition_exclusion_state() {
         .expect("description should retract by rebuilding");
     assert!(
         kb.inner.borrow().presupposition_witnesses.is_empty(),
-        "rebuild must remove exclusion metadata for retracted witnesses"
+        "rebuild must remove origin metadata for retracted witnesses"
     );
 
     // Reuse the exact old internal spelling as an ordinary real entity. A
-    // stale exclusion entry would make the otherwise-correct find result empty.
+    // stale origin entry would mislabel the otherwise-correct find result.
     assert_buf(&kb, make_assertion(&old_witness, "dog"));
     let found = query_find(&kb, make_find_query("dog"));
     assert!(
@@ -798,6 +800,12 @@ fn retracting_a_description_clears_presupposition_exclusion_state() {
             |binding| matches!(&binding.term, LogicalTerm::Constant(name) if name == &old_witness)
         ),
         "the reused real entity must remain enumerable: {found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .flatten()
+            .all(|binding| { binding.origin == nibli_types::logic::WitnessOrigin::KnowledgeBase })
     );
 }
 
@@ -807,6 +815,7 @@ fn retraction_rebuilds_description_import_claim_from_the_surviving_assertion() {
     let description = "animal(every dog).";
 
     let without_description = new_kb();
+    without_description.set_existential_import(true).unwrap();
     let _prenex_id = assert_id(&without_description, compile_surface(prenex), "prenex");
     let description_id = assert_id(
         &without_description,
@@ -822,6 +831,7 @@ fn retraction_rebuilds_description_import_claim_from_the_surviving_assertion() {
     );
 
     let without_prenex = new_kb();
+    without_prenex.set_existential_import(true).unwrap();
     let prenex_id = assert_id(&without_prenex, compile_surface(prenex), "prenex");
     let _description_id = assert_id(&without_prenex, compile_surface(description), "description");
     without_prenex

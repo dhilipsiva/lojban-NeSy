@@ -15,6 +15,23 @@ here first.
 
 ### Changed
 
+- **Existential import is now an explicit, coherent legacy profile:** clean-core
+  is the default, so a description universal does not manufacture existence and
+  `some` is plain ∃. `NIBLI_EXISTENTIAL_IMPORT=1`,
+  `:existential-import on`, or the programmatic setter opts into the old xorlo
+  witness behavior. An imported witness now participates consistently in ∃, ∀,
+  find, exact-count, `count_witnesses`, and aggregate enumeration instead of
+  being visible only to boolean reasoning. Profile changes transactionally replay
+  the active assertion registry (rollback preserves the old profile on failure),
+  so toggles apply immediately to existing rules. The host reports the effective
+  profile at startup/toggle and the browser UI labels it.
+- **WIT `nibli:engine@0.8.0` exposes witness provenance and effective import
+  state:** `witness-binding` and `exists-witness-rule` gain `witness-origin`,
+  `count-result-rule` gains `existential-imported`, and
+  `set-existential-import` is now fallible because it rebuilds the KB; the new
+  `existential-import-enabled` getter reports what the session is actually using.
+  The native and wasm-bindgen APIs expose the same origin/profile information.
+  This is a breaking component/proof-JSON/API change during 0.x.
 - **Ordinary-predicate temporal rules are now explicit and flavor-exact:** bare
   rules no longer get
   an implicit second firing pass for `past`/`now`/`future` queries. Bare means

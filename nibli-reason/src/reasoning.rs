@@ -1,5 +1,17 @@
 use super::*;
 
+fn witness_origin(
+    inner: &KnowledgeBaseInner,
+    term: &GroundTerm,
+) -> nibli_types::logic::WitnessOrigin {
+    match term {
+        GroundTerm::Constant(name) if inner.presupposition_witnesses.contains(name) => {
+            nibli_types::logic::WitnessOrigin::ExistentialImport
+        }
+        _ => nibli_types::logic::WitnessOrigin::KnowledgeBase,
+    }
+}
+
 /// Temporarily bind `key` to `value` in `subs`, run `f`, then restore the
 /// previous binding (or remove if there was none). Avoids the repeated
 /// save/restore boilerplate across quantifier evaluation.
@@ -704,6 +716,7 @@ fn check_formula_holds_core<S: TraceSink>(
                                     rule: ProofRule::ExistsWitness {
                                         var: v.clone(),
                                         term: witness_term_to_logical_term(&winning_member),
+                                        origin: witness_origin(inner, &winning_member),
                                     },
                                     holds: true,
                                     children: vec![body_idx],
@@ -823,6 +836,7 @@ fn check_formula_holds_core<S: TraceSink>(
                             rule: ProofRule::ExistsWitness {
                                 var: v.clone(),
                                 term: witness_term_to_logical_term(candidate),
+                                origin: witness_origin(inner, candidate),
                             },
                             holds: true,
                             children: vec![body_idx],
@@ -1028,18 +1042,24 @@ fn check_formula_holds_core<S: TraceSink>(
             // ENTITY-LEVEL counting (GUARANTEES §Aggregation): enumerate one
             // representative per du-equivalence class (two names for one
             // entity count once — equivalence transfers the body facts, so
-            // any member of a class answers for it), and skip existential-import
-            // PRESUPPOSITION witnesses (a phantom entity a rule presupposed
-            // must not change "how many"; it still satisfies ∃/∀).
+            // any member of a class answers for it). Under the explicit legacy
+            // import profile, imported witnesses are ordinary logical domain
+            // members here just as they are for ∃, ∀, and find.
             let members: Vec<GroundTerm> = {
                 let mut seen = HashSet::new();
                 let mut out = Vec::new();
-                for m in inner.all_typed_domain_members() {
-                    if let GroundTerm::Constant(name) = m
-                        && inner.presupposition_witnesses.contains(name.as_str())
-                    {
-                        continue;
-                    }
+                let mut candidates = inner.all_typed_domain_members().to_vec();
+                // If an imported name is `du`-equivalent to a KB name, expose
+                // the KB representative for their one shared entity.
+                candidates.sort_by_cached_key(|m| {
+                    (
+                        find_canonical_readonly(&inner.equivalence_parent, m),
+                        witness_origin(inner, m)
+                            == nibli_types::logic::WitnessOrigin::ExistentialImport,
+                        m.clone(),
+                    )
+                });
+                for m in &candidates {
                     let canon = find_canonical_readonly(&inner.equivalence_parent, m);
                     if seen.insert(canon) {
                         out.push(m.clone());
@@ -1058,6 +1078,15 @@ fn check_formula_holds_core<S: TraceSink>(
                             assert_typed_fact(fact, inner);
                         }
                         let satisfying = batch.results.iter().filter(|r| **r).count() as u32;
+                        let existential_imported = members
+                            .iter()
+                            .zip(&batch.results)
+                            .filter(|(member, holds)| {
+                                **holds
+                                    && witness_origin(inner, member)
+                                        == nibli_types::logic::WitnessOrigin::ExistentialImport
+                            })
+                            .count() as u32;
                         let verdict = if satisfying == *count {
                             QueryResult::True
                         } else {
@@ -1068,6 +1097,7 @@ fn check_formula_holds_core<S: TraceSink>(
                                 rule: ProofRule::CountResult {
                                     expected: *count,
                                     actual: satisfying,
+                                    existential_imported,
                                 },
                                 holds: verdict.is_true(),
                                 children: vec![],
@@ -1080,6 +1110,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 }
             }
             let mut satisfying = 0u32;
+            let mut existential_imported = 0u32;
             let mut unresolved = 0u32;
             let mut best_result = None;
             for member in &members {
@@ -1095,7 +1126,14 @@ fn check_formula_holds_core<S: TraceSink>(
                 })?
                 .0;
                 match result {
-                    QueryResult::True => satisfying += 1,
+                    QueryResult::True => {
+                        satisfying += 1;
+                        if witness_origin(inner, member)
+                            == nibli_types::logic::WitnessOrigin::ExistentialImport
+                        {
+                            existential_imported += 1;
+                        }
+                    }
                     QueryResult::False => {}
                     other => {
                         unresolved += 1;
@@ -1119,6 +1157,7 @@ fn check_formula_holds_core<S: TraceSink>(
                     rule: ProofRule::CountResult {
                         expected: *count,
                         actual: satisfying,
+                        existential_imported,
                     },
                     holds: verdict.is_true(),
                     children: vec![],

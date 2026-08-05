@@ -248,9 +248,9 @@ pub fn render_program(kb: &[LogicBuffer], query: &LogicBuffer) -> Result<String,
     // Exact-count query: a sole-root `Count(v, n, body)` reifies to a clingo `#count`
     // aggregate — `goal :- #count { V0 : atoms(V0) } = n.` The aggregate counts the
     // distinct entities satisfying the (regrouped) restrictor+body conjunction over the
-    // stable model, which equals the engine's per-member count on the guarded fragment
-    // (ground-fact KBs: no import witnesses, no uncollapsed du classes — see
-    // `filter::count_case_guard`).
+    // stable model, which equals the clean-core verifier engine's entity count:
+    // universals create no implicit witnesses and `du` classes are canonicalized
+    // on both sides (see `filter::count_case_guard`).
     if let [r] = query.roots.as_slice() {
         if let LogicNode::CountNode((v, n, body)) = node_at(query, *r)? {
             let mut vars = VarMap::new();

@@ -285,8 +285,8 @@ const COUNT_DIGITS: &[&str] = &["1", "2", "3"];
 /// count-semantics decision (entity-level counting), the fragment also mixes in the
 /// formerly-guarded shapes: a `du` link between two pool entities (~1 in 3 — the
 /// engine counts one representative per equivalence class, matching the translator's
-/// canonicalization) and a universal taxonomy rule (~1 in 3 — the engine excludes the
-/// existential-import presupposition witness from counting, and the ASP program never had one).
+/// canonicalization) and a universal taxonomy rule (~1 in 3 — the explicitly
+/// clean-core verifier engine and the ASP program both create no implicit witness).
 pub fn random_count_case(seed: u64) -> GeneratedCase {
     let mut rng = Lcg::new(seed);
     let mut kb: Vec<String> = Vec::new();
@@ -310,8 +310,8 @@ pub fn random_count_case(seed: u64) -> GeneratedCase {
             kb.push(format!("{a} = {b}."));
         }
     }
-    // ~1 in 3: a universal taxonomy rule (derived body facts count; the rule's
-    // presupposition witness must not).
+    // ~1 in 3: a universal taxonomy rule. Derived body facts count; the
+    // clean-core verifier engine and the ASP translation create no witness.
     if rng.below(3) == 0 {
         let pa = preds[rng.below(preds.len())];
         let pb = preds[rng.below(preds.len())];

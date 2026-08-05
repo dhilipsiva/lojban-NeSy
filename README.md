@@ -131,7 +131,7 @@ Built-in, zero-hallucination **authorization** (entailment of `authorized(...)` 
 |-------|----------|
 | Guide | [mdBook: Authorization](https://dhilipsiva.github.io/nibli/user/authorization.html) (or `just docs-serve`) |
 | Rust crate | `nibli-auth` — `Authorizer`, `tls` (thread-local for async servers). Not on crates.io yet (`publish = false`) — use a git or path dependency |
-| WIT | `nibli:engine@0.7.0` export `authorizer` (the version lives in `wit/world.wit`) |
+| WIT | `nibli:engine@0.8.0` export `authorizer` (the version lives in `wit/world.wit`) |
 | Python | `just build-auth-py` → `nibli_auth` / `nibli_auth_native` |
 | Examples | `examples/auth-axum`, `examples/auth-fastapi` (same policy) |
 | Tests | `just test-auth`; Python: `just test-auth-py` (local, maturin) |
@@ -173,7 +173,7 @@ fn main() -> Result<(), EngineError> {
     // Witness extraction: every binding that satisfies the claim.
     for bindings in engine.query_find_text("dog($x).")? {
         for b in bindings.iter().filter(|b| b.variable.starts_with('$')) {
-            println!("{} = {}", b.variable, display_term(&b.term)); // $x = adam
+            println!("{} = {} [{}]", b.variable, display_term(&b.term), b.origin.label());
         }
     }
     Ok(())
@@ -182,6 +182,12 @@ fn main() -> Result<(), EngineError> {
 
 `NibliEngine::open(path)` swaps the in-memory store for a durable redb one; `query_holds`
 returns just the verdict; `retract_fact(id)` retracts by the id `assert_text` minted.
+The default profile is clean-core: universals mint no existential witnesses. Legacy
+xorlo behavior is an explicit, fallible opt-in with
+`engine.set_existential_import(true)?`; changing it transactionally rebuilds the active
+KB, and `engine.is_existential_import()` reports the effective profile. Find bindings
+and existential proof steps expose `knowledge-base` vs `existential-import` origin;
+count proof steps expose the `existential_imported` share of `actual`.
 Full API: [docs.rs/nibli-engine](https://docs.rs/nibli-engine).
 
 ### Install the CLI (no Nix required)
@@ -272,8 +278,7 @@ just test
     ▣ adam is a dog  [given] -> TRUE
 
 ~/nibli> ?? dog($x).
-[Find] _ev0 = sk_7, $x = adam
-[Find] _ev0 = sk_1, $x = sk_0
+[Find] _ev0 = sk_7 [knowledge-base], $x = adam [knowledge-base]
 
 ~/nibli> :debug big(exactly 2 dog).
 [Logic]
@@ -350,13 +355,19 @@ rejected as scope-ambiguous; separate period-terminated statements are independe
 | `:fuel [amount]` | Show or set the WASM fuel limit |
 | `:memory [mb]` | Show or set the WASM memory limit |
 | `:strict [on\|off]` | Show or set strict mode — reject arity/constraint violations instead of warn-and-insert (also `NIBLI_STRICT=1`) |
-| `:existential-import [on\|off]` | Show or set xorlo witness minting (default ON) — off is the clean-core profile where a description universal (`animal(every dog).`) presupposes nothing, so `some` = plain ∃ (also `NIBLI_EXISTENTIAL_IMPORT=0`) |
+| `:existential-import [on\|off]` | Show or set legacy xorlo witness minting (default OFF, clean-core) — explicit ON makes imported witnesses participate in ∃/∀/find/count/aggregate (also `NIBLI_EXISTENTIAL_IMPORT=1`) |
 | `:materialize [on\|off]` | Show or set stratum-ordered NAF materialisation (default ON) and print the saturation report — which relations were completed, and why any were refused (also `NIBLI_MATERIALIZE=0`) |
 | `:db` | Show the persistent store status (set `NIBLI_DB_PATH` to enable) |
 | `:proof-verbose <statement>` | Query with the full role-level proof trace instead of the collapsed one |
 
 Environment: `NIBLI_WASM_PATH` (component path), `NIBLI_FUEL`, `NIBLI_MEMORY_MB`,
 `NIBLI_COMPUTE_ADDR`, `NIBLI_DB_PATH`, `NIBLI_QUIET`, plus the mode flags above.
+
+The host prints the active existential-import profile at startup and after a toggle;
+the browser UI labels it too. A toggle replays the current assertion registry
+transactionally, so already-asserted universals gain or lose their imported witnesses
+immediately. `[Find]` marks imported bindings as `[existential-import]`; proof/count
+metadata carries the same distinction structurally.
 
 The `nibli` developer REPL (`just run-native`, or `cargo install nibli`) is a *different*
 surface — it reasons in-process without Wasmtime and carries extra debugging commands

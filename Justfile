@@ -295,26 +295,31 @@ smoke-host-strict: build-wasm build-host
         echo "$t" | grep -qF '[Strict] OFF' || { echo 'FAIL: :strict off did not take'; exit 1; }; \
         echo 'PASS: NIBLI_STRICT=1 + :strict toggle plumbing works end to end'
 
-# Existential-import flag (xorlo witness minting): default ON presupposes a
-# description universal's domain non-empty; :existential-import off / the
-# NIBLI_EXISTENTIAL_IMPORT=0 env give the clean-core `some` = plain ∃ (no witness).
+# Existential-import profile: import defaults OFF (clean-core). Explicit legacy ON makes
+# imported witnesses participate in boolean, find, and exact-count surfaces,
+# and toggling a loaded KB rebuilds it immediately.
 smoke-host-existential-import: build-wasm build-host
     @echo "Smoke-testing gasnu existential-import flag (env + :existential-import toggle)..."
-    @on=$(printf 'animal(every dog).\n? dog(?).\n' \
-        | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
-        echo "$on"; \
-        echo "$on" | grep -qF '[Query] TRUE' || { echo 'FAIL: default-on existential import must presuppose a dog exists'; exit 1; }; \
-        off=$(printf ':existential-import off\nanimal(every dog).\n? dog(?).\n' \
+    @off=$(printf 'animal(every dog).\n? dog(?).\n?? dog($d).\n? dog(no dog).\n' \
         | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
         echo "$off"; \
-        echo "$off" | grep -qF '[ExistentialImport] OFF' || { echo 'FAIL: :existential-import off did not take'; exit 1; }; \
-        echo "$off" | grep -qF '[Query] FALSE' || { echo 'FAIL: clean-core (:existential-import off) must NOT presuppose a dog'; exit 1; }; \
-        env=$(printf 'animal(every dog).\n? dog(?).\n' \
-        | NIBLI_EXISTENTIAL_IMPORT=0 NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$off" | grep -qF 'Existential import: OFF (clean-core' || { echo 'FAIL: clean-core default banner missing'; exit 1; }; \
+        echo "$off" | grep -qF '[Query] FALSE' || { echo 'FAIL: clean-core must not presuppose a dog'; exit 1; }; \
+        echo "$off" | grep -qF '[Find] No witnesses found.' || { echo 'FAIL: clean-core find must be empty'; exit 1; }; \
+        toggle=$(printf 'animal(every dog).\n:existential-import on\n:existential-import\n? dog(?).\n?? dog($d).\n? dog(exactly 1 dog).\n:existential-import off\n? dog(?).\n' \
+        | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$toggle"; \
+        echo "$toggle" | grep -qF '[ExistentialImport] ON (imported witnesses participate in find/count)' || { echo 'FAIL: loaded-KB ON toggle did not take'; exit 1; }; \
+        echo "$toggle" | grep -qF '[ExistentialImport] ON (legacy import; minted witnesses participate in ∃/∀/find/count)' || { echo 'FAIL: guest profile getter did not report ON'; exit 1; }; \
+        echo "$toggle" | grep -qF '[existential-import]' || { echo 'FAIL: imported find result did not expose origin'; exit 1; }; \
+        echo "$toggle" | grep -qF '[ExistentialImport] OFF (clean-core)' || { echo 'FAIL: loaded-KB OFF toggle did not take'; exit 1; }; \
+        env=$(printf 'animal(every dog).\n? dog(?).\n?? dog($d).\n? dog(exactly 1 dog).\n' \
+        | NIBLI_EXISTENTIAL_IMPORT=1 NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
         echo "$env"; \
-        echo "$env" | grep -qF 'Existential import: OFF' || { echo 'FAIL: NIBLI_EXISTENTIAL_IMPORT=0 startup banner missing'; exit 1; }; \
-        echo "$env" | grep -qF '[Query] FALSE' || { echo 'FAIL: NIBLI_EXISTENTIAL_IMPORT=0 must NOT presuppose a dog'; exit 1; }; \
-        echo 'PASS: existential-import env + :existential-import toggle works end to end'
+        echo "$env" | grep -qF 'Existential import: ON (legacy' || { echo 'FAIL: NIBLI_EXISTENTIAL_IMPORT=1 startup banner missing'; exit 1; }; \
+        echo "$env" | grep -qF '[Query] TRUE' || { echo 'FAIL: explicit import must make some/exactly-one true'; exit 1; }; \
+        echo "$env" | grep -qF '[existential-import]' || { echo 'FAIL: env-enabled import origin missing'; exit 1; }; \
+        echo 'PASS: clean-core default + coherent import algebra + retroactive toggles work end to end'
 
 # Stratum-ordered materialisation across the WIT boundary: the `:materialize` toggle,
 # the NIBLI_MATERIALIZE=0 startup opt-out, and the saturation REPORT — the last is the

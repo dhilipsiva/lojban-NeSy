@@ -51,11 +51,11 @@ all $x: dangerous($x) & uses(Adam, $x) -> warns($x).
 > **Design thesis (2026-07-12):** nibli KR is a human-intuitive knowledge-representation
 > language — MAXIMALLY INTUITIVE *subject to* semantic distinctions staying visible in
 > the spelling (the silent-mistranslation ceiling; principles 2–4 below are that
-> constraint made concrete). The nibli-reason core stays untouched throughout the
-> v0.1 program — no hard freeze: the two §14 items that touch nibli-reason (the
-> existential-import presupposition-witness flag and the compute-set rename) remain
-> live v2 options; `every` mints existential-import witnesses identically to Lojban's
-> xorlo rule (disclosed in §4). LLM-generability is a tracked side goal; the silent-mistranslation
+> constraint made concrete). The nibli-reason core stayed untouched throughout the
+> v0.1 front-end program, but the §14 existential-import decision has since landed:
+> clean-core is the default, and Lojban's xorlo witness behavior is an explicit legacy
+> opt-in (disclosed in §4). The compute-set rename remains a live v2 option.
+> LLM-generability is a tracked side goal; the silent-mistranslation
 > metric it was to be measured by has no harness in this repo (the fanva tooling was
 > donated out at THE DROP).
 
@@ -136,20 +136,24 @@ their spellings are deliberately non-interchangeable:**
 
 | nibli KR | Lojban | Compiled shape |
 |---|---|---|
-| `some dog` | `lo gerku` (= `su'o lo`) | `Exists(v, And(restrictor, matrix))` — veridical ∃, existential-import witness handling applies |
+| `some dog` | `lo gerku` (= `su'o lo`) | `Exists(v, And(restrictor, matrix))` — veridical ∃; an imported witness exists only in the explicit legacy profile |
 | `the dog` | `le gerku` | `Description("dog")` — a *constant-like term*, no quantifier. **Trap for English speakers** — see lint L1, §12 |
 | `every dog` | `ro lo gerku` | `ForAll(v, Or(Not(restrictor), matrix))` — **the rule shape** (becomes a `UniversalRuleRecord` at assert) |
 | `every the dog` | `ro le gerku` | ∀ over the opaque `the_domain_dog` restrictor |
-| `exactly 2 dog` | `re lo gerku` | `Count{v, 2, And(restrictor, matrix)}` — entity-level counting (du-classes collapsed, existential-import witnesses excluded) |
+| `exactly 2 dog` | `re lo gerku` | `Count{v, 2, And(restrictor, matrix)}` — entity-level counting (du-classes collapsed; an imported witness counts when legacy import is ON) |
 | `no dog` | `no lo gerku` | sugar for `exactly 0 dog` |
 
-**Disclosed engine semantic — existential import (Lojban's xorlo rule):** asserting a
-universal rule (`animal(every dog).`) ALSO establishes that a dog exists: the engine
-mints a presupposition witness (implemented in nibli-reason), and witnesses
-are excluded from `exactly N` counting. This is inherited engine behavior, kept
-byte-identical across both front-ends during the dual phase (the equivalence battery
-checks verdict identity), and re-decidable at clean-core v2 (§14's existential-import flag — a live
-option per the §1 thesis).
+**Disclosed engine semantic — existential import (Lojban's xorlo rule):** the default
+profile is **clean-core (existential import OFF)**. Asserting `animal(every dog).` adds the universal rule
+but does not establish that a dog exists; `some` is plain ∃. An embedder or operator
+may explicitly enable the legacy profile (`NIBLI_EXISTENTIAL_IMPORT=1`,
+`:existential-import on`, or the programmatic setter). Then the rule also mints a
+presupposition witness, and that witness participates consistently in ∃, ∀, find,
+exact-count, `count_witnesses`, and aggregate enumeration. Find bindings and existential
+proof steps expose `WitnessOrigin::ExistentialImport`; count proof steps expose the
+`existential_imported` contribution. Switching the profile rebuilds the active KB
+transactionally, so already-asserted universals change semantics immediately rather
+than waiting to be reasserted. This replaces the v0.1 default-ON, count-excluded behavior.
 
 Determiner phrases appear **in argument position** (`animal(every dog).`) or as a
 **binder block** when the matrix is compound or the variable must be named:
@@ -653,7 +657,7 @@ pred obligated_by(who, duty).
 | tanru juxtaposition + `[ ]` grouping | non-intersective modification | **Removed.** Declare compound predicates (`pred health_data(record)`); lint L2 obsolete. |
 | `a+b` compounds (`zei`) | morphological compounding | **Removed** — same replacement. |
 | pronoun keywords (`me you we we_all we_others you_all this that yonder it_a..it_u`) | cmavo pro-sumti → opaque constants | **Removed.** A file-based KB has no speaker; use named constants (a REPL may offer session macros). `it` and `slot` stay — they are structural binders, not pronouns. |
-| xorlo presupposition witnesses | `lo`'s existential-import semantics, minted in nibli-reason | **Removed from semantics.** `some` = plain ∃. The one Lojban decision that reached the reasoner core. |
+| xorlo presupposition witnesses | `lo`'s existential-import semantics, minted in nibli-reason | **Removed from the default semantics.** `some` = plain ∃ in clean-core; the old behavior remains only as an explicit legacy opt-in whose witnesses participate in every quantifier/enumeration surface. |
 | `amount { }` / `concept { }` (`ni`/`si'o`) | five-way NU split | **Removed.** `event`/`fact`/`property` remain. |
 | da/de/di 3-variable lowering cap | cmavo inventory | **Lifted** — arbitrary distinct `$vars` per scope (resolves O1). |
 | builtin BAI tag names (`cause entails motive reason tool instead_of`) | BAI→gismu table | **Demoted** to a standard-library schema prelude; the `via` mechanism itself is unchanged. |
@@ -676,8 +680,9 @@ These *look* Lojban-flavored but are load-bearing engine semantics, and v2 keeps
   the former FALSE). Only identically-padded predications match: `goes(me, Paris)` ≡
   `goes(me, destination: Paris)`, since the named form routes to the same place.
 - **`=` (du) union-find equality**; **stratified NAF + CWA** (with assert-time
-  stratification rejection); **`exactly N`/`no` CountNode counting** — now *without* the
-  witness-exclusion clause, since xorlo witnesses no longer exist; **abstraction opacity
+  stratification rejection); **`exactly N`/`no` CountNode counting** — with no
+  special witness-exclusion clause (clean-core mints none; explicit legacy imports
+  count like other logical entities); **abstraction opacity
   markers** (`__abs_` versioned lossless identity); **tense + deontic wrappers**; the **`via` modal
   conjunct shape**; fail-closed validation everywhere.
 - **Compute predicates** stay, under canonical names `product`/`sum`/`quotient`
@@ -693,9 +698,11 @@ Engine (each contained, land one at a time):
 1. nibli-semantics: injectable schema source at the arity/label lookup seam (§14.1).
 2. nibli-semantics: lift the bare-variable cap (arbitrary variable names through
    Exists/prenex closure).
-3. nibli-reason: existential-import witness minting behind a flag, **off** for
-   clean-core — re-pin GUARANTEES §Aggregation and the ASP count translator's
-   witness-exclusion clause.
+3. **Landed 2026-08-05:** nibli-reason existential-import witness minting is behind
+   an **off-by-default** clean-core flag. Explicit legacy imports participate in
+   ∃/∀/find/count/aggregate, expose structured origin, and profile toggles rebuild.
+   GUARANTEES §Aggregation and the WIT/runtime surfaces are re-pinned; the clean-core
+   ASP oracle needs no synthetic-witness encoding.
 4. nibli-reason: configurable compute-set relation names (`product/sum/quotient`).
 5. `LOGIC_IR.md`: note that clean-core producers never emit `Description` terms or
    `le_domain_`/`ni`/`si'o` predicates, and drop the da/de/di variable-name pin for

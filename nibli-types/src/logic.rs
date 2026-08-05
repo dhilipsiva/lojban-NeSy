@@ -124,11 +124,38 @@ impl LogicBuffer {
     }
 }
 
-/// A single witness binding: variable name → logical term value.
+/// Where an enumerated witness came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum WitnessOrigin {
+    /// A term already present in the asserted or rule-derived knowledge base.
+    KnowledgeBase,
+    /// A witness minted by the optional legacy existential-import profile.
+    ExistentialImport,
+}
+
+impl WitnessOrigin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::KnowledgeBase => "knowledge-base",
+            Self::ExistentialImport => "existential-import",
+        }
+    }
+}
+
+impl Default for WitnessOrigin {
+    fn default() -> Self {
+        Self::KnowledgeBase
+    }
+}
+
+/// A single witness binding: variable name → logical term value, with origin.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WitnessBinding {
     pub variable: String,
     pub term: LogicalTerm,
+    pub origin: WitnessOrigin,
 }
 
 /// Why the engine cannot currently return a definitive `True` or `False`.
@@ -225,7 +252,12 @@ pub enum ProofRule {
     #[cfg_attr(feature = "serde", serde(rename = "modal_passthrough"))]
     ModalPassthrough { kind: String },
     #[cfg_attr(feature = "serde", serde(rename = "exists_witness"))]
-    ExistsWitness { var: String, term: LogicalTerm },
+    ExistsWitness {
+        var: String,
+        term: LogicalTerm,
+        #[cfg_attr(feature = "serde", serde(default))]
+        origin: WitnessOrigin,
+    },
     #[cfg_attr(feature = "serde", serde(rename = "exists_failed"))]
     ExistsFailed,
     #[cfg_attr(feature = "serde", serde(rename = "forall_vacuous"))]
@@ -235,7 +267,12 @@ pub enum ProofRule {
     #[cfg_attr(feature = "serde", serde(rename = "forall_counterexample"))]
     ForallCounterexample { entity: LogicalTerm },
     #[cfg_attr(feature = "serde", serde(rename = "count_result"))]
-    CountResult { expected: u32, actual: u32 },
+    CountResult {
+        expected: u32,
+        actual: u32,
+        #[cfg_attr(feature = "serde", serde(default))]
+        existential_imported: u32,
+    },
     #[cfg_attr(feature = "serde", serde(rename = "predicate_check"))]
     PredicateCheck { method: String, detail: String },
     #[cfg_attr(feature = "serde", serde(rename = "compute_check"))]

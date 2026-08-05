@@ -926,6 +926,11 @@ body {
   font-family: var(--font-mono); font-size: var(--fs-micro); font-weight: var(--w-semibold);
   text-transform: uppercase; letter-spacing: var(--track-caps); color: var(--text-muted);
 }
+.output-profile {
+  color: var(--text-muted);
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+}
 .output-log-header__sp { flex: 1; }
 .output-clear-btn {
   display: inline-flex; align-items: center; gap: var(--s1);

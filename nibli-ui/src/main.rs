@@ -677,6 +677,7 @@ struct OutputEntry {
     proof_trace: Option<String>,
     proof_trace_data: Option<ProofTrace>,
     kb_status: Option<KbStatus>,
+    existential_import: bool,
 }
 
 // ── Local reasoning (in-browser) ──
@@ -698,6 +699,7 @@ struct OutputEntry {
 /// remaining roots (the KbStatusBar's per-line tolerance).
 fn run_query(kb_text: &str, query_text: &str) -> OutputEntry {
     let session = nibli_session::CoreSession::new();
+    let existential_import = session.is_existential_import();
 
     let mut asserted = 0u32;
     let mut errors = 0u32;
@@ -790,6 +792,7 @@ fn run_query(kb_text: &str, query_text: &str) -> OutputEntry {
                 proof_trace: None,
                 proof_trace_data: Some(trace),
                 kb_status,
+                existential_import,
             }
         }
         Err(e) => OutputEntry {
@@ -799,6 +802,7 @@ fn run_query(kb_text: &str, query_text: &str) -> OutputEntry {
             proof_trace: None,
             proof_trace_data: None,
             kb_status,
+            existential_import,
         },
     }
 }
@@ -1397,6 +1401,13 @@ fn OutputLog(output_log: Signal<Vec<OutputEntry>>) -> Element {
 
     let entries = output_log.read();
     let is_empty = entries.is_empty();
+    let profile = entries.last().map_or("clean-core · import OFF", |entry| {
+        if entry.existential_import {
+            "legacy import ON · witnesses count"
+        } else {
+            "clean-core · import OFF"
+        }
+    });
     let rows: Vec<Row> = entries
         .iter()
         .enumerate()
@@ -1429,6 +1440,7 @@ fn OutputLog(output_log: Signal<Vec<OutputEntry>>) -> Element {
             if !is_empty {
                 div { class: "output-log-header",
                     span { class: "output-log-header__label", "log" }
+                    span { class: "output-profile", "{profile}" }
                     span { class: "output-log-header__sp" }
                     button {
                         class: "output-clear-btn",
@@ -1456,6 +1468,18 @@ fn OutputLog(output_log: Signal<Vec<OutputEntry>>) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod semantic_profile_tests {
+    use super::*;
+
+    #[test]
+    fn browser_ui_reports_and_uses_clean_core_by_default() {
+        let output = run_query("animal(every dog).", "dog(some dog).");
+        assert!(!output.existential_import);
+        assert_eq!(output.result, "FALSE");
     }
 }
 

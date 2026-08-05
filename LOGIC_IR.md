@@ -106,8 +106,8 @@ contract, not accident:
   left-folded with `And`, existentially closed over the event variable. Unfilled places are
   padded with `Unspecified` up to the dictionary arity, so role predicates for a given relation
   always have consistent arity.
-- **Quantifiers.** `some dog` (xorlo existential) → `Exists(v, And(restrictor, body))` —
-  existential import. `every dog` (description universal) →
+- **Quantifiers.** `some dog` → `Exists(v, And(restrictor, body))` — plain veridical
+  existential quantification. `every dog` (description universal) →
   `ForAll(v, Or(Not(restrictor), body))` — the material-implication arrow (`every the dog` is
   the same shape over an opaque `the_domain_<name>` restrictor). `exactly N dog` (exact count) →
   `CountNode(v, N, And(restrictor, body))`. Prenex `all $x: BODY` → nested `ForAll`
@@ -115,6 +115,12 @@ contract, not accident:
   the implication shape for description universals but not for prenex ones. Free `$x`
   variables close as `Exists` with the literal `$x` names (the user's spellings are
   preserved; there is no fixed variable pool).
+  Existential import is a reasoner profile, not an extra IR node: import is OFF
+  by default (clean-core)
+  by default; explicit legacy ON makes an asserted description universal mint a
+  witness. That witness participates in every quantifier/enumeration surface. Runtime
+  results carry structured provenance (`WitnessOrigin::ExistentialImport`) rather than
+  asking consumers to recognize the internal Skolem spelling.
 - **Connectives.** Sentence-level conjunction → `AndNode`, disjunction → `OrNode`,
   `->` (implication) → `Or(Not(left), right)`; biconditional/xor arrive pre-expanded as
   above.
@@ -196,16 +202,21 @@ fragment filter scans source tokens for exactly this reason). Scope details live
   in the same file with the note *"the serde attributes are the JSON contract — do not rename a
   field or tag."* `nibli-protocol` re-exports them and owns the helpers `proof_trace_to_json` /
   `proof_trace_from_json`; byte-stability tests pin the encoding.
+- **Witness provenance is data, not a naming convention.** `WitnessBinding` carries
+  `{ variable, term, origin }`, where `origin` is `KnowledgeBase` or
+  `ExistentialImport`. The `ExistsWitness` proof rule carries the same origin, and
+  `CountResult { expected, actual, existential_imported }` makes an imported share of
+  the tally explicit. Internal `sk_N` spellings remain unstable and non-semantic.
 - **Persistence** uses postcard (binary) over the same serde derives — `nibli-engine` stores
   each asserted root's `LogicBuffer` verbatim; a round-trip test covers every node and term
   variant.
-- **WIT** ([wit/world.wit](wit/world.wit), package `nibli:engine@0.7.0`) declares the same types
+- **WIT** ([wit/world.wit](wit/world.wit), package `nibli:engine@0.8.0`) declares the same types
   for the WASM component boundary: kebab-case variant names (`for-all-node` ↔ `ForAllNode`),
   identical declaration order (the component-model discriminant is positional). The
   ABI-matching types (`logic-node`/`logical-term`/`logic-buffer`/`query-result`/…) are
   `with`-remapped onto the canonical `nibli_types` enums on the guest side, so they are those
   types, not a hand-converted mirror. `proof-rule` is the exception — its data-carrying variants
-  carry named-field payload records (`exists-witness-rule { var, term }`) mirroring
+  carry named-field payload records (`exists-witness-rule { var, term, origin }`) mirroring
   `nibli_types::logic::ProofRule` — and keeps a small `convert_proof_rule` bridge (wit-bindgen
   emits only tuple/newtype variants, never Rust struct-variants).
 
@@ -275,7 +286,7 @@ differentially tested), so a producer gets soundness checking for free.
 - The `ProofRule`/`ProofStep`/`ProofTrace` JSON contract, and the `[Syntax Error]` /
   `[Semantic Error]` / `[Reasoning Error]` / `[Backend Error]` prefixes of `NibliError`'s
   `Display` (documented in-source as a formal cross-consumer contract).
-- The WIT `logic-types` interface (`nibli:engine@0.7.0`).
+- The WIT `logic-types` interface (`nibli:engine@0.8.0`).
 
 **Internal (may change without notice):**
 - Variable naming (`_v0…`, `_ev0…`), Skolem names (`sk_N` — minted by the reasoner, never in a
@@ -286,7 +297,7 @@ differentially tested), so a producer gets soundness checking for free.
 - `AggregateOp` and the compute wire structs are Rust-side auxiliaries, not buffer types.
 
 **Versioning:** the buffer itself carries no version field. The WIT package version
-(`nibli:engine@0.7.0`) and the persistence layers' fail-closed schema versions (`nibli-store`)
+(`nibli:engine@0.8.0`) and the persistence layers' fail-closed schema versions (`nibli-store`)
 are the only version markers; adding a `LogicNode`/`LogicalTerm` variant is a breaking change
 across every conversion site (an in-source exhaustiveness guard enumerates them). Treat the
 format as pre-1.0: pin a commit if you build against it, and expect additive evolution.

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 // them so every consumer keeps using `nibli_protocol::{ProofRule, ProofStep,
 // ProofTrace, LogicalTerm}` unchanged. The JSON (de)serialization helpers live
 // below as free functions (`proof_trace_to_json` / `proof_trace_from_json`).
-pub use nibli_types::logic::{LogicalTerm, ProofRule, ProofStep, ProofTrace};
+pub use nibli_types::logic::{LogicalTerm, ProofRule, ProofStep, ProofTrace, WitnessOrigin};
 
 /// The native TCP compute-backend JSON-Lines client, shared by nibli-host (the WASM
 /// host) and nibli-engine (the native embedder). Gated behind the
@@ -128,10 +128,15 @@ mod tests {
         let trace = one_step(ProofRule::ExistsWitness {
             var: "x".to_string(),
             term: LogicalTerm::Constant("adam".to_string()),
+            origin: WitnessOrigin::KnowledgeBase,
         });
         let json = proof_trace_to_json(&trace);
         assert!(json.contains(r#""type":"exists_witness""#), "json: {json}");
         assert!(json.contains(r#""var":"x""#), "json: {json}");
+        assert!(
+            json.contains(r#""origin":"knowledge_base""#),
+            "json: {json}"
+        );
         assert!(
             json.contains(r#""term":{"constant":"adam"}"#),
             "json: {json}"

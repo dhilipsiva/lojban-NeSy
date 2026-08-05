@@ -1394,8 +1394,8 @@ fn register_clause_rule(
     // stated). It must NOT fire for a ground material conditional (zero universals) or
     // a PRENEX universal (`ro da zo'u …`, no existential import). nibli-semantics names
     // description universals `_v{n}` and prenex universals `da`/`de`/`di`.
-    // Gated by the existential-import flag (default ON — the v0.1 xorlo
-    // behavior). Under clean-core (flag OFF) a description universal is a plain
+    // Gated by the explicit existential-import flag (default OFF). Under
+    // clean-core a description universal is a plain
     // `∀x. R(x) → C(x)` with no phantom witness, so `∃x. R(x)` is not made true
     // by the rule alone (NIBLI_KR §14.4 item 3).
     if registration.existential_import_required {
@@ -1409,9 +1409,9 @@ fn register_clause_rule(
         for v in universals {
             let xp_name = inner.fresh_skolem();
             inner.note_entity(&xp_name);
-            // Mark as a PRESUPPOSITION witness: it satisfies ∃/∀ like any
-            // entity but is excluded from counting surfaces (a phantom entity
-            // a rule presupposed must not change "how many").
+            // Mark as an imported witness so every public witness/count surface
+            // can report its origin. Under the explicit import profile it is an
+            // ordinary logical domain member for ∃/∀/find/count alike.
             inner.presupposition_witnesses.insert(xp_name.clone());
             xp_subs.insert(v.clone(), GroundTerm::Constant(xp_name));
         }
@@ -1427,6 +1427,9 @@ fn register_clause_rule(
             } else {
                 inner.note_entity(&ev_sk);
             }
+            // Event/existential skolems created solely to realize the imported
+            // restrictor share that origin too; raw-IR find may bind them.
+            inner.presupposition_witnesses.insert(ev_sk.clone());
             xp_subs.insert(var.clone(), GroundTerm::Constant(ev_sk));
         }
         for &(cid, tense) in &all_conditions {

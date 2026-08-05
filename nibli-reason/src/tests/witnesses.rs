@@ -210,7 +210,7 @@ fn test_find_witnesses_no_match() {
 #[test]
 fn test_find_witnesses_via_universal_rule() {
     // Assert gerku(alis), ∀x.(gerku(x)→danlu(x))
-    // Query ∃x.danlu(x) → should find alis (+ presupposition Skolem)
+    // Query ∃x.danlu(x) → clean-core should find only alis.
     let kb = new_kb();
     assert_buf(&kb, make_assertion("alis", "gerku"));
     assert_buf(&kb, make_universal("gerku", "danlu"));
@@ -233,8 +233,7 @@ fn test_find_witnesses_via_universal_rule() {
         },
     );
 
-    // At least alis + presupposition Skolem
-    assert!(results.len() >= 1);
+    assert_eq!(results.len(), 1);
     let found: Vec<String> = results
         .iter()
         .filter_map(|bs| match &bs[0].term {
@@ -540,7 +539,7 @@ fn test_find_witnesses_two_variables() {
 #[test]
 fn test_find_witnesses_transitive_chain() {
     // Assert gerku(alis), ∀x.(gerku→danlu), ∀x.(danlu→xanlu)
-    // Query ∃x.xanlu(x) → should find alis (+ presupposition Skolems)
+    // Query ∃x.xanlu(x) → clean-core should find only alis.
     let kb = new_kb();
     assert_buf(&kb, make_assertion("alis", "gerku"));
     assert_buf(&kb, make_universal("gerku", "danlu"));
@@ -564,7 +563,7 @@ fn test_find_witnesses_transitive_chain() {
         },
     );
 
-    assert!(results.len() >= 1);
+    assert_eq!(results.len(), 1);
     let found: Vec<String> = results
         .iter()
         .filter_map(|bs| match &bs[0].term {

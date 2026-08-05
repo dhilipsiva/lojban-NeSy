@@ -2,7 +2,7 @@
 
 The component boundary, as declared in
 [`wit/world.wit`](https://github.com/dhilipsiva/nibli/blob/main/wit/world.wit)
-— package **`nibli:engine@0.7.0`**, world **`nibli-pipeline`**:
+— package **`nibli:engine@0.8.0`**, world **`nibli-pipeline`**:
 
 ```wit
 world nibli-pipeline {
@@ -36,11 +36,14 @@ The IR and verdict types ([Pipeline & IR](pipeline-and-ir.md)):
   `resource-exceeded(resource-kind)`, with `unknown-reason` ∈ {`cycle-cut`,
   `incomplete-knowledge`, `naf-dependent`, `backend-unavailable`,
   `non-finite`} and `resource-kind` ∈ {`depth`, `fuel`, `memory`}.
-- `witness-binding { variable, term }`, `fact-id` (u64),
+- `witness-origin`: `knowledge-base` | `existential-import`;
+  `witness-binding { variable, term, origin }`, `fact-id` (u64),
   `fact-summary { id, label, root-count }`.
 - `proof-rule` (19 cases) + 15 named-field payload records (WIT variant cases
   hold at most one payload type, so each data-carrying case gets a record —
   the interface self-documents instead of using positional tuples);
+  `exists-witness-rule` carries `origin`, while `count-result-rule` carries
+  `existential-imported` alongside `expected` and `actual`;
   `proof-step { rule, holds, children }`;
   `proof-trace { steps, root, naf-dependent, cwa-false }` — the NAF/CWA flags
   are computed once in the engine and carried across so consumers never
@@ -73,7 +76,7 @@ answers built-in arithmetic locally and forwards the rest over TCP
 | `retract-fact(id)` / `list-facts()` / `reset-kb()` | KB management |
 | `register-compute-predicate(name)` | Marks a relation for compute dispatch |
 | `set-strict(bool)` | Off = permissive warn-and-insert; on = arity/integrity violations reject atomically |
-| `set-existential-import(bool)` | Default on (a description universal mints a presupposition witness); off = clean-core classical ∃ |
+| `set-existential-import(bool)` / `existential-import-enabled()` | Default OFF = clean-core classical ∃. Explicit ON enables legacy xorlo witnesses, which participate in ∃/∀/find/count/aggregate. The setter returns `result` because it transactionally rebuilds the active KB; the getter reports the effective profile |
 | `set-materialization(bool)` / `materialization-report()` | NAF saturation toggle + its report — added in 0.7.0 because the optimisation is invisible when it fails: without the report, a KB whose `~p(x)` stays slow has no way to learn which relation fell out of the materialisable fragment, or why. A definitive TRUE/FALSE can never flip (the `materialize_diff` gate enforces it); a non-definitive OFF verdict may become definitive under ON — the deliberate depth-bound completeness gain |
 
 ### `authorizer` (export)
@@ -94,10 +97,10 @@ the protected-resource parameter is named `object` (WIT reserves the keyword
 also `cargo fmt`s the output; `src/bindings.rs` is gitignored — CI regenerates
 it on every run).
 
-`[package.metadata.component.bindings.with]` remaps the **ten** ABI-matching
+`[package.metadata.component.bindings.with]` remaps the **eleven** ABI-matching
 boundary types onto the canonical `nibli_types` definitions —
 `logical-term`, `logic-node`, `logic-buffer`, `query-result`,
-`unknown-reason`, `resource-kind`, `witness-binding`, `fact-summary` from
+`unknown-reason`, `resource-kind`, `witness-origin`, `witness-binding`, `fact-summary` from
 `logic-types`, plus `nibli-error` and `syntax-detail` from `error-types` — so
 the guest passes the canonical types straight through instead of maintaining a
 mirror-conversion layer.
@@ -108,14 +111,15 @@ hand-written `convert_proof_rule` bridge in `nibli-pipeline/src/lib.rs`
 (`proof-step`/`proof-trace` reference it and stay generated too).
 
 **Version-bump checklist:** the remap keys pin the interface version
-(`nibli:engine/logic-types@0.7.0/…`). Any WIT version change must bump **all
-ten keys** — a missed key silently stops remapping and resurrects the mirror
+(`nibli:engine/logic-types@0.8.0/…`). Any WIT version change must bump **all
+eleven keys** — a missed key silently stops remapping and resurrects the mirror
 types.
 
 ## Version history
 
 | WIT | Change |
 |-----|--------|
+| 0.8.0 | Witness origin on find/exists proofs, imported contribution on count proofs, fallible `set-existential-import`, and `existential-import-enabled` |
 | 0.7.0 | `set-materialization` + `materialization-report` |
 | 0.6.0 | `export authorizer` (wrapping native `nibli-auth`) |
 | 0.5.0 | Removed legacy `assert-text-with-id` (store schema v3) |

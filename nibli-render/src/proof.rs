@@ -170,8 +170,13 @@ pub fn label(rule: &ProofRule) -> String {
         ProofRule::DisjunctionIntro { side } => format!("Disjunction Intro: {side}"),
         ProofRule::Negation => "Negation".to_string(),
         ProofRule::ModalPassthrough { kind } => kind.to_string(),
-        ProofRule::ExistsWitness { var, term } => {
-            format!("Witness: {} = {}", var, term.display())
+        ProofRule::ExistsWitness { var, term, origin } => {
+            let suffix = if *origin == nibli_protocol::WitnessOrigin::ExistentialImport {
+                " [existential-import]"
+            } else {
+                ""
+            };
+            format!("Witness: {} = {}{}", var, term.display(), suffix)
         }
         ProofRule::ExistsFailed => "No witness found".to_string(),
         ProofRule::ForallVacuous => "Vacuously true".to_string(),
@@ -182,8 +187,17 @@ pub fn label(rule: &ProofRule) -> String {
         ProofRule::ForallCounterexample { entity } => {
             format!("Counterexample: {}", entity.display())
         }
-        ProofRule::CountResult { expected, actual } => {
-            format!("Count: expected {expected}, got {actual}")
+        ProofRule::CountResult {
+            expected,
+            actual,
+            existential_imported,
+        } => {
+            let suffix = if *existential_imported > 0 {
+                format!(" ({existential_imported} existential-imported)")
+            } else {
+                String::new()
+            };
+            format!("Count: expected {expected}, got {actual}{suffix}")
         }
         ProofRule::PredicateCheck { method, detail } => {
             format!("Predicate ({method}): {}", humanize_fact(detail))
@@ -239,8 +253,19 @@ pub fn trace_display(rule: &ProofRule, result: bool) -> String {
             }
         }
         ProofRule::ModalPassthrough { kind } => format!("Modal ({kind}) -> {tag}"),
-        ProofRule::ExistsWitness { var, term } => {
-            format!("Exists: {} = {} -> {}", var, term.trace_display(), tag)
+        ProofRule::ExistsWitness { var, term, origin } => {
+            let suffix = if *origin == nibli_protocol::WitnessOrigin::ExistentialImport {
+                " [existential-import]"
+            } else {
+                ""
+            };
+            format!(
+                "Exists: {} = {}{} -> {}",
+                var,
+                term.trace_display(),
+                suffix,
+                tag
+            )
         }
         ProofRule::ExistsFailed => format!("Exists: no witness -> {tag}"),
         ProofRule::ForallVacuous => format!("ForAll: vacuous (empty domain) -> {tag}"),
@@ -255,8 +280,14 @@ pub fn trace_display(rule: &ProofRule, result: bool) -> String {
                 tag
             )
         }
-        ProofRule::CountResult { expected, actual } => {
-            format!("Count: expected={expected}, actual={actual} -> {tag}")
+        ProofRule::CountResult {
+            expected,
+            actual,
+            existential_imported,
+        } => {
+            format!(
+                "Count: expected={expected}, actual={actual}, existential_imported={existential_imported} -> {tag}"
+            )
         }
         ProofRule::PredicateCheck { method, detail } => {
             format!("{}: {} -> {}", method, humanize_fact(detail), tag)

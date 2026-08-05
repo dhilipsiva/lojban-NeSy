@@ -1096,11 +1096,12 @@ pub(super) struct KnowledgeBaseInner {
     /// `rebuilding` (a retraction replay must faithfully restore facts that
     /// were accepted when asserted).
     pub(super) strict: bool,
-    /// EXISTENTIAL-IMPORT MODE (default ON — the v0.1 xorlo behavior, kept
-    /// byte-identical). When true, a DESCRIPTION universal (`animal(every dog).`)
+    /// Legacy EXISTENTIAL-IMPORT MODE (default OFF). When true, a DESCRIPTION
+    /// universal (`animal(every dog).`)
     /// mints a presupposition witness (see `presupposition_witnesses`) so
-    /// `∃x. dog(x)` holds. Set false for the clean-core `some` = plain ∃ profile
-    /// (NIBLI_KR §14.4 item 3): no phantom entity is injected. Like `strict`,
+    /// `∃x. dog(x)` holds and the witness participates in every logical
+    /// find/count surface. Clean-core injects no entity (NIBLI_KR §14.4 item 3).
+    /// Like `strict`,
     /// this is CONFIGURATION — NOT cleared by `reset()`.
     pub(super) existential_import: bool,
     /// DERIVED-ONLY (intensional / IDB) relations — declared in the KB itself by
@@ -1142,12 +1143,11 @@ pub(super) struct KnowledgeBaseInner {
     /// (a retraction replay cannot re-open the vocabulary) but cleared by
     /// `reset()`, because it is KB content rather than session configuration.
     pub(super) admitted: HashSet<String>,
-    /// Constants minted as existential-import PRESUPPOSITION witnesses at
+    /// Constants minted as existential-import witnesses at
     /// description-universal registration (`animal(every dog).` presupposes
-    /// ≥1 dog — Lojban's xorlo rule, kept by design).
-    /// They satisfy ∃/∀ like any entity, but are EXCLUDED from counting
-    /// surfaces (`PA lo` tallies, `??` witness enumeration): a phantom entity
-    /// a rule presupposed must not change "how many" (GUARANTEES §Aggregation).
+    /// ≥1 dog under the explicit legacy profile). They satisfy and are exposed
+    /// by ∃/∀/find/count like every other logical domain member; the set exists
+    /// to disclose their origin, not to exclude them.
     pub(super) presupposition_witnesses: HashSet<String>,
     /// Violations collected by `assert_typed_fact` while strict mode rejects
     /// facts; drained by `process_assertion` into its error return. Internal
@@ -1290,9 +1290,9 @@ impl KnowledgeBaseInner {
             du_variant_budget: Cell::new(None),
             verbose: false,
             strict: false,
-            // Existential import defaults ON — the v0.1 xorlo behavior kept
-            // byte-identical; clean-core opts OUT via `set_existential_import(false)`.
-            existential_import: true,
+            // Clean-core is the high-assurance default: universals do not mint
+            // entities. Legacy xorlo-style existential import is explicit opt-in.
+            existential_import: false,
             derived_only: HashSet::new(),
             admitted: HashSet::new(),
             strict_violations: Vec::new(),

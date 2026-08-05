@@ -60,8 +60,50 @@ impl Session {
         Ok(pairs.into_iter().map(|(id, _)| id).collect())
     }
 
-    /// Run a Lojban query. Returns JSON:
-    /// `{ status, detail, naf_dependent, cwa_false, proof_text, why, proof }`.
+    /// Enable/disable the explicit legacy existential-import profile. The
+    /// active KB is rebuilt atomically, so the new profile applies immediately.
+    pub fn set_existential_import(&self, enabled: bool) -> Result<(), JsError> {
+        self.core
+            .set_existential_import(enabled)
+            .map_err(|e| js_err(e.to_string()))
+    }
+
+    /// Whether the legacy existential-import profile is active (default false).
+    pub fn existential_import_enabled(&self) -> bool {
+        self.core.is_existential_import()
+    }
+
+    /// Enumerate query witnesses as JSON, including each binding's semantic origin.
+    pub fn query_find(&self, text: &str) -> Result<String, JsError> {
+        let sets = self
+            .core
+            .query_find_text(text)
+            .map_err(|e| js_err(e.to_string()))?;
+        let rows: Vec<Vec<serde_json::Value>> = sets
+            .iter()
+            .map(|bindings| {
+                bindings
+                    .iter()
+                    .map(|binding| {
+                        serde_json::json!({
+                            "variable": binding.variable,
+                            "term": binding.term,
+                            "origin": binding.origin.label(),
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "existential_import": self.core.is_existential_import(),
+            "bindings": rows,
+        })
+        .to_string())
+    }
+
+    /// Run a nibli KR query. Returns JSON:
+    /// `{ status, detail, existential_import, naf_dependent, cwa_false,
+    ///    proof_text, why, proof }`.
     pub fn query_with_proof(&self, text: &str) -> Result<String, JsError> {
         let (result, trace) = self
             .core
@@ -71,6 +113,7 @@ impl Session {
         let out = serde_json::json!({
             "status": result.status_label(),
             "detail": result.detail_label(),
+            "existential_import": self.core.is_existential_import(),
             "naf_dependent": trace.naf_dependent,
             "cwa_false": trace.cwa_false,
             // The collapsed macro-logical DAG (the full canonical trace is in `proof`).
@@ -182,6 +225,25 @@ mod tests {
         let json = session.query_with_proof(query).expect("query failed");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         v["status"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn existential_import_profile_and_origin_are_exposed() {
+        let session = Session::new();
+        session.assert_text("animal(every dog).").unwrap();
+        assert!(!session.existential_import_enabled());
+        assert_eq!(status(&session, "dog(some dog)."), "FALSE");
+
+        session.set_existential_import(true).unwrap();
+        assert!(session.existential_import_enabled());
+        assert_eq!(status(&session, "dog(some dog)."), "TRUE");
+        let found: serde_json::Value =
+            serde_json::from_str(&session.query_find("dog($d).").unwrap()).unwrap();
+        assert_eq!(found["existential_import"], true);
+        assert_eq!(found["bindings"][0][0]["origin"], "existential-import");
+
+        session.set_existential_import(false).unwrap();
+        assert_eq!(status(&session, "dog(some dog)."), "FALSE");
     }
 
     #[test]

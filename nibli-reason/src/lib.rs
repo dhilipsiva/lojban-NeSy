@@ -259,10 +259,10 @@ impl KnowledgeBase {
         inner.known_event_entities.clear();
         inner.known_descriptions.clear();
         inner.known_numbers.clear();
-        // Derived exclusion metadata must be replayed with its witnesses. If a
+        // Derived origin metadata must be replayed with its witnesses. If a
         // retracted description's old name survives here while the Skolem
         // counter resets, a later real entity reusing that name is wrongly
-        // hidden from find/count/aggregate.
+        // reported as imported.
         inner.presupposition_witnesses.clear();
         // The member CACHES must go with the sets they were built from, and the
         // dirty flag must be raised HERE rather than left to replay re-noting:
@@ -567,18 +567,6 @@ impl KnowledgeBase {
         // (an inflated count would be a hallucinated quantity). Comparison is at
         // GroundTerm level — distinct terms never collapse; intra-set binding
         // order (structural, inner-to-outer) is preserved for display.
-        // ENTITY-LEVEL identity (GUARANTEES §Aggregation): tuples binding an
-        // ENTITY variable to a existential-import presupposition witness are dropped
-        // entirely — a phantom entity a rule presupposed satisfies ∃/∀ but is
-        // not an enumerable "thing". Entity variables = everything except the
-        // `_ev*` EVENT vars (description vars `_v{n}` carry answer entities).
-        binding_sets.retain(|bindings| {
-            !bindings.iter().any(|(var, gt)| {
-                !var.starts_with("_ev")
-                    && matches!(gt, GroundTerm::Constant(name)
-                        if inner.presupposition_witnesses.contains(name.as_str()))
-            })
-        });
         // The DEDUP key is the binding set projected onto ENTITY variables —
         // `_ev*` event vars are derivation bookkeeping and must not multiply
         // results (pre-change, one dog answered `?? da gerku` once per
@@ -607,16 +595,39 @@ impl KnowledgeBase {
             key.sort();
             key
         };
-        binding_sets.sort_by_cached_key(|b| (entity_key(b), full_key(b)));
+        let import_rank = |bindings: &Vec<(String, GroundTerm)>| {
+            bindings
+                .iter()
+                .filter(|(var, term)| {
+                    !var.starts_with("_ev")
+                        && matches!(term, GroundTerm::Constant(name)
+                            if inner.presupposition_witnesses.contains(name))
+                })
+                .count()
+        };
+        // For a du-equivalent imported/KB pair, retain the ordinary KB spelling
+        // and report ordinary origin for their one shared entity.
+        binding_sets.sort_by_cached_key(|b| (entity_key(b), import_rank(b), full_key(b)));
         binding_sets.dedup_by_key(|bindings| entity_key(bindings));
         Ok(binding_sets
             .into_iter()
             .map(|bindings| {
                 bindings
                     .into_iter()
-                    .map(|(var, gt)| WitnessBinding {
-                        variable: var,
-                        term: witness_term_to_logical_term(&gt),
+                    .map(|(var, gt)| {
+                        let origin = match &gt {
+                            GroundTerm::Constant(name)
+                                if inner.presupposition_witnesses.contains(name) =>
+                            {
+                                nibli_types::logic::WitnessOrigin::ExistentialImport
+                            }
+                            _ => nibli_types::logic::WitnessOrigin::KnowledgeBase,
+                        };
+                        WitnessBinding {
+                            variable: var,
+                            term: witness_term_to_logical_term(&gt),
+                            origin,
+                        }
                     })
                     .collect()
             })
@@ -853,14 +864,37 @@ impl KnowledgeBase {
         self.inner.borrow().strict
     }
 
-    /// Enable/disable EXISTENTIAL-IMPORT MODE (default ON — the v0.1 xorlo
-    /// behavior, kept byte-identical). When on, a description universal
+    /// Enable/disable legacy EXISTENTIAL-IMPORT MODE (default OFF). When on, a description universal
     /// (`animal(every dog).`) mints a presupposition witness so `∃x. dog(x)`
     /// holds. Set OFF for the clean-core profile (`some` = plain classical ∃,
-    /// no phantom entity injected — NIBLI_KR §14.4 item 3). Configuration, not
-    /// derived state — survives `reset()`.
-    pub fn set_existential_import(&self, on: bool) {
-        self.inner.borrow_mut().existential_import = on;
+    /// no phantom entity injected — NIBLI_KR §14.4 item 3). The change applies
+    /// transactionally to the whole active KB by replaying it immediately; this
+    /// prevents a later unrelated retraction from changing which profile the
+    /// already-loaded rules use. Configuration survives `reset()`.
+    pub fn set_existential_import(&self, on: bool) -> Result<(), String> {
+        let mut inner = self.inner.borrow_mut();
+        if inner.existential_import == on {
+            return Ok(());
+        }
+
+        // Snapshot before replay so even a future profile-sensitive assertion
+        // failure restores the exact pre-change KB without relying on a second,
+        // potentially fallible replay.
+        let previous = inner.clone();
+        inner.existential_import = on;
+        match Self::rebuild_inner(&mut inner) {
+            Ok(()) => {
+                invalidate_pred_cache(&inner);
+                Ok(())
+            }
+            Err(change_error) => {
+                *inner = previous;
+                invalidate_pred_cache(&inner);
+                Err(format!(
+                    "existential-import profile change failed; previous profile restored: {change_error}"
+                ))
+            }
+        }
     }
 
     /// Whether existential-import (xorlo witness minting) is enabled.

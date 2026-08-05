@@ -375,10 +375,9 @@ pub const NAF_CASES: &[Case] = &[
         query: "alive(Adam).",
         expect: Expect::False,
     },
-    // ── Exact-count queries (`PA lo X cu Y`) → clingo `#count` aggregates. Guarded to
-    // ground-fact KBs: with a rule in the KB the existential-import import witness gets counted, and
-    // `du` classes are not collapsed by the engine count (both engine-probed) — those
-    // combinations are SKIPPED pending the count-semantics decision, not canonized. ──
+    // ── Exact-count queries (`PA lo X cu Y`) → clingo `#count` aggregates. The
+    // verifier engine is explicitly clean-core, so rules add no implicit domain
+    // members; `du` equivalence classes are canonicalized on both sides. ──
     Case {
         name: "count_exact_two_true",
         kb: &["dog(Adam).", "dog(Bel)."],

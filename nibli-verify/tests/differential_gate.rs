@@ -526,11 +526,12 @@ fn random_tense_naf_cases_agree_with_clingo() {
     );
 }
 
-/// Random exact-count coverage: N deterministically-generated ground-fact count cases
-/// (`PA lo P1 cu P2` queries) must each have nibli agree with clingo's `#count` over the
-/// stable model. The generator stays inside the guarded fragment (no rules, no `du`, no
-/// tense — see `filter::count_case_guard`), so both TRUE and closed-world FALSE count
-/// verdicts are exercised at scale.
+/// Random exact-count coverage: N deterministically-generated count cases
+/// (`PA lo P1 cu P2` queries) must each have nibli agree with clingo's `#count`
+/// over the stable model. The generator includes taxonomy rules and `du` links;
+/// the verifier's explicit clean-core profile and shared canonicalization keep
+/// those shapes equivalent (see `filter::count_case_guard`). Both TRUE and
+/// closed-world FALSE count verdicts are exercised at scale.
 #[test]
 fn random_count_cases_agree_with_clingo() {
     let cfg = AspConfig::default();

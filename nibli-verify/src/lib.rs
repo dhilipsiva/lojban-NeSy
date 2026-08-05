@@ -37,13 +37,23 @@ use nibli_engine::NibliEngine;
 use oracle::{Oracle, OracleConfig};
 use oracle_asp::{AspConfig, AspVerdict};
 
-/// A fresh KR-mode engine (the `NibliEngine::new()` default). Every engine
-/// this crate builds compiles KR source text — the generators, curated case
-/// tables, and corpus feeds were re-pointed from Lojban at THE DROP; the
-/// Vampire/clingo oracles judge the compiled buffers, so they verified the
-/// re-point itself. Pub for the test binaries.
+/// A fresh KR-mode engine pinned to the clean-core profile. Every independent
+/// oracle and metamorphic differential in this crate compares programs whose
+/// universals do not create domain members, so this helper sets existential
+/// import OFF explicitly instead of inheriting a runtime default. The setting
+/// survives [`NibliEngine::reset`], which keeps reused engines in the same
+/// semantic profile across cases.
+///
+/// Every differential engine this crate builds compiles KR source text — the
+/// generators, curated case tables, and corpus feeds were re-pointed from
+/// Lojban at THE DROP; the Vampire/clingo oracles judge the compiled buffers,
+/// so they verified the re-point itself. Pub for the test binaries.
 pub fn kr_engine() -> NibliEngine {
-    NibliEngine::new()
+    let engine = NibliEngine::new();
+    engine
+        .set_existential_import(false)
+        .expect("an empty verifier engine must accept the clean-core profile");
+    engine
 }
 
 /// The intended nibli verdict for a curated case (documentation + report cross-check).
@@ -707,9 +717,9 @@ pub fn run_lines_asp(
             reason: reason.to_string(),
         };
     }
-    // 2a. Count-query case guard: the engine's count and clingo's #count agree only on
-    //     ground-fact KBs (rules inject countable import witnesses; du classes are not
-    //     collapsed) — skip the disagreeing combinations rather than canonize them.
+    // 2a. Count-query case guard. The current clean-core + canonical-`du`
+    //     semantics need no case-level skips; retain the seam so future count
+    //     shapes can fail closed rather than silently diverge from clingo.
     if let Some(reason) = filter::count_case_guard(&kb_buffers, &query_buf) {
         return Outcome::SkipNonMappable {
             name,
@@ -829,8 +839,9 @@ pub fn run_random_tense_naf(count: u64, base_seed: u64, cfg: &AspConfig) -> Repo
 
 /// Run `count` deterministically-generated random **exact-count** cases (seeds
 /// `base_seed .. base_seed+count`) against clingo on a fresh engine. Each case is a
-/// ground-fact KB plus a `PA lo P1 cu P2` query — the guarded fragment where the
-/// engine's per-member count equals clingo's `#count` over the stable model (see
+/// fact/rule KB plus a `PA lo P1 cu P2` query — including taxonomy rules and
+/// `du` links, which the explicit clean-core profile and canonicalization make
+/// equivalent to clingo's `#count` over the stable model (see
 /// [`filter::count_case_guard`]).
 pub fn run_random_count(count: u64, base_seed: u64, cfg: &AspConfig) -> Report {
     let engine = kr_engine();
@@ -842,4 +853,26 @@ pub fn run_random_count(count: u64, base_seed: u64, cfg: &AspConfig) -> Report {
         })
         .collect();
     Report { outcomes }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kr_engine;
+
+    #[test]
+    fn verifier_engine_pins_clean_core_across_reset() {
+        let engine = kr_engine();
+        assert!(!engine.is_existential_import());
+
+        engine.assert_text("animal(every dog).").unwrap();
+        assert!(
+            !engine.query_holds("dog(some dog).").unwrap().is_true(),
+            "an oracle-side universal must not mint a witness"
+        );
+
+        engine.reset();
+        assert!(!engine.is_existential_import());
+        engine.assert_text("animal(every dog).").unwrap();
+        assert_eq!(engine.count_witnesses_text("dog($d).").unwrap(), 0);
+    }
 }

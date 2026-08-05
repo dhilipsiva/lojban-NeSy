@@ -524,6 +524,7 @@ fn test_event_decomposed_proof_trace() {
 #[test]
 fn test_event_decomposed_existential_import() {
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     // Only add the rule (no ground facts) — existential-import presupposition should
     // create Skolem constants that make the restrictor domain non-empty
     assert_buf(&kb, make_event_universal("gerku", "danlu"));

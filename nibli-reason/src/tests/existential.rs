@@ -38,6 +38,7 @@ fn test_existential_import_presupposition_basic() {
     // ro lo gerku cu danlu → presupposition: ∃x. gerku(x)
     // Query ∃x. gerku(x) should find the presupposition Skolem
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
 
     // Query: ∃x. gerku(x)
@@ -61,14 +62,13 @@ fn test_existential_import_presupposition_basic() {
 }
 
 #[test]
-fn clean_core_flag_off_mints_no_presupposition_witness() {
+fn clean_core_default_mints_no_presupposition_witness() {
     // With existential import OFF (the clean-core profile, NIBLI_KR §14.4 item
     // 3), a description universal is a plain ∀x. R(x) → C(x): it mints NO
     // phantom witness, so `∃x. gerku(x)` is NOT made true by the rule alone —
-    // the exact inverse of `test_existential_import_presupposition_basic`, which
-    // is TRUE at the ON default. The flag is configuration and survives reset.
+    // the exact inverse of explicit legacy import. The flag is configuration
+    // and survives reset.
     let kb = new_kb();
-    kb.set_existential_import(false);
     assert!(!kb.is_existential_import());
     assert_buf(&kb, make_universal("gerku", "danlu"));
 
@@ -99,6 +99,7 @@ fn test_existential_import_presupposition_consequent() {
     // ro lo gerku cu danlu → presupposition creates sk entity → rule fires
     // Query ∃x. danlu(x) should find the derived fact
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
 
     let mut nodes = Vec::new();
@@ -125,6 +126,7 @@ fn test_existential_import_presupposition_conjunction() {
     // THE BUG FIX: ro lo gerku cu danlu, then ? lo gerku cu danlu
     // (∃x. gerku(x) ∧ danlu(x)) should be TRUE
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
 
     let mut nodes = Vec::new();
@@ -157,18 +159,16 @@ fn test_existential_import_presupposition_conjunction() {
 
 #[test]
 fn test_existential_import_presupposition_with_real_entity() {
-    // Real entity + presupposition Skolem both satisfy BOOLEAN queries, but
-    // the phantom is NOT an enumerable "thing": witness enumeration excludes
-    // existential-import presupposition witnesses (GUARANTEES §Aggregation — pre-change
-    // this test pinned the opposite: the phantom appeared in [Find] results).
+    // Real entity + imported witness participate in the same logical algebra.
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
     assert_buf(&kb, make_assertion("alis", "gerku"));
 
     // Both alis and the presupposition Skolem are in the KB
     assert!(query(&kb, make_query("alis", "danlu")));
 
-    // Witness search finds ONLY the real entity.
+    // Witness search finds both and exposes their origins.
     let mut nodes = Vec::new();
     let body = pred(
         &mut nodes,
@@ -188,14 +188,21 @@ fn test_existential_import_presupposition_with_real_entity() {
     );
     assert_eq!(
         results.len(),
-        1,
-        "only the real entity is enumerable, not the presupposition phantom: {results:?}"
+        2,
+        "the KB and imported entities must both be enumerable: {results:?}"
     );
     assert!(
         results[0]
             .iter()
             .any(|b| matches!(&b.term, LogicalTerm::Constant(c) if c == "alis")),
         "the surviving witness is alis: {results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .flatten()
+            .any(|b| { b.origin == nibli_types::logic::WitnessOrigin::ExistentialImport }),
+        "the imported witness must be tagged: {results:?}"
     );
 }
 
@@ -260,6 +267,7 @@ fn test_prenex_universal_asserts_no_presupposition_witness() {
 
     // Contrast: a DESCRIPTION universal (`_v`-named) DOES assert the witness.
     let kb2 = new_kb();
+    kb2.set_existential_import(true).unwrap();
     assert_buf(&kb2, make_universal("gerku", "danlu"));
     let mut q2 = Vec::new();
     let qb2 = pred(
@@ -339,6 +347,7 @@ fn test_existential_import_presupposition_transitive() {
     // Each universal creates its own presupposition Skolem
     // Query ∃x. xanlu(x) should find witnesses via chain
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
     assert_buf(&kb, make_universal("danlu", "xanlu"));
 
@@ -365,6 +374,7 @@ fn test_existential_import_presupposition_transitive() {
 fn test_existential_import_presupposition_no_false_positives() {
     // ro lo gerku cu danlu should NOT make mlatu(x) exist
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
 
     let mut nodes = Vec::new();

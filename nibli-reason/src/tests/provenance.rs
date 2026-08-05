@@ -128,9 +128,10 @@ fn test_proof_trace_exists_witness() {
     let root_step = &trace.steps[trace.root as usize];
     assert!(root_step.holds);
     assert!(matches!(&root_step.rule, ProofRule::ExistsWitness { .. }));
-    if let ProofRule::ExistsWitness { var, term } = &root_step.rule {
+    if let ProofRule::ExistsWitness { var, term, origin } = &root_step.rule {
         assert_eq!(var, "x");
         assert!(matches!(term, LogicalTerm::Constant(c) if c == "alis"));
+        assert_eq!(*origin, nibli_types::logic::WitnessOrigin::KnowledgeBase);
     }
 }
 
@@ -374,6 +375,7 @@ fn test_proof_trace_existential_import_presup_is_asserted() {
     // Universal "animal(every dog)." creates existential-import presupposition Skolem.
     // That fact should show as Asserted, not trigger backward-chaining.
     let kb = new_kb();
+    kb.set_existential_import(true).unwrap();
     assert_buf(&kb, make_universal("gerku", "danlu"));
     // existential-import presupposition creates sk_0 as a gerku
     let (result, trace) = query_with_proof(&kb, make_query("sk_0", "gerku"));

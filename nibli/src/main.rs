@@ -317,9 +317,10 @@ fn main() {
                                         .iter()
                                         .map(|binding| {
                                             format!(
-                                                "{} = {}",
+                                                "{} = {} [{}]",
                                                 binding.variable,
-                                                display_term(&binding.term)
+                                                display_term(&binding.term),
+                                                binding.origin.label(),
                                             )
                                         })
                                         .collect();
