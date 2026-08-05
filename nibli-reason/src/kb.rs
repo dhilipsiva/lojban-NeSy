@@ -3047,27 +3047,37 @@ fn asserted_numeric_comparison(leaves: &[StoredFact]) -> Option<&'static str> {
     None
 }
 
+// Test-only accounting for rule-derived candidate Cartesian visits.
+#[cfg(test)]
+thread_local! {
+    static ENTAILMENT_CANDIDATE_CARTESIAN_STEPS: RefCell<HashMap<String, usize>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+pub(super) fn reset_entailment_candidate_cartesian_steps() {
+    ENTAILMENT_CANDIDATE_CARTESIAN_STEPS.with(|steps| steps.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(super) fn entailment_candidate_cartesian_steps(relation: &str) -> usize {
+    ENTAILMENT_CANDIDATE_CARTESIAN_STEPS
+        .with(|steps| steps.borrow().get(relation).copied().unwrap_or_default())
+}
+
+#[inline]
+fn note_entailment_candidate_cartesian_step(_relation: &str) {
+    #[cfg(test)]
+    ENTAILMENT_CANDIDATE_CARTESIAN_STEPS.with(|steps| {
+        *steps.borrow_mut().entry(_relation.to_string()).or_default() += 1;
+    });
+}
+
 /// Entailment-side ∃ candidate narrowing (the ∃-heavy query blowup fix).
 ///
-/// Unlike the retired find-only collector (`collect_candidates`, whose path
-/// now shares this one), this narrows ONLY from
-/// MANDATORY positive anchors — predicates not under any `Or` (an Or-branch
-/// anchor is optional, so narrowing by it could miss witnesses), and never
-/// compute or query-time-evaluated relations (`du`, `zmadu`, `mleca`,
-/// `dunli`), whose extensions are not store-backed.
-///
-/// Completeness relative to the full domain + registry-cartesian scan it
-/// replaces: any witness `w` satisfying the body satisfies every mandatory
-/// anchor, so `w` is either in the anchor's predicate index (superset
-/// extraction, equivalence-expanded) or derivable via a rule concluding the
-/// anchor relation — whose conclusion position is ground (added directly),
-/// a PatternVar (full member + registry-cartesian superset, same as the old
-/// scan), or a dependent-Skolem template (instantiated for THAT base name
-/// only — a name-mismatched SkolemFn can never unify, so other bases are
-/// dead candidates by construction).
-///
-/// Returns `None` when no mandatory anchor exists — the caller falls back to
-/// the full scan.
+/// Narrows only from mandatory positive, store-backed anchors. Any satisfying witness
+/// must satisfy every such anchor, so each index/rule-derived candidate set is a complete
+/// superset; `None` means the caller must use the full domain-and-registry scan.
 pub(super) fn collect_entailment_candidates(
     buffer: &LogicBuffer,
     body_id: u32,
@@ -3093,25 +3103,9 @@ pub(super) fn collect_entailment_candidates(
         return None;
     }
     let members: Vec<GroundTerm> = inner.all_typed_domain_members().to_vec();
-    let mut best: Option<HashSet<GroundTerm>> = None;
-    for anchor in &anchors {
-        let mut candidates = HashSet::new();
-        extract_from_index(anchor, inner, &mut candidates);
-        extract_rule_candidates_for_entailment(anchor, inner, &members, &mut candidates);
-        // Unspecified (zo'e) can appear as a stored argument but is never a
-        // meaningful witness value.
-        candidates.remove(&GroundTerm::Unspecified);
-        match &best {
-            None => best = Some(candidates),
-            Some(prev) if candidates.len() < prev.len() => best = Some(candidates),
-            _ => {}
-        }
-    }
-    best.map(|set| {
-        let mut candidates: Vec<GroundTerm> = set.into_iter().collect();
-        candidates.sort();
-        candidates
-    })
+    Some(select_narrowest_anchor_candidates(
+        &anchors, inner, &members,
+    ))
 }
 
 /// Relations whose truth is not store-backed (query-time evaluation /
@@ -3147,7 +3141,7 @@ pub(super) fn collect_group_event_candidates(
     inner: &KnowledgeBaseInner,
 ) -> Option<Vec<GroundTerm>> {
     let members: Vec<GroundTerm> = inner.all_typed_domain_members().to_vec();
-    let mut best: Option<HashSet<GroundTerm>> = None;
+    let mut anchors = Vec::new();
     for cond in conditions {
         let gf = cond.inner();
         if is_non_indexable_relation(&gf.relation) {
@@ -3164,34 +3158,22 @@ pub(super) fn collect_group_event_candidates(
         if positions.len() != 1 {
             continue;
         }
-        let anchor = PredicateAnchor {
+        anchors.push(PredicateAnchor {
             relation: gf.relation.clone(),
             var_position: positions[0],
-            // Only the arity (`args.len()`) is consulted by `extract_from_index`;
-            // the values are ignored (the full per-binding check filters later).
             args: vec![LogicalTerm::Unspecified; gf.args.len()],
+            ground_args: Some(gf.args.clone()),
             tense: match cond {
                 StoredFact::Past(_) => Some("Past"),
                 StoredFact::Present(_) => Some("Present"),
                 StoredFact::Future(_) => Some("Future"),
+                StoredFact::Obligatory(_) => Some("Obligatory"),
+                StoredFact::Permitted(_) => Some("Permitted"),
                 _ => None,
             },
-        };
-        let mut candidates = HashSet::new();
-        extract_from_index(&anchor, inner, &mut candidates);
-        extract_rule_candidates_for_entailment(&anchor, inner, &members, &mut candidates);
-        candidates.remove(&GroundTerm::Unspecified);
-        match &best {
-            None => best = Some(candidates),
-            Some(prev) if candidates.len() < prev.len() => best = Some(candidates),
-            _ => {}
-        }
+        });
     }
-    best.map(|set| {
-        let mut v: Vec<GroundTerm> = set.into_iter().collect();
-        v.sort();
-        v
-    })
+    (!anchors.is_empty()).then(|| select_narrowest_anchor_candidates(&anchors, inner, &members))
 }
 
 /// Like `collect_predicate_anchors`, but only MANDATORY anchors: descends
@@ -3218,6 +3200,22 @@ fn collect_mandatory_anchors(
                     relation: rel.clone(),
                     var_position: pos,
                     args: args.clone(),
+                    ground_args: Some(
+                        args.iter()
+                            .map(|arg| match arg {
+                                LogicalTerm::Variable(name) => subs
+                                    .get(name)
+                                    .cloned()
+                                    .unwrap_or_else(|| GroundTerm::PatternVar(name.clone())),
+                                LogicalTerm::Constant(value) => GroundTerm::Constant(value.clone()),
+                                LogicalTerm::Description(value) => {
+                                    GroundTerm::Description(value.clone())
+                                }
+                                LogicalTerm::Number(value) => GroundTerm::Number(value.to_bits()),
+                                LogicalTerm::Unspecified => GroundTerm::Unspecified,
+                            })
+                            .collect(),
+                    ),
                     tense: tense_to_static(tense),
                 });
             }
@@ -3283,17 +3281,221 @@ fn collect_compute_heads<'b>(buffer: &'b LogicBuffer, node_id: u32, heads: &mut 
     }
 }
 
+fn candidate_limit_reached(candidates: &HashSet<GroundTerm>, stop_at: Option<usize>) -> bool {
+    stop_at.is_some_and(|limit| candidates.len() >= limit)
+}
+
+fn insert_bounded_candidate(
+    candidates: &mut HashSet<GroundTerm>,
+    candidate: GroundTerm,
+    stop_at: Option<usize>,
+) -> bool {
+    // `something` may occur in stored role data, but it is not a witness value.
+    if candidate != GroundTerm::Unspecified {
+        candidates.insert(candidate);
+    }
+    candidate_limit_reached(candidates, stop_at)
+}
+
+fn saturating_cartesian_size(member_count: usize, dep_count: usize) -> usize {
+    (0..dep_count).fold(1usize, |size, _| size.saturating_mul(member_count))
+}
+
+fn term_contains_pattern_var(term: &GroundTerm) -> bool {
+    match term {
+        GroundTerm::PatternVar(_) => true,
+        GroundTerm::SkolemFn(_, dep) => term_contains_pattern_var(dep),
+        GroundTerm::DepPair(left, right) => {
+            term_contains_pattern_var(left) || term_contains_pattern_var(right)
+        }
+        _ => false,
+    }
+}
+
+/// Apply the anchor's already-bound non-witness arguments to a matching rule conclusion.
+/// A head `person_x1(sk_person($x), $x)` anchored at `person_x1($event, Adam)` therefore
+/// yields exactly `sk_person(Adam)`, not `sk_person(member)` for every domain member.
+/// Equality classes disable this narrowing: an equivalent spelling may still match via
+/// the ordinary fallback, so keeping the broader template is the sound choice.
+fn specialize_conclusion_candidate(
+    anchor: &PredicateAnchor,
+    conclusion_args: &[GroundTerm],
+    inner: &KnowledgeBaseInner,
+) -> Option<GroundTerm> {
+    let candidate = conclusion_args.get(anchor.var_position)?;
+    if !inner.equivalence_parent.is_empty() {
+        return Some(candidate.clone());
+    }
+    let Some(ground_args) = &anchor.ground_args else {
+        return Some(candidate.clone());
+    };
+    if ground_args.len() != conclusion_args.len() {
+        return None;
+    }
+    let mut bindings = HashMap::new();
+    for (idx, (template, expected)) in conclusion_args.iter().zip(ground_args).enumerate() {
+        if idx == anchor.var_position
+            || *expected == GroundTerm::Unspecified
+            || term_contains_pattern_var(expected)
+        {
+            continue;
+        }
+        if !unify_terms(template, expected, &mut bindings) {
+            return None;
+        }
+    }
+    Some(substitute_term(candidate, &bindings).into_owned())
+}
+
+/// Cheap upper estimate used only to choose which mandatory anchor to collect first. The
+/// chosen anchor is still collected exactly; an estimate can affect work, never witnesses.
+fn estimated_anchor_candidate_cost(
+    anchor: &PredicateAnchor,
+    inner: &KnowledgeBaseInner,
+    member_count: usize,
+) -> usize {
+    let mut cost = inner
+        .fact_store
+        .lookup_predicate(anchor.relation.as_str())
+        .map_or(0, |facts| facts.len());
+    let global_pool = inner
+        .skolem_fn_registry
+        .iter()
+        .fold(member_count, |size, entry| {
+            size.saturating_add(saturating_cartesian_size(member_count, entry.dep_count))
+        });
+    for rule in inner
+        .universal_rules
+        .get(anchor.relation.as_str())
+        .into_iter()
+        .flatten()
+    {
+        for conclusion in &rule.typed_conclusions {
+            if conclusion.relation() != anchor.relation {
+                continue;
+            }
+            let args = &conclusion.inner().args;
+            if args.len() != anchor.args.len() {
+                continue;
+            }
+            let Some(candidate) = specialize_conclusion_candidate(anchor, args, inner) else {
+                continue;
+            };
+            let contribution = if !term_contains_pattern_var(&candidate) {
+                1
+            } else {
+                match &candidate {
+                    GroundTerm::PatternVar(_) => global_pool,
+                    GroundTerm::SkolemFn(base, _) => {
+                        let dep_count = inner
+                            .skolem_fn_registry
+                            .iter()
+                            .find(|entry| entry.symbol == *base)
+                            .map_or(1, |entry| entry.dep_count);
+                        saturating_cartesian_size(member_count, dep_count)
+                    }
+                    _ => 1,
+                }
+            };
+            cost = cost.saturating_add(contribution);
+        }
+    }
+    cost
+}
+
+/// Choose the smallest complete mandatory-anchor superset without eagerly building every
+/// larger set. Estimates choose work order; original anchor order remains the deterministic
+/// tie-breaker for equal exact sets.
+fn select_narrowest_anchor_candidates(
+    anchors: &[PredicateAnchor],
+    inner: &KnowledgeBaseInner,
+    members: &[GroundTerm],
+) -> Vec<GroundTerm> {
+    let mut order: Vec<usize> = (0..anchors.len()).collect();
+    order.sort_by_key(|&idx| {
+        (
+            estimated_anchor_candidate_cost(&anchors[idx], inner, members.len()),
+            idx,
+        )
+    });
+
+    let mut best: Option<(usize, HashSet<GroundTerm>)> = None;
+    for idx in order {
+        if best.as_ref().is_some_and(|(_, set)| set.is_empty()) {
+            break;
+        }
+        let stop_at = best.as_ref().map(|(best_idx, set)| {
+            if idx < *best_idx {
+                // An earlier equal-sized anchor wins the historical tie, so distinguish
+                // equality from strictly larger by collecting one extra candidate.
+                set.len().saturating_add(1)
+            } else {
+                // A later equal-sized anchor cannot win; reaching the current size is
+                // already enough to abandon it.
+                set.len()
+            }
+        });
+        let (candidates, complete) =
+            collect_anchor_candidates(&anchors[idx], inner, members, stop_at);
+        if !complete {
+            continue;
+        }
+        let replace = match &best {
+            None => true,
+            Some((best_idx, current)) => {
+                candidates.len() < current.len()
+                    || (candidates.len() == current.len() && idx < *best_idx)
+            }
+        };
+        if replace {
+            best = Some((idx, candidates));
+        }
+    }
+
+    let mut candidates: Vec<GroundTerm> = best
+        .expect("a non-empty anchor list always yields one complete candidate set")
+        .1
+        .into_iter()
+        .collect();
+    candidates.sort();
+    candidates
+}
+
+/// Collect one anchor's complete candidate superset, or stop once `stop_at` distinct
+/// candidates prove it cannot beat a previously completed anchor.
+fn collect_anchor_candidates(
+    anchor: &PredicateAnchor,
+    inner: &KnowledgeBaseInner,
+    members: &[GroundTerm],
+    stop_at: Option<usize>,
+) -> (HashSet<GroundTerm>, bool) {
+    let mut candidates = HashSet::new();
+    if extract_from_index_bounded(anchor, inner, &mut candidates, stop_at)
+        || extract_rule_candidates_for_entailment_bounded(
+            anchor,
+            inner,
+            members,
+            &mut candidates,
+            stop_at,
+        )
+    {
+        return (candidates, false);
+    }
+    (candidates, true)
+}
+
 /// Rule-derivable candidates for an entailment anchor (see
 /// `collect_entailment_candidates` for the completeness argument).
-fn extract_rule_candidates_for_entailment(
+fn extract_rule_candidates_for_entailment_bounded(
     anchor: &PredicateAnchor,
     inner: &KnowledgeBaseInner,
     members: &[GroundTerm],
     candidates: &mut HashSet<GroundTerm>,
-) {
+    stop_at: Option<usize>,
+) -> bool {
     let rules = match inner.universal_rules.get(anchor.relation.as_str()) {
         Some(r) => r,
-        None => return,
+        None => return false,
     };
     for rule in rules {
         for conclusion in &rule.typed_conclusions {
@@ -3304,16 +3506,36 @@ fn extract_rule_candidates_for_entailment(
             if conc_args.len() != anchor.args.len() {
                 continue;
             }
-            match &conc_args[anchor.var_position] {
+            let Some(candidate) = specialize_conclusion_candidate(anchor, conc_args, inner) else {
+                continue;
+            };
+            if !term_contains_pattern_var(&candidate) {
+                if insert_bounded_candidate(candidates, candidate, stop_at) {
+                    return true;
+                }
+                continue;
+            }
+            match candidate {
                 GroundTerm::PatternVar(_) => {
                     // The rule's conditions can bind this position to any
                     // domain member, or (via chained rules) to another rule's
                     // dependent-Skolem witness — full superset, same as the
                     // old unconditional scan.
-                    candidates.extend(members.iter().cloned());
+                    for member in members {
+                        if insert_bounded_candidate(candidates, member.clone(), stop_at) {
+                            return true;
+                        }
+                    }
                     for entry in &inner.skolem_fn_registry {
                         for combo in GroundTermCartesianProduct::new(members, entry.dep_count) {
-                            candidates.insert(build_skolem_fn_term(entry.symbol, &combo));
+                            note_entailment_candidate_cartesian_step(&anchor.relation);
+                            if insert_bounded_candidate(
+                                candidates,
+                                build_skolem_fn_term(entry.symbol, &combo),
+                                stop_at,
+                            ) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -3322,19 +3544,29 @@ fn extract_rule_candidates_for_entailment(
                     let dep_count = inner
                         .skolem_fn_registry
                         .iter()
-                        .find(|e| e.symbol == *base)
+                        .find(|e| e.symbol == base)
                         .map(|e| e.dep_count)
                         .unwrap_or(1);
                     for combo in GroundTermCartesianProduct::new(members, dep_count) {
-                        candidates.insert(build_skolem_fn_term(*base, &combo));
+                        note_entailment_candidate_cartesian_step(&anchor.relation);
+                        if insert_bounded_candidate(
+                            candidates,
+                            build_skolem_fn_term(base, &combo),
+                            stop_at,
+                        ) {
+                            return true;
+                        }
                     }
                 }
                 other => {
-                    candidates.insert(other.clone());
+                    if insert_bounded_candidate(candidates, other, stop_at) {
+                        return true;
+                    }
                 }
             }
         }
     }
+    false
 }
 
 /// An anchor: a positive predicate in the body that mentions the target variable.
@@ -3342,6 +3574,9 @@ struct PredicateAnchor {
     relation: String,
     var_position: usize,
     args: Vec<LogicalTerm>,
+    /// Partially grounded condition arguments. Positions other than `var_position`
+    /// constrain index hits and may bind a rule head's dependent Skolem.
+    ground_args: Option<Vec<GroundTerm>>,
     tense: Option<&'static str>,
 }
 
@@ -3382,15 +3617,40 @@ fn tense_to_static(tense: Option<&str>) -> Option<&'static str> {
     }
 }
 
+fn anchor_other_arguments_match(
+    anchor: &PredicateAnchor,
+    fact_args: &[GroundTerm],
+    inner: &KnowledgeBaseInner,
+) -> bool {
+    if !inner.equivalence_parent.is_empty() {
+        return true;
+    }
+    let Some(expected_args) = &anchor.ground_args else {
+        return true;
+    };
+    expected_args.len() == fact_args.len()
+        && expected_args
+            .iter()
+            .zip(fact_args)
+            .enumerate()
+            .all(|(idx, (expected, actual))| {
+                idx == anchor.var_position
+                    || *expected == GroundTerm::Unspecified
+                    || term_contains_pattern_var(expected)
+                    || expected == actual
+            })
+}
+
 /// Extract candidates from the typed fact index for a predicate anchor.
-fn extract_from_index(
+fn extract_from_index_bounded(
     anchor: &PredicateAnchor,
     inner: &KnowledgeBaseInner,
     candidates: &mut HashSet<GroundTerm>,
-) {
+    stop_at: Option<usize>,
+) -> bool {
     let facts = match inner.fact_store.lookup_predicate(anchor.relation.as_str()) {
         Some(f) => f,
-        None => return,
+        None => return false,
     };
 
     for stored_fact in facts {
@@ -3412,13 +3672,17 @@ fn extract_from_index(
         if fact_args.len() != anchor.args.len() {
             continue;
         }
+        if !anchor_other_arguments_match(anchor, fact_args, inner) {
+            continue;
+        }
 
-        // For the variable position, extract the value.
-        // For other positions, we don't filter here — the full body
-        // verification in find_witnesses handles correctness.
-        // This gives us a superset of valid candidates, which is safe.
+        // Extract the witness position after filtering only already-ground sibling
+        // arguments. Unbound siblings remain wildcards, so this is still a complete
+        // superset; the full body check decides each candidate later.
         let direct = fact_args[anchor.var_position].clone();
-        candidates.insert(direct.clone());
+        if insert_bounded_candidate(candidates, direct.clone(), stop_at) {
+            return true;
+        }
         // Expand by equivalence class.
         if !inner.equivalence_parent.is_empty() {
             for equiv in get_equivalence_class_readonly(
@@ -3426,8 +3690,11 @@ fn extract_from_index(
                 &inner.equivalence_classes,
                 &direct,
             ) {
-                candidates.insert(equiv);
+                if insert_bounded_candidate(candidates, equiv, stop_at) {
+                    return true;
+                }
             }
         }
     }
+    false
 }

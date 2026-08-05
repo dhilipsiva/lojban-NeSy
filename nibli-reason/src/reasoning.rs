@@ -36,6 +36,29 @@ fn with_sub<T>(
     result
 }
 
+// Test-only count of the registry-wide Cartesian fallback.
+#[cfg(test)]
+thread_local! {
+    static GLOBAL_CANDIDATE_CARTESIAN_STEPS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn reset_global_candidate_cartesian_steps() {
+    GLOBAL_CANDIDATE_CARTESIAN_STEPS.with(|steps| steps.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn global_candidate_cartesian_steps() -> usize {
+    GLOBAL_CANDIDATE_CARTESIAN_STEPS.with(std::cell::Cell::get)
+}
+
+#[inline]
+fn note_global_candidate_cartesian_step() {
+    #[cfg(test)]
+    GLOBAL_CANDIDATE_CARTESIAN_STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
 /// Build the full candidate vector for unbound event variable search:
 /// all typed domain members + SkolemFn witness terms from the registry.
 fn build_all_candidates(inner: &KnowledgeBaseInner) -> Vec<GroundTerm> {
@@ -43,6 +66,7 @@ fn build_all_candidates(inner: &KnowledgeBaseInner) -> Vec<GroundTerm> {
     let mut candidates: Vec<GroundTerm> = members.to_vec();
     for entry in &inner.skolem_fn_registry {
         for combo in GroundTermCartesianProduct::new(members, entry.dep_count) {
+            note_global_candidate_cartesian_step();
             candidates.push(build_skolem_fn_term(entry.symbol, &combo));
         }
     }
@@ -2409,7 +2433,23 @@ fn process_phase<S: TraceSink>(
                     if single_var_cond_indices.is_empty() {
                         per_var_candidates.push(ensure_candidates(candidates_slot, inner).to_vec());
                     } else {
-                        let cand = ensure_candidates(candidates_slot, inner).to_vec();
+                        // Any satisfying event must occur in every positive condition
+                        // that mentions only this event variable. Build a complete
+                        // relation-scoped superset from the narrowest such anchor before
+                        // falling back to the global domain × Skolem-registry pool.
+                        // Negated conditions cannot anchor: a witness for `~P(ev)` need
+                        // not occur in P's extension.
+                        let positive_conditions: Vec<StoredFact> = single_var_cond_indices
+                            .iter()
+                            .copied()
+                            .filter(|idx| !rule.negated_condition_indices.contains(idx))
+                            .map(|idx| substitute_fact(&rule.typed_conditions[idx], &bindings))
+                            .collect();
+                        let cand =
+                            collect_group_event_candidates(&positive_conditions, ev_var, inner)
+                                .unwrap_or_else(|| {
+                                    ensure_candidates(candidates_slot, inner).to_vec()
+                                });
                         let filtered = filter_event_candidates(
                             rule,
                             ev_var,

@@ -113,6 +113,15 @@ here first.
 
 ### Fixed
 
+- **Opaque event queries no longer expand unrelated recursive relations or global
+  witness pools:** materialisation is scoped to cumulative query cones instead of
+  seeding every eligible relation. NAF-bearing cones remain eager; shallow purely
+  positive entailment uses indexed backward chaining and requests saturation only
+  after a non-definitive result, while find/count still request complete positive cones.
+  Candidate generation now uses mandatory relation anchors, specializes dependent
+  Skolems from already-bound sibling arguments, and preserves all six bare,
+  temporal, and deontic fact flavors. Quoted abstraction bodies remain opaque;
+  binary transitive semantics and deterministic candidate order are unchanged.
 - **Sound semantic identity:** rule deduplication now buckets by digest but compares a
   full alpha-canonical identity, including flat/grouped NAF metadata, instead of treating
   one 64-bit hash as equality. Opaque abstractions now emit a versioned
