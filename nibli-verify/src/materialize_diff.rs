@@ -44,6 +44,19 @@ const BINARY_BASE: &[&str] = &["parent", "teaches"];
 const BINARY_DERIVED: &str = "judge";
 /// The domain every entity is asserted into, so a universal has somewhere to range.
 const DOMAIN: &str = "person";
+/// A WIDE base relation. Arity 4, so a rule can bind two variables and only THEN meet a
+/// literal that rejects — the shape real constitutions are built from, and the one
+/// `bind_tuple`'s constant-mismatch arm exists for. Before this was added, NO generated
+/// program (and no shipped corpus, pin, or unit test) ever rejected a candidate tuple
+/// after it had already bound something via that arm. Never a rule head.
+const WIDE_BASE: &str = "observe";
+/// Literals for the wide relation's trailing position. Two of them, so a rule keyed on
+/// one meets rows that reject at the LAST position, after the object has bound.
+const SCOPES: &[&str] = &["CaseScope", "OtherScope"];
+/// A base relation reserved for the repeated-variable shape. Deliberately kept OUT of
+/// `BINARY_BASE` so its self-loops can never feed the transitive closure — that
+/// combination is what costs seconds per program (see the fact-orientation note below).
+const SELF_BASE: &str = "loves";
 
 const ENTS: &[&str] = &["Adam", "Bel", "Cyd"];
 
@@ -90,6 +103,31 @@ pub fn random_materialize_case(seed: u64) -> MatCase {
             ENTS[i],
             ENTS[j]
         ));
+    }
+
+    // Wide facts: one row per (entity, scope), with a VARYING object so the object
+    // position is worth binding. Half of them carry the non-matching scope, so rule (7)
+    // below meets rows that reject at their last position after `$o` has bound.
+    let wide = rng.below(2) == 0;
+    if wide {
+        for (i, e) in ENTS.iter().enumerate() {
+            for (k, s) in SCOPES.iter().enumerate() {
+                kb.push(format!(
+                    "{WIDE_BASE}({e}, {}, Sight, {s}).",
+                    ENTS[(i + k) % ENTS.len()]
+                ));
+            }
+        }
+    }
+
+    // Self-loop facts for the repeated-variable shape, alongside non-loops so the atom
+    // has something to REJECT after binding. Safe here in a way it is not for the
+    // closure relation: `SELF_BASE` is never recursive.
+    let selfjoin = rng.below(2) == 0;
+    if selfjoin {
+        kb.push(format!("{SELF_BASE}({}, {}).", ENTS[0], ENTS[0]));
+        kb.push(format!("{SELF_BASE}({}, {}).", ENTS[0], ENTS[1]));
+        kb.push(format!("{SELF_BASE}({}, {}).", ENTS[1], ENTS[2]));
     }
 
     // ── Rules ──
@@ -161,6 +199,39 @@ pub fn random_materialize_case(seed: u64) -> MatCase {
             "past {}({}).",
             rng.pick(UNARY_BASE),
             rng.pick(ENTS)
+        ));
+    }
+
+    // (7) The constant-after-variable shape. `$o` binds at position 2; the trailing
+    //     literal then rejects every row carrying the other scope. A binding stranded by
+    //     that rejection makes the MATCHING row fail an equality check it should pass,
+    //     so the derivation is silently lost — an under-derived extension, which is how
+    //     this optimisation turns a NAF FALSE into a definitive wrong TRUE.
+    if wide {
+        let head = rng.pick(UNARY_DERIVED);
+        kb.push(format!(
+            "all $p: all $o: {DOMAIN}($p) & {WIDE_BASE}($p, $o, Sight, {}) -> {head}($p).",
+            SCOPES[0]
+        ));
+    }
+
+    // (8) A repeated variable inside ONE atom. Position 1 binds it, position 2 must read
+    //     it back. Resolving both against a snapshot of the entry bindings — the obvious
+    //     "check first, then extend" optimisation — sees it unbound twice and accepts an
+    //     unequal pair, OVER-deriving.
+    if selfjoin {
+        let head = rng.pick(UNARY_DERIVED);
+        kb.push(format!("all $x: {SELF_BASE}($x, $x) -> {head}($x)."));
+    }
+
+    // (9) A four-atom positive body over three shared variables — the deepest join the
+    //     generator produces, and the only shape that gives the semi-naive per-position
+    //     loop four positions to drive. Edges stay DAG-oriented, so no positive cycle.
+    if rng.below(2) == 0 {
+        let b = rng.pick(BINARY_BASE);
+        let head = rng.pick(UNARY_DERIVED);
+        kb.push(format!(
+            "all $x: all $y: all $z: {DOMAIN}($x) & {b}($x, $y) & {DOMAIN}($y) & {b}($y, $z) -> {head}($x)."
         ));
     }
 
@@ -353,6 +424,36 @@ mod tests {
         assert!(du > 20, "too few `du` cases: {du}");
         assert!(tensed > 20, "too few tensed cases: {tensed}");
         assert!(recursive > 40, "too few recursive cases: {recursive}");
+    }
+
+    /// Non-vacuity for the JOIN shapes — the paths `bind_tuple` takes when a candidate
+    /// is rejected part-way through. These were added 2026-08-07 after an audit found
+    /// that nothing in the repo exercised them: no shipped corpus, pin, unit test or
+    /// generated program ever rejected a tuple after binding via the constant arm, put a
+    /// repeated variable in an atom, or materialised a relation wider than arity 2.
+    #[test]
+    fn the_batch_covers_the_join_shapes() {
+        let mut wide = 0;
+        let mut selfjoin = 0;
+        let mut deep = 0;
+        for seed in 0..200u64 {
+            let c = random_materialize_case(seed);
+            if c.kb.iter().any(|l| l.contains("observe($p, $o, Sight,")) {
+                wide += 1;
+            }
+            if c.kb.iter().any(|l| l.contains("loves($x, $x)")) {
+                selfjoin += 1;
+            }
+            if c.kb
+                .iter()
+                .any(|l| l.contains("all $x: all $y: all $z: person($x)"))
+            {
+                deep += 1;
+            }
+        }
+        assert!(wide > 40, "too few constant-after-variable cases: {wide}");
+        assert!(selfjoin > 40, "too few repeated-variable cases: {selfjoin}");
+        assert!(deep > 40, "too few four-atom-body cases: {deep}");
     }
 
     /// Every generated program must have a non-empty battery, or an "Agree" would be

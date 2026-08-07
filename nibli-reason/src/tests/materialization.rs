@@ -1357,3 +1357,205 @@ fn a_negative_edge_raises_the_stratum_it_reads_from() {
         watched.edges
     );
 }
+
+// ─── The join loop's binding paths ───────────────────────────────────────────
+//
+// `eval_rule`'s inner `walk` extends a binding environment once per candidate
+// tuple per join level. Everything below pins what happens when a candidate is
+// REJECTED PART-WAY THROUGH — after it has already bound something.
+//
+// These exist because an audit of every positive body template in the shipped
+// corpora, `pins/`, this file, and `materialize_diff`'s generator found that
+// path had NO coverage at all: nothing anywhere rejects on a literal constant
+// after an insert, no atom anywhere repeats a variable, and nothing materialises
+// a relation wider than arity 2. The real KBs this engine is used on are made of
+// exactly those shapes.
+//
+// ORDER SENSITIVITY, stated once. Extension tuples live in a `HashSet` whose
+// iteration order is seeded per process, so a stranded binding only changes the
+// result when the poisoned tuple happens to be visited before the good one.
+// Every test below is therefore over-provisioned with decoys, and the honest
+// backstop is running them in many processes (see the plan's determinism loop),
+// not a single green run.
+
+/// Canonical rendering of the saturated extension: relations sorted, tuples
+/// sorted by their `Debug` form, one `relation :: tuple` per line.
+///
+/// A STRING rather than a hash, on purpose — a golden test whose failure is an
+/// opaque digest mismatch tells a reader nothing about what moved.
+///
+/// `Debug` rather than a friendly display, also on purpose: it keeps
+/// `Constant("x")` and `Description("x")` distinct and shows `Number` by its
+/// stored bit pattern, so `0.0` and `-0.0` cannot silently merge into one tuple.
+fn extension_digest(kb: &KnowledgeBase) -> String {
+    let inner = kb.inner.borrow();
+    let materialized = inner.materialized.borrow();
+    let Some(m) = materialized.as_ref() else {
+        return "(no saturation)".to_string();
+    };
+    let mut relations: Vec<&String> = m.ext.keys().collect();
+    relations.sort();
+    let mut out = String::new();
+    for rel in relations {
+        let mut tuples: Vec<String> = m.ext[rel].iter().map(|t| format!("{t:?}")).collect();
+        tuples.sort();
+        for t in tuples {
+            out.push_str(rel);
+            out.push_str(" :: ");
+            out.push_str(&t);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Load a KB and force its NAF cone to saturate, returning the engine.
+fn saturated_kb(kb_lines: &[&str], forcing_query: &str) -> KnowledgeBase {
+    let kb = new_kb();
+    for l in kb_lines {
+        assert_buf(&kb, compile_surface(l));
+    }
+    // The verdict is irrelevant here; the point is that a NAF-bearing cone was
+    // requested, which is what makes the saturator run.
+    let _ = query_result(&kb, compile_surface(forcing_query));
+    kb
+}
+
+/// `observe/4` — two variable positions followed by two literal constants. This is
+/// the shape a real constitution is built from, and the one `bind_tuple`'s
+/// constant-mismatch arm exists for.
+///
+/// Each `OtherScope` row binds `$o` at position 2 and only then fails at position
+/// 4. A binding left behind would make the matching `CaseScope` row fail an
+/// equality check it should pass, and the derivation would be silently LOST — an
+/// under-derived extension, which is how this optimisation turns a
+/// negation-as-failure FALSE into a definitive wrong TRUE.
+#[test]
+fn a_constant_rejection_after_a_binding_does_not_strand_it() {
+    let kb_lines = [
+        "person(Ara).",
+        "person(Bel).",
+        "person(Cyd).",
+        // One matching row each, buried among decoys that reject at the LAST
+        // position — after `$o` has bound.
+        "observe(Ara, Alpha, Sight, CaseScope).",
+        "observe(Ara, Beta, Sight, OtherScope).",
+        "observe(Ara, Gamma, Sight, OtherScope).",
+        "observe(Ara, Delta, Sight, OtherScope).",
+        "observe(Bel, Epsilon, Sight, CaseScope).",
+        "observe(Bel, Zeta, Sight, OtherScope).",
+        "observe(Bel, Eta, Sight, OtherScope).",
+        "observe(Bel, Theta, Sight, OtherScope).",
+        "observe(Cyd, Iota, Sight, CaseScope).",
+        "observe(Cyd, Kappa, Sight, OtherScope).",
+        "observe(Cyd, Lambda, Sight, OtherScope).",
+        "observe(Cyd, Mu, Sight, OtherScope).",
+        "all $p: all $o: person($p) & observe($p, $o, Sight, CaseScope) -> reward($p).",
+        "all $q: person($q) & ~reward($q) -> rotten($q).",
+    ];
+    let queries = ["rotten(Ara).", "rotten(Bel).", "rotten(Cyd)."];
+    let (on, off) = both_ways(&kb_lines, &queries);
+    assert_eq!(on, off, "materialisation must not change these verdicts");
+    for (q, r) in queries.iter().zip(&on) {
+        assert_eq!(
+            *r,
+            QueryResult::False,
+            "{q}: every subject has a CaseScope observation, so `reward` derives for \
+             all three and nobody is rotten. A stranded `$o` binding loses the \
+             matching row and flips this to TRUE."
+        );
+    }
+}
+
+/// An atom that repeats a variable — `loves($x, $x)` — with `$x` FRESH at the
+/// atom, so position 1 inserts it and position 2 must read it back.
+///
+/// This is the property that rules out the whole "test the tuple against the
+/// entry bindings, then build the extension" family of optimisations: resolving
+/// both positions against a SNAPSHOT sees `$x` unbound twice and accepts
+/// `loves(Ara, Bel)`, over-deriving. Nothing else in the suite has ever put a
+/// repeated variable in an atom.
+#[test]
+fn a_repeated_variable_in_one_atom_matches_only_equal_pairs() {
+    let kb_lines = [
+        "person(Ara).",
+        "person(Bel).",
+        "person(Cyd).",
+        "loves(Ara, Ara).",
+        "loves(Ara, Bel).",
+        "loves(Bel, Ara).",
+        "loves(Bel, Cyd).",
+        "loves(Cyd, Bel).",
+        "all $x: loves($x, $x) -> fit($x).",
+        "all $q: person($q) & ~fit($q) -> rotten($q).",
+    ];
+    let queries = ["rotten(Ara).", "rotten(Bel).", "rotten(Cyd)."];
+    let (on, off) = both_ways(&kb_lines, &queries);
+    assert_eq!(on, off, "materialisation must not change these verdicts");
+    assert_eq!(
+        on[0],
+        QueryResult::False,
+        "Ara loves Ara, so `fit(Ara)` derives and Ara is not rotten"
+    );
+    assert_eq!(
+        on[1],
+        QueryResult::True,
+        "Bel loves Ara and Cyd but not Bel — over-deriving `fit(Bel)` flips this"
+    );
+    assert_eq!(
+        on[2],
+        QueryResult::True,
+        "Cyd loves only Bel — over-deriving `fit(Cyd)` flips this"
+    );
+}
+
+/// The saturated extension itself, byte for byte, over the two fixtures above.
+///
+/// The verdict tests can only see a change that reaches a query. This one sees
+/// every derived tuple, so a join that starts deriving one tuple too many or too
+/// few fails here even when no queried verdict moves.
+#[test]
+fn the_saturated_extension_is_byte_identical() {
+    let kb = saturated_kb(
+        &[
+            "person(Ara).",
+            "person(Bel).",
+            "loves(Ara, Ara).",
+            "loves(Ara, Bel).",
+            "loves(Bel, Ara).",
+            "observe(Ara, Alpha, Sight, CaseScope).",
+            "observe(Ara, Beta, Sight, OtherScope).",
+            "observe(Bel, Gamma, Sight, OtherScope).",
+            "all $x: loves($x, $x) -> fit($x).",
+            "all $p: all $o: person($p) & observe($p, $o, Sight, CaseScope) -> reward($p).",
+            "all $q: person($q) & ~fit($q) & ~reward($q) -> rotten($q).",
+        ],
+        "rotten(Bel).",
+    );
+    let digest = extension_digest(&kb);
+    assert_eq!(
+        digest, EXPECTED_EXTENSION,
+        "the saturated extension moved:\n{digest}"
+    );
+}
+
+/// Pinned by [`the_saturated_extension_is_byte_identical`]. Regenerate ONLY when
+/// a deliberate semantic change explains every added and removed line.
+///
+/// Reading it: `fit` holds Ara alone (Ara is the only self-lover), `reward` holds
+/// Ara alone (every other `observe` row is `OtherScope` and rejects at its last
+/// position), and `rotten` therefore holds Bel alone. The trailing `Unspecified`
+/// slots are the unfilled places of the wider corpus relations, carried through
+/// the event projection.
+const EXPECTED_EXTENSION: &str = r#"fit :: [Constant("ara"), Unspecified, Unspecified]
+loves :: [Constant("ara"), Constant("ara")]
+loves :: [Constant("ara"), Constant("bel")]
+loves :: [Constant("bel"), Constant("ara")]
+observe :: [Constant("ara"), Constant("alpha"), Constant("sight"), Constant("casescope")]
+observe :: [Constant("ara"), Constant("beta"), Constant("sight"), Constant("otherscope")]
+observe :: [Constant("bel"), Constant("gamma"), Constant("sight"), Constant("otherscope")]
+person :: [Constant("ara")]
+person :: [Constant("bel")]
+reward :: [Constant("ara"), Unspecified, Unspecified, Unspecified]
+rotten :: [Constant("bel"), Unspecified]
+"#;
