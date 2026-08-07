@@ -15,6 +15,20 @@ here first.
 
 ### Changed
 
+- **Rule-tuple binding is in place, and saturation is ~3x faster:** `eval_rule`'s
+  join cloned the whole binding environment once per candidate tuple per join
+  level. On a 2004-line constitution driven through 555 pins, that copy and the
+  allocator traffic behind it were 63% of the run against 5% for the join logic;
+  the same workload now finishes in 3.57 s rather than 11.58 s. The map is
+  extended in place and unwound after each candidate via a trail of the keys the
+  bind inserted. `bind_tuple`'s scan is otherwise unchanged — same order, same
+  arms, same comparisons — so no verdict, tuple ordering, or work counter moves;
+  the 555-pin roster and the `--strata` dump are byte-identical to a pre-refactor
+  binary. Checked by a 5000-seed materialisation differential (172,905 battery
+  queries, zero divergence), 600 fresh-process runs, and `cargo mutants
+  --in-diff` at 14/14 caught. Hashing is now the largest remaining cost;
+  slot-indexed bindings would remove it, and the full-relation scan per join
+  level is the larger opportunity beyond that.
 - **The stock external-compute transport remains explicitly low-assurance:**
   `nibli-host` and `NibliEngine::enable_compute_backend` continue to use plaintext,
   unauthenticated JSON Lines over TCP. The protocol has no peer identity,
