@@ -947,31 +947,57 @@ fn seed_edb(inner: &KnowledgeBaseInner) -> (Extensions, HashMap<String, Ineligib
     (ext, unseedable)
 }
 
-/// Bind a projected atom's template values against a concrete tuple.
-/// Returns the extended bindings, or `None` on mismatch.
-fn bind_tuple(
-    template: &[GroundTerm],
+/// Bind a projected atom's template values against a concrete tuple, EXTENDING
+/// `bindings` IN PLACE. Every key this call inserts is pushed onto `trail`, in
+/// insertion order.
+///
+/// THE CALLER MUST UNWIND ON EVERY PATH, INCLUDING `false`. A mismatch is detected
+/// MID-SCAN, so earlier places of the same tuple may already have bound; leaving them
+/// behind carries one candidate's bindings into the next, which is how this join comes
+/// to derive a tuple no rule licenses — or, more quietly, to MISS one because a stale
+/// binding fails an equality check the next tuple should have passed.
+///
+/// Binding SEQUENTIALLY, against the live map, is load-bearing and not an accident of
+/// the old implementation. A template may repeat a variable: `p($x, $x)` against
+/// `(a, b)` must bind `$x = a` at place 1 and then REJECT at place 2. Deciding the whole
+/// template against a snapshot of the entry bindings — the obvious "test first, extend
+/// only on success" shape — sees `$x` unbound twice and accepts, over-deriving. Pinned
+/// by `a_repeated_variable_in_one_atom_matches_only_equal_pairs`.
+///
+/// A key-only trail is sufficient because a binding is only ever INSERTED, never
+/// overwritten: the `Some(_)` arm below leaves the existing value alone. If an
+/// overwriting arm is ever added, this trail must become
+/// `Vec<(&str, Option<GroundTerm>)>` and RESTORE the previous value rather than remove
+/// the key.
+///
+/// `trail` borrows the variable NAMES out of `template`, which lives in the `Arc`d
+/// [`ProjectedRule`] for the whole walk — not out of `bindings`, whose owned `String`
+/// keys the unwind frees.
+#[must_use]
+fn bind_tuple<'p>(
+    template: &'p [GroundTerm],
     tuple: &[GroundTerm],
-    bindings: &HashMap<String, GroundTerm>,
-) -> Option<HashMap<String, GroundTerm>> {
+    bindings: &mut HashMap<String, GroundTerm>,
+    trail: &mut Vec<&'p str>,
+) -> bool {
     if template.len() != tuple.len() {
-        return None;
+        return false;
     }
-    let mut out = bindings.clone();
     for (t, v) in template.iter().zip(tuple.iter()) {
         match t {
-            GroundTerm::PatternVar(n) => match out.get(n) {
-                Some(prev) if prev != v => return None,
+            GroundTerm::PatternVar(n) => match bindings.get(n) {
+                Some(prev) if prev != v => return false,
                 Some(_) => {}
                 None => {
-                    out.insert(n.clone(), v.clone());
+                    bindings.insert(n.clone(), v.clone());
+                    trail.push(n.as_str());
                 }
             },
             other if other == v => {}
-            _ => return None,
+            _ => return false,
         }
     }
-    Some(out)
+    true
 }
 
 /// Substitute bindings into a template value list. Returns `None` if any variable is
@@ -1023,13 +1049,28 @@ fn eval_rule(
     out: &mut Vec<(String, Vec<GroundTerm>)>,
     work: &mut MaterializationWork,
 ) {
-    fn walk(
-        pr: &ProjectedRule,
+    // ONE binding map for the whole walk, extended and unwound in place.
+    //
+    // It used to be an owned `HashMap` cloned per candidate tuple per join level, which
+    // profiled as ~63% of a real workload's runtime — the deep copy, plus the malloc,
+    // free and drop_glue it dragged behind it — against ~5% for the join logic itself.
+    // Nothing here changes WHICH tuples are visited or in what order; only where the
+    // bindings live.
+    //
+    // Deliberately NOT hoisted out of `eval_rule` into the fixpoint loop. `HashMap::new`
+    // does not allocate, the cost this removes was per-CANDIDATE rather than per-call,
+    // and a buffer reused across the rule / `delta_pos` / round loops would leak
+    // bindings between rules — where a slot means a different variable — which is a far
+    // worse failure than the one being fixed.
+    #[allow(clippy::too_many_arguments)]
+    fn walk<'p>(
+        pr: &'p ProjectedRule,
         ext: &Extensions,
         delta: &Extensions,
         delta_pos: Option<usize>,
         i: usize,
-        bindings: HashMap<String, GroundTerm>,
+        bindings: &mut HashMap<String, GroundTerm>,
+        trail: &mut Vec<&'p str>,
         out: &mut Vec<(String, Vec<GroundTerm>)>,
         work: &mut MaterializationWork,
     ) {
@@ -1037,7 +1078,7 @@ fn eval_rule(
             // Built-ins first: they are the cheapest and often the most selective
             // (`~($a = $b)` cuts the diagonal out of a self-join).
             for (f, negated) in &pr.builtins {
-                match builtin_holds(f, &bindings) {
+                match builtin_holds(f, bindings) {
                     Some(holds) if holds != *negated => {}
                     // Either the built-in fails, or we could not decide it. An
                     // undecidable built-in must kill the derivation, never be assumed
@@ -1048,7 +1089,7 @@ fn eval_rule(
             }
             // Negated atoms: a lookup into a strictly-lower, already-complete stratum.
             for n in &pr.negative {
-                let Some(t) = ground_values(&n.values, &bindings) else {
+                let Some(t) = ground_values(&n.values, bindings) else {
                     return;
                 };
                 if ext.get(&n.relation).is_some_and(|s| s.contains(&t)) {
@@ -1056,7 +1097,7 @@ fn eval_rule(
                 }
             }
             for h in &pr.head {
-                if let Some(t) = ground_values(&h.values, &bindings) {
+                if let Some(t) = ground_values(&h.values, bindings) {
                     out.push((h.relation.clone(), t));
                 }
             }
@@ -1067,14 +1108,52 @@ fn eval_rule(
         let Some(tuples) = source.get(&atom.relation) else {
             return;
         };
+        // INVARIANT for this loop: there is exactly ONE unwind site, and no `return`,
+        // `?`, `break` or `continue` may sit between a `bind_tuple` call and it. The
+        // frame's bindings must be identical at the top of every iteration — which the
+        // old owned-map version gave for free, and which this now has to maintain.
         for tuple in tuples {
             work.note_tuple_bind_attempt(pr);
-            if let Some(b) = bind_tuple(&atom.values, tuple, &bindings) {
-                walk(pr, ext, delta, delta_pos, i + 1, b, out, work);
+
+            #[cfg(debug_assertions)]
+            let before = bindings.clone();
+
+            let mark = trail.len();
+            if bind_tuple(&atom.values, tuple, bindings, trail) {
+                walk(pr, ext, delta, delta_pos, i + 1, bindings, trail, out, work);
             }
+            // UNCONDITIONAL, and outside the `if` on purpose: `bind_tuple` binds as it
+            // scans and can reject at any place, so the `false` path has bindings to undo
+            // too. Never write this as an `else`.
+            for n in trail.drain(mark..) {
+                bindings.remove(n);
+            }
+
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(
+                *bindings, before,
+                "the undo trail left frame {i} of rule '{}' altered",
+                pr.label
+            );
         }
     }
-    walk(pr, ext, delta, delta_pos, 0, HashMap::new(), out, work);
+    let mut bindings: HashMap<String, GroundTerm> = HashMap::new();
+    let mut trail: Vec<&str> = Vec::new();
+    walk(
+        pr,
+        ext,
+        delta,
+        delta_pos,
+        0,
+        &mut bindings,
+        &mut trail,
+        out,
+        work,
+    );
+    debug_assert!(
+        bindings.is_empty() && trail.is_empty(),
+        "every binding must be unwound by the time the walk returns"
+    );
 }
 
 /// Saturate `targets` and everything they depend on, stratum by stratum.
