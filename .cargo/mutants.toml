@@ -5,10 +5,19 @@
 # stratification, KB/union-find) and the semantic compiler (smuni: event
 # decomposition, arg->role mapping). These are the files where a silent logic
 # mutation could produce a fabricated verdict.
+#
+# materialize.rs joined the scope 2026-08-07. It was the largest un-mutated
+# soundness path in nibli-reason, and it is the one whose failure mode is
+# hardest to notice: an UNDER-derived saturation makes a missing tuple read as
+# "not derivable", so a negation-as-failure FALSE becomes a definitive wrong
+# TRUE — a verdict that stays definitive, keeps a well-formed trace, and gets
+# FASTER. Expect a cluster of timeout-bucket mutants from its two nested
+# fixpoint loops (`budget == 0`, `if !grew { break }`); a hang is a catch.
 examine_globs = [
     "nibli-reason/src/reasoning.rs",
     "nibli-reason/src/rules.rs",
     "nibli-reason/src/kb.rs",
+    "nibli-reason/src/materialize.rs",
     "nibli-semantics/src/semantic/*.rs",
 ]
 

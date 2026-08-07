@@ -1426,18 +1426,27 @@ fn saturated_kb(kb_lines: &[&str], forcing_query: &str) -> KnowledgeBase {
 /// constant-mismatch arm exists for.
 ///
 /// Each `OtherScope` row binds `$o` at position 2 and only then fails at position
-/// 4. A binding left behind would make the matching `CaseScope` row fail an
-/// equality check it should pass, and the derivation would be silently LOST — an
-/// under-derived extension, which is how this optimisation turns a
-/// negation-as-failure FALSE into a definitive wrong TRUE.
+/// 4, so this exercises the arm BOTH ways and the cast is built to detect both:
+///
+/// * Ara and Bel each own one matching row among rejecting decoys. A binding
+///   STRANDED by a rejection makes that matching row fail an equality check it
+///   should pass, the derivation is lost, and they wrongly become rotten. That is
+///   an under-derived extension — how this optimisation turns a
+///   negation-as-failure FALSE into a definitive wrong TRUE.
+/// * Cyd owns NO matching row, so Cyd must stay rotten. An arm that stops
+///   discriminating (the mutation `other if true`) accepts an `OtherScope` row and
+///   Cyd wrongly stops being rotten — over-derivation, the other direction.
+///
+/// Cyd is not decoration: with an all-matching cast this test passes under that
+/// mutation, and only the extension digest catches it. Verified by applying it.
 #[test]
 fn a_constant_rejection_after_a_binding_does_not_strand_it() {
     let kb_lines = [
         "person(Ara).",
         "person(Bel).",
         "person(Cyd).",
-        // One matching row each, buried among decoys that reject at the LAST
-        // position — after `$o` has bound.
+        // Ara and Bel: one matching row each, buried among decoys that reject at
+        // the LAST position — after `$o` has bound.
         "observe(Ara, Alpha, Sight, CaseScope).",
         "observe(Ara, Beta, Sight, OtherScope).",
         "observe(Ara, Gamma, Sight, OtherScope).",
@@ -1446,7 +1455,8 @@ fn a_constant_rejection_after_a_binding_does_not_strand_it() {
         "observe(Bel, Zeta, Sight, OtherScope).",
         "observe(Bel, Eta, Sight, OtherScope).",
         "observe(Bel, Theta, Sight, OtherScope).",
-        "observe(Cyd, Iota, Sight, CaseScope).",
+        // Cyd: rejecting rows ONLY — the over-derivation control.
+        "observe(Cyd, Iota, Sight, OtherScope).",
         "observe(Cyd, Kappa, Sight, OtherScope).",
         "observe(Cyd, Lambda, Sight, OtherScope).",
         "observe(Cyd, Mu, Sight, OtherScope).",
@@ -1456,15 +1466,23 @@ fn a_constant_rejection_after_a_binding_does_not_strand_it() {
     let queries = ["rotten(Ara).", "rotten(Bel).", "rotten(Cyd)."];
     let (on, off) = both_ways(&kb_lines, &queries);
     assert_eq!(on, off, "materialisation must not change these verdicts");
-    for (q, r) in queries.iter().zip(&on) {
-        assert_eq!(
-            *r,
-            QueryResult::False,
-            "{q}: every subject has a CaseScope observation, so `reward` derives for \
-             all three and nobody is rotten. A stranded `$o` binding loses the \
-             matching row and flips this to TRUE."
-        );
-    }
+    assert_eq!(
+        on[0],
+        QueryResult::False,
+        "Ara has a CaseScope row, so `reward(Ara)` derives. A stranded `$o` binding \
+         loses it behind the decoys and flips this to TRUE."
+    );
+    assert_eq!(
+        on[1],
+        QueryResult::False,
+        "Bel has a CaseScope row, so `reward(Bel)` derives. Same failure mode as Ara."
+    );
+    assert_eq!(
+        on[2],
+        QueryResult::True,
+        "Cyd has ONLY OtherScope rows, so `reward(Cyd)` must not derive. An arm that \
+         stops discriminating on the trailing literal accepts one and flips this."
+    );
 }
 
 /// An atom that repeats a variable — `loves($x, $x)` — with `$x` FRESH at the
