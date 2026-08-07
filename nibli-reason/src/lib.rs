@@ -560,63 +560,42 @@ impl KnowledgeBase {
         self.inner.borrow_mut().max_chain_depth = depth.max(1);
     }
 
-    /// Saturate the relations this query will read under `~`, so the NAF checks below
-    /// are set-membership tests instead of exhaustive proof attempts.
+    /// Saturate the relations this query must read completely, so eligible checks can
+    /// use set membership instead of exhaustive proof attempts.
     ///
-    /// Called ONCE per query, before the iterative-deepening loop — the extension does
-    /// not depend on the depth budget, so re-deriving it per pass would be pure waste.
+    /// Negated roots and positive roots whose dependency cone contains NAF are requested
+    /// before backward chaining because NAF needs a complete extension. A purely positive
+    /// root is requested only after ordinary reasoning remains non-definitive (for example,
+    /// at a depth or cycle cut); eager positive saturation can cost far more than an exact
+    /// indexed proof. The extension does not depend on the depth budget, so an unchanged
+    /// requested-root union is
+    /// reused; adding a root recomputes the cumulative union, and KB mutation clears it.
     /// Everything here is best-effort: a relation that cannot be saturated is simply
     /// absent from the completed set, and its NAF takes the ordinary path.
     ///
-    /// TARGETS. The relations read under `~`: those under a `NotNode` in the query
-    /// buffer, plus the negated conditions and `~` restrictor groups of every
-    /// registered rule. Rule-body NAF is included unconditionally rather than by
-    /// reachability from the query's head, because backward chaining reaches rules
-    /// through the fact store and the equality fallback as well as through the
-    /// dependency graph — an under-approximated target set would silently lose the
-    /// optimisation, and the saturation is scoped by the dependency closure anyway.
-    fn ensure_materialized(&self, logic: &LogicBuffer) {
+    /// TARGETS. Relations reachable from the current query roots. For a projectable
+    /// rule, `saturate` follows both positive and negative dependencies, so its NAF
+    /// relations enter the same query cone. If a query root is not projectable, that
+    /// whole path keeps the ordinary backward chainer rather than globally saturating
+    /// every unrelated rule merely because one of them contains NAF.
+    fn ensure_materialized(&self, logic: &LogicBuffer, include_positive_roots: bool) -> bool {
         let inner = self.inner.borrow();
-        if !inner.materialization || inner.materialized.borrow().is_some() {
-            return;
+        if !inner.materialization {
+            return false;
         }
-        let elig = materialize::eligible_relations(&inner);
-        // TARGETS. Every relation the saturator is ALLOWED to complete, not just the ones
-        // read under `~`: since the positive probe in `check_formula_holds_core`'s
-        // `ExistsNode` arm, a completed extension answers ordinary queries too, so
-        // restricting the target set to the NAF cone would leave the positive fast path
-        // permanently cold. `saturate` still scopes the actual work to the dependency
-        // closure of these, and `eligible_relations` has already refused everything it
-        // cannot project — so widening here cannot admit an unsound relation, only more
-        // sound ones.
-        //
-        // The `~`-read relations are unioned in explicitly because a NAF target may be
-        // pure EDB (no rule concludes it, so it is not an `eligible` key) and still needs
-        // to be marked complete from its seed — that is the common `~rotten(x)` case.
-        let mut targets: HashSet<String> = elig.eligible.iter().cloned().collect();
+
+        // TARGETS. Only the current query's reachable relations. `saturate` computes the
+        // positive and negative dependency closure of projectable roots itself. Seeding
+        // this set with every eligible relation — or every NAF-bearing rule in the KB —
+        // made an exact query pay for unrelated recursive closures before evaluation.
+        let mut targets: HashSet<String> = HashSet::new();
         materialize::collect_negated_relations(logic, &mut targets);
-        for rule in materialize::distinct_rules(&inner) {
-            for (i, c) in rule.typed_conditions.iter().enumerate() {
-                if rule.negated_condition_indices.contains(&i) {
-                    targets.insert(materialize::surface_relation(c.relation()).to_string());
-                }
-            }
-            for g in &rule.negated_exists_groups {
-                for c in &g.conditions {
-                    targets.insert(materialize::surface_relation(c.relation()).to_string());
-                }
-            }
+        if include_positive_roots
+            || materialize::query_cone_has_negative_dependency(logic, &inner.pred_dep_graph)
+        {
+            materialize::collect_query_relations(logic, &mut targets);
         }
-        // The query's own relations: a positive query over a saturable relation should hit
-        // the fast path even when nothing in the KB negates anything.
-        materialize::collect_query_relations(logic, &mut targets);
-        if targets.is_empty() {
-            *inner.materialized.borrow_mut() = Some(materialize::Materialized::empty());
-            return;
-        }
-        let strata = materialize::compute_strata(&inner.pred_dep_graph);
-        let m = materialize::saturate(&inner, &elig, &strata, &targets);
-        *inner.materialized.borrow_mut() = Some(m);
+        materialize::ensure_materialized_targets(&inner, &targets)
     }
 
     /// Single-pass entailment check at the current max_chain_depth.
@@ -629,8 +608,8 @@ impl KnowledgeBase {
         logic: &LogicBuffer,
         compute_memo: &mut QueryComputeMemo,
     ) -> Result<QueryResult, String> {
-        // Enable WITHOUT clearing: the cache is cleared once before the
-        // iterative-deepening loop in query_entailment_inner, then definitive
+        // Enable WITHOUT clearing: the cache is cleared once before each
+        // iterative-deepening run, then definitive
         // results persist across depth passes (cross-depth tabling).
         let mut inner = self.inner.borrow_mut();
         enable_pred_cache(&inner);
@@ -651,8 +630,19 @@ impl KnowledgeBase {
     fn query_entailment_inner(&self, mut logic: LogicBuffer) -> Result<QueryResult, String> {
         validate_single_flavor_paths(&logic)?;
         canonicalize_abstraction_markers(&mut logic)?;
+        // A NAF-bearing cone requires completeness up front. Purely positive saturation
+        // is a fallback only when the exact backward path remains non-definitive.
+        self.ensure_materialized(&logic, false);
+        let result = self.run_entailment_iterative(&logic)?;
+        if !result.is_definitive() && self.ensure_materialized(&logic, true) {
+            return self.run_entailment_iterative(&logic);
+        }
+        Ok(result)
+    }
+
+    /// Run one iterative-deepening pass against the current store/materialized cache.
+    fn run_entailment_iterative(&self, logic: &LogicBuffer) -> Result<QueryResult, String> {
         // Tabling: clear once, persist across depth iterations.
-        self.ensure_materialized(&logic);
         let configured_max = {
             let inner = self.inner.borrow();
             clear_and_enable_pred_cache(&inner);
@@ -708,7 +698,7 @@ impl KnowledgeBase {
              `materialization_report`) to see which relations were not saturated and why; \
              raising the depth limit helps only for a relation the engine falls back to \
              backward chaining on";
-        self.ensure_materialized(&logic);
+        self.ensure_materialized(&logic, true);
         let mut inner = self.inner.borrow_mut();
         clear_and_enable_pred_cache(&inner);
         inner.ensure_domain_members_cached();
@@ -917,10 +907,12 @@ impl KnowledgeBase {
     ) -> Result<(QueryResult, ProofTrace), String> {
         validate_single_flavor_paths(&logic)?;
         canonicalize_abstraction_markers(&mut logic)?;
-        // Same saturation the untraced path uses — the NAF probe stays on, and its trace
-        // shape is unaffected (`emit_derived` records a `Negation` leaf per group without
-        // re-evaluating it, so `naf_dependent` still computes correctly).
-        self.ensure_materialized(&logic);
+        // Same eager NAF-cone saturation the untraced path uses — the NAF probe stays on,
+        // and its trace shape is unaffected (`emit_derived` records a `Negation` leaf per
+        // group without re-evaluating it, so `naf_dependent` still computes correctly).
+        // A purely positive fallback is intentionally not requested: the positive lookup
+        // is disabled below because a complete tuple has no derivation to trace.
+        self.ensure_materialized(&logic, false);
         // The POSITIVE lookup, however, is lowered for the whole traced query — BOTH
         // phases. A lookup has no derivation to record, and gating it per-sink would let
         // the untraced phase-1 probe resolve at depth 1 while phase 2 rebuilt the trace by
@@ -1157,6 +1149,16 @@ impl KnowledgeBase {
             .collect();
         refused.sort();
         (complete, refused)
+    }
+
+    #[cfg(test)]
+    fn materialization_tuple_bind_attempts(&self, relation: &str) -> usize {
+        let inner = self.inner.borrow();
+        inner
+            .materialized
+            .borrow()
+            .as_ref()
+            .map_or(0, |m| m.work.tuple_bind_attempts(relation))
     }
 
     /// The KB's STRATIFICATION as machine-readable data: every predicate with its

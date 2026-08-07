@@ -136,6 +136,27 @@ here first.
 
 ### Fixed
 
+- **Composed opaque projections no longer exhaust high-arity derived-subject
+  witnesses:** rule firing now joins event variables left-to-right under bindings,
+  choosing the next event from cheap grounded-index selectivity and generating only
+  that event's complete candidate set. Ground query terms prioritize matching
+  dependent Skolems without removing alternatives, and partially grounded Skolems
+  enumerate only their unresolved dependencies. If the ordinary search reaches the
+  depth bound inside an exact single-positive antecedent, the engine lazily completes
+  only that antecedent's relation cone and consults its exact extension. This preserves
+  cumulative query-root caching, opaque abstraction identity, flavor-exact matching,
+  derived-only enforcement, and the existing fail-closed trace/find/cycle paths. The
+  deterministic regression records the release-bound reduction from 61,098 complete
+  event assignments to 94, with a checked ceiling of 128 rather than a wall-time claim.
+- **Opaque event queries no longer expand unrelated recursive relations or global
+  witness pools:** materialisation is scoped to cumulative query cones instead of
+  seeding every eligible relation. NAF-bearing cones remain eager; shallow purely
+  positive entailment uses indexed backward chaining and requests saturation only
+  after a non-definitive result, while find/count still request complete positive cones.
+  Candidate generation now uses mandatory relation anchors, specializes dependent
+  Skolems from already-bound sibling arguments, and preserves all six bare,
+  temporal, and deontic fact flavors. Quoted abstraction bodies remain opaque;
+  binary transitive semantics and deterministic candidate order are unchanged.
 - **Sound semantic identity:** rule deduplication now buckets by digest but compares a
   full alpha-canonical identity, including flat/grouped NAF metadata, instead of treating
   one 64-bit hash as equality. Opaque abstractions now emit a versioned

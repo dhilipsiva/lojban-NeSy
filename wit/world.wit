@@ -466,18 +466,21 @@ interface engine {
         set-existential-import: func(enabled: bool) -> result<_, nibli-error>;
         /// Whether legacy existential import is active for this session.
         existential-import-enabled: func() -> bool;
-        /// Enable/disable STRATUM-ORDERED MATERIALISATION (default ON): when on,
-        /// the surface relations a query reads under `~` are saturated bottom-up
-        /// in stratum order, so each negation-as-failure check is a
-        /// set-membership test instead of an exhaustive proof attempt. Off sends
+        /// Enable/disable QUERY-CONE-SCOPED STRATUM-ORDERED MATERIALISATION
+        /// (default ON): when on, query-reachable cones that need NAF completeness
+        /// are saturated bottom-up in stratum order, so each negation-as-failure
+        /// check is a set-membership test instead of an exhaustive proof attempt.
+        /// Purely positive entailment stays lazy unless exact reasoning remains
+        /// non-definitive; find/count request complete positive cones. Off sends
         /// every NAF back through backward chaining. A definitive TRUE/FALSE can
         /// never flip (the materialize_diff gate enforces it); a non-definitive
         /// OFF verdict may become definitive under ON — the deliberate
         /// depth-bound completeness gain.
         set-materialization: func(enabled: bool);
-        /// What the last query's saturation covered: the relations completed, and
-        /// for each relation NOT completed, a one-line reason. Empty until a query
-        /// has run (the saturation is lazy) and after any knowledge-base mutation.
+        /// What cumulative requested query cones have covered since the last
+        /// knowledge-base mutation: completed relations and, for each relation NOT
+        /// completed, a one-line reason. May remain empty after a query whose exact
+        /// positive proof needed no saturation.
         ///
         /// This exists because the optimisation is invisible when it fails: a
         /// knowledge base whose `~p(x)` is still slow, or whose find/count refuses

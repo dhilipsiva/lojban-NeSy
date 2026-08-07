@@ -244,6 +244,12 @@ fn explicit_temporal_rule_falls_back_without_changing_the_verdict() {
         assert_buf(&kb, compile_surface(line));
     }
     let _ = query_result(&kb, compile_surface("past animal(Ara)."));
+    // A successful exact entailment proof stays lazy. Find requires a complete positive
+    // extension, so it asks the materializer to inspect the relation and records why the
+    // flavored rule cannot be saturated.
+    let _ = kb
+        .query_find_inner(compile_surface("past animal(Ara)."))
+        .unwrap();
     let (complete, refused) = kb.materialization_report();
     assert!(
         !complete.iter().any(|relation| relation == "animal"),
@@ -323,14 +329,11 @@ fn the_report_names_what_was_saturated() {
     assert!(refused.iter().all(|(_, why)| !why.is_empty()));
 }
 
-/// Since the POSITIVE fast path, a negation-free KB saturates too — that is the point:
-/// a completed extension answers an ordinary query by lookup, not only a `~p(x)`.
-///
-/// (This replaces an earlier `a_kb_without_negation_saturates_nothing`, which pinned the
-/// NAF-only target set. That was correct while `~` was the sole consumer and became wrong
-/// the moment positive goals could read the same extension.)
+/// A shallow, negation-free positive query should take its indexed backward proof without
+/// first constructing the whole relation extension. Positive materialisation remains the
+/// fallback past the depth horizon (pinned by the next test).
 #[test]
-fn a_kb_without_negation_still_saturates_for_positive_lookups() {
+fn a_shallow_positive_proof_stays_unsaturated() {
     let kb = new_kb();
     for l in ["dog(Rex).", "all $x: dog($x) -> animal($x)."] {
         assert_buf(&kb, compile_surface(l));
@@ -338,8 +341,8 @@ fn a_kb_without_negation_still_saturates_for_positive_lookups() {
     assert!(query(&kb, compile_surface("animal(Rex).")));
     let (complete, refused) = kb.materialization_report();
     assert!(
-        complete.iter().any(|r| r == "animal"),
-        "`animal` is rule-derived and projectable — expected it saturated: \
+        !complete.iter().any(|r| r == "animal"),
+        "a definitive shallow proof must not eagerly saturate `animal`: \
          complete={complete:?} refused={refused:?}"
     );
 }
@@ -440,6 +443,29 @@ fn a_recursive_positive_relation_saturates_to_its_fixpoint() {
         on[0],
         QueryResult::False,
         "so `~judge(Ara, Dee)` fails — a truncated fixpoint would wrongly say TRUE"
+    );
+}
+
+/// A purely positive cycle with no seed is non-definitive under cycle-cut backward
+/// search, but its least fixpoint is the complete empty extension. Lazy positive
+/// materialisation must therefore retry every non-definitive result, not only a depth
+/// exhaustion; it must never retry (and potentially replace) a definitive FALSE.
+#[test]
+fn an_empty_positive_cycle_becomes_definitive_after_lazy_fallback() {
+    let kb_lines = [
+        "all $x: cat($x) -> animal($x).",
+        "all $x: animal($x) -> cat($x).",
+        "person(Ara).",
+    ];
+    let (on, off) = both_ways(&kb_lines, &["cat(Ara)."][..]);
+    assert!(
+        !off[0].is_definitive(),
+        "cycle-cut search without materialisation must remain non-definitive: {off:?}"
+    );
+    assert_eq!(
+        on,
+        vec![QueryResult::False],
+        "the saturated least fixpoint is complete and empty"
     );
 }
 
@@ -587,7 +613,7 @@ fn an_entitlement_is_materialised_without_fabricating_the_actuality() {
     for l in kb_lines {
         assert_buf(&kb, compile_surface(l));
     }
-    let _ = query_result(&kb, compile_surface("eats(Adam)."));
+    let _ = kb.query_find_inner(compile_surface("eats(Adam).")).unwrap();
     let (complete, refused) = kb.materialization_report();
     assert!(
         complete.iter().any(|r| r == "eats"),
@@ -604,6 +630,303 @@ fn an_entitlement_is_materialised_without_fabricating_the_actuality() {
     assert!(
         refused.iter().any(|(r, _)| r.starts_with("__abs_")),
         "the abstraction marker must be refused too: refused={refused:?}"
+    );
+}
+
+const OPAQUE_QUERY_WITH_UNRELATED_PATH_KB: &[&str] = &[
+    "derived_only(\"entitled\").",
+    "entitled(every person, event { eats() }).",
+    "person(Adam).",
+    "earlier(NodeA, NodeB).",
+    "earlier(NodeB, NodeC).",
+    "earlier(NodeC, NodeD).",
+    "earlier(NodeD, NodeE).",
+    "earlier(NodeE, NodeF).",
+    "earlier(NodeF, NodeG).",
+    "earlier(NodeG, NodeH).",
+    "earlier(NodeH, NodeI).",
+    "all $first: all $middle: all $last: earlier($first, $middle) & earlier($middle, $last) & ~($first = $last) -> earlier($first, $last).",
+    "later(MomentA, MomentB).",
+    "later(MomentB, MomentC).",
+    "later(MomentC, MomentD).",
+    "all $first: all $middle: all $last: later($first, $middle) & later($middle, $last) & ~($first = $last) -> later($first, $last).",
+];
+
+/// A query must pay only for its own materialisation cone. The binary path relation is
+/// deliberately unrelated to the opaque entitlement: globally saturating it turns a
+/// constant-time exact match into a transitive-closure workload before reasoning even
+/// reaches the query.
+///
+/// The stable performance threshold is structural, not a wall clock: an unrelated
+/// relation gets exactly ZERO tuple-unification attempts. Eight seed edges make the
+/// control non-trivial (the full closure has 36 tuples, 28 of them derived), while the
+/// follow-up query proves that lazy targeting does not disable transitive semantics.
+#[test]
+fn an_opaque_query_does_no_work_for_an_unrelated_binary_transitive_relation() {
+    let kb = new_kb();
+    for line in OPAQUE_QUERY_WITH_UNRELATED_PATH_KB {
+        assert_buf(&kb, compile_surface(line));
+    }
+
+    // The target collector itself must honor abstraction opacity. The exact query can
+    // resolve before materialization runs, so checking only the later report would be a
+    // hollow test of this boundary.
+    let opaque_query = compile_surface("entitled(Adam, event { eats() }).");
+    let mut positive_roots = HashSet::new();
+    crate::materialize::collect_query_relations(&opaque_query, &mut positive_roots);
+    assert!(positive_roots.contains("entitled"));
+    assert!(
+        !positive_roots.contains("eats"),
+        "quoted content is opaque identity, not a positive actuality root: {positive_roots:?}"
+    );
+    let mut negative_roots = HashSet::new();
+    crate::materialize::collect_negated_relations(
+        &compile_surface("~entitled(Adam, event { eats() })."),
+        &mut negative_roots,
+    );
+    assert!(negative_roots.contains("entitled"));
+    assert!(
+        !negative_roots.contains("eats"),
+        "quoted content stays opaque under NAF too: {negative_roots:?}"
+    );
+
+    assert_eq!(query_result(&kb, opaque_query), QueryResult::True);
+    let (complete, refused) = kb.materialization_report();
+    let unrelated_attempts = kb.materialization_tuple_bind_attempts("earlier");
+    assert!(
+        !complete.iter().any(|r| r == "entitled"),
+        "an exact backward proof must not eagerly saturate even its positive root: \
+         complete={complete:?} refused={refused:?}"
+    );
+    assert!(
+        !complete.iter().any(|r| r == "earlier"),
+        "an unrelated path closure must stay lazy: complete={complete:?}, \
+         earlier tuple-unification attempts={unrelated_attempts}"
+    );
+    assert!(
+        !complete.iter().any(|r| r == "eats"),
+        "quoted abstraction content is identity, not an actuality target: complete={complete:?}"
+    );
+    assert_eq!(
+        unrelated_attempts, 0,
+        "the exact regression threshold is zero unrelated tuple-unification attempts"
+    );
+    assert_eq!(
+        kb.materialization_tuple_bind_attempts("later"),
+        0,
+        "a second unrelated closure must also perform exactly zero work"
+    );
+    assert_eq!(
+        kb.materialization_tuple_bind_attempts("entitled"),
+        0,
+        "a definitive indexed proof must perform no positive saturation work"
+    );
+
+    // A later query on the SAME unchanged KB must expand the cached target set rather
+    // than treating the first query's empty saturation as globally complete. Force the
+    // ordinary proof past its one-level horizon so this also exercises lazy positive
+    // materialisation rather than merely backward-chaining the short fixture.
+    kb.set_max_chain_depth(1);
+    assert_eq!(
+        query_result(&kb, compile_surface("earlier(NodeA, NodeI).")),
+        QueryResult::True
+    );
+    let (complete, refused) = kb.materialization_report();
+    assert!(
+        complete.iter().any(|r| r == "earlier"),
+        "the newly requested path relation must now be complete: complete={complete:?} refused={refused:?}"
+    );
+    assert!(
+        kb.materialization_tuple_bind_attempts("earlier") > 0,
+        "the follow-up path query must exercise the transitive materialiser"
+    );
+    let closure_size = {
+        let inner = kb.inner.borrow();
+        let materialized = inner.materialized.borrow();
+        materialized
+            .as_ref()
+            .and_then(|m| m.ext.get("earlier"))
+            .map(HashSet::len)
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        closure_size, 36,
+        "eight ordered edges must retain their exact 8 + 28 tuple transitive closure"
+    );
+
+    // A second non-empty target proves the cache is a union, not merely a replacement.
+    assert_eq!(
+        query_result(&kb, compile_surface("later(MomentA, MomentD).")),
+        QueryResult::True
+    );
+    let (complete, _) = kb.materialization_report();
+    assert!(complete.iter().any(|r| r == "earlier"));
+    assert!(complete.iter().any(|r| r == "later"));
+    {
+        let inner = kb.inner.borrow();
+        let materialized = inner.materialized.borrow();
+        let requested = &materialized.as_ref().unwrap().requested;
+        assert!(requested.contains("earlier"));
+        assert!(requested.contains("later"));
+    }
+
+    // Mutation invalidates the union. Re-requesting only the first root must not expose
+    // the stale second closure as complete.
+    assert_buf(&kb, compile_surface("later(MomentD, MomentE)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("earlier(NodeA, NodeI).")),
+        QueryResult::True
+    );
+    let (complete, _) = kb.materialization_report();
+    assert!(complete.iter().any(|r| r == "earlier"));
+    assert!(
+        !complete.iter().any(|r| r == "later"),
+        "mutation must clear the prior target union: complete={complete:?}"
+    );
+}
+
+/// The backward-chaining twin of the materialisation regression. With saturation off,
+/// the opaque marker is a mandatory relation-scoped anchor; candidate collection must
+/// use it to bound the generic `event` anchor before walking every dependent-Skolem
+/// family contributed by unrelated rules.
+#[test]
+fn an_opaque_query_bounds_generic_event_candidate_generation() {
+    let kb = new_kb();
+    kb.set_materialization(false);
+    for line in OPAQUE_QUERY_WITH_UNRELATED_PATH_KB {
+        assert_buf(&kb, compile_surface(line));
+    }
+
+    crate::kb::reset_entailment_candidate_cartesian_steps();
+    crate::reasoning::reset_global_candidate_cartesian_steps();
+    assert_eq!(
+        query_result(&kb, compile_surface("entitled(Adam, event { eats() }).")),
+        QueryResult::True
+    );
+    let global_steps = crate::reasoning::global_candidate_cartesian_steps();
+    assert_eq!(
+        global_steps, 0,
+        "the exact catastrophic-work threshold is zero full-registry Cartesian visits, \
+         got {global_steps}"
+    );
+    let unrelated_skolem_steps = crate::kb::entailment_candidate_cartesian_steps("person_x1");
+    assert_eq!(
+        unrelated_skolem_steps, 0,
+        "bound role arguments must specialize dependent Skolems before Cartesian \
+         expansion; exact threshold is zero, got {unrelated_skolem_steps}"
+    );
+}
+
+/// Fixture-bound regression for the composed path: the queried opaque projection is
+/// available only after proving its subject through a high-arity event-decomposed rule.
+/// Shared role variables must constrain each next event before the rule search reaches a
+/// complete assignment. At release commit 5cec800 this exact fixture evaluated 61,098
+/// complete assignments; the repaired search evaluates 94, below the checked ceiling.
+#[test]
+fn an_opaque_projection_joins_a_derived_subject_chain_before_cartesian_expansion() {
+    let kb = new_kb();
+    kb.set_materialization(false);
+    for line in [
+        "derived_only(\"fit\").",
+        "derived_only(\"believe\").",
+        "earlier(NoiseA, NoiseB).",
+        "earlier(NoiseC, NoiseD).",
+        "earlier(NoiseE, NoiseF).",
+        "earlier(NoiseG, NoiseH).",
+        "earlier(NoiseI, NoiseJ).",
+        "earlier(NoiseK, NoiseL).",
+        "earlier(NoiseM, NoiseN).",
+        "earlier(NoiseO, NoiseP).",
+        "owns(Goal, LiveA).",
+        "earlier(LiveA, LiveB).",
+        "earlier(LiveB, LiveC).",
+        "earlier(LiveC, LiveD).",
+        "earlier(LiveD, LiveE).",
+        "dog(LiveE).",
+        "all $subject: all $a: all $b: all $c: all $d: all $e: owns($subject, $a) & earlier($a, $b) & earlier($b, $c) & earlier($c, $d) & earlier($d, $e) & dog($e) -> fit($subject).",
+        "all $subject: fit($subject) -> believe($subject, event { eats() }).",
+    ] {
+        assert_buf(&kb, compile_surface(line));
+    }
+
+    crate::kb::reset_entailment_candidate_cartesian_steps();
+    crate::reasoning::reset_global_candidate_cartesian_steps();
+    crate::reasoning::reset_rule_event_search_leaf_attempts();
+    assert_eq!(
+        query_result(
+            &kb,
+            compile_surface("believe(Goal, event { eats() }) & fit(Goal).")
+        ),
+        QueryResult::True,
+        "one query process must prove both derived standing and its opaque projection"
+    );
+    let leaf_attempts = crate::reasoning::rule_event_search_leaf_attempts();
+    assert!(
+        leaf_attempts <= 128,
+        "fixture-bound threshold is at most 128 complete rule-event assignments, got {leaf_attempts}"
+    );
+    let anchor_cartesian_steps = crate::kb::entailment_candidate_cartesian_total_steps();
+    assert!(
+        anchor_cartesian_steps <= 1_024,
+        "fixture-bound ceiling is 1,024 relation-scoped anchor Cartesian visits, got {anchor_cartesian_steps}"
+    );
+    assert_eq!(
+        crate::reasoning::global_candidate_cartesian_steps(),
+        0,
+        "the composed path must not fall back to the global candidate registry"
+    );
+    assert_eq!(
+        kb.materialization_tuple_bind_attempts("earlier"),
+        0,
+        "the composed positive path must remain backward-chained, not globally materialized"
+    );
+}
+
+/// The composed projection must not exhaust every possible subject witness before the
+/// ordinary depth-bounded chainer can report that its one positive antecedent needs a
+/// complete extension. The fallback requests exactly that antecedent's relation cone;
+/// the opaque conclusion, its quoted body, and unrelated path relations stay lazy.
+#[test]
+fn an_opaque_projection_materializes_only_its_depth_bound_subject_cone() {
+    let kb = new_kb();
+    kb.set_max_chain_depth(1);
+    for line in [
+        "derived_only(\"fit\").",
+        "derived_only(\"believe\").",
+        "dog(Goal).",
+        "all $subject: dog($subject) -> animal($subject).",
+        "all $subject: animal($subject) -> fit($subject).",
+        "all $subject: fit($subject) -> believe($subject, event { eats() }).",
+        "earlier(NodeA, NodeB).",
+        "earlier(NodeB, NodeC).",
+        "all $first: all $middle: all $last: earlier($first, $middle) & earlier($middle, $last) -> earlier($first, $last).",
+    ] {
+        assert_buf(&kb, compile_surface(line));
+    }
+
+    assert_eq!(
+        query_result(
+            &kb,
+            compile_surface("believe(Goal, event { eats() }) & fit(Goal).")
+        ),
+        QueryResult::True,
+        "one process must complete the depth-bound standing proof and use it in the opaque projection"
+    );
+    let (complete, refused) = kb.materialization_report();
+    assert!(
+        complete.iter().any(|relation| relation == "fit"),
+        "the exact positive antecedent must be completed: complete={complete:?} refused={refused:?}"
+    );
+    for unrelated in ["believe", "earlier", "eats"] {
+        assert!(
+            !complete.iter().any(|relation| relation == unrelated),
+            "the fallback must remain relation-scoped; unexpectedly completed {unrelated}: {complete:?}"
+        );
+    }
+    assert_eq!(
+        kb.materialization_tuple_bind_attempts("earlier"),
+        0,
+        "the exact unrelated-work threshold is zero path tuple-unification attempts"
     );
 }
 

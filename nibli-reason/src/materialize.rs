@@ -49,6 +49,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::kb::{
     GroundTerm, KnowledgeBaseInner, NegatedExistsGroup, StoredFact, UniversalRuleRecord,
+    is_abstraction_marker,
 };
 
 /// Stratum 0 is the EDB / pure-positive layer. A relation read under `~` by a stratum-`n`
@@ -774,6 +775,36 @@ pub(super) fn eligible_relations(inner: &KnowledgeBaseInner) -> Eligibility {
 /// Extensions of the projected relations: surface relation → set of role-value tuples.
 pub(super) type Extensions = HashMap<String, HashSet<Vec<GroundTerm>>>;
 
+/// Test-only accounting for the combinatorial work performed while joining projected
+/// rule bodies. The release build keeps this as a zero-sized type, so profiling hooks
+/// cannot become part of the runtime cost or public API.
+#[derive(Default)]
+pub(super) struct MaterializationWork {
+    #[cfg(test)]
+    tuple_bind_attempts: HashMap<String, usize>,
+}
+
+impl MaterializationWork {
+    #[inline]
+    fn note_tuple_bind_attempt(&mut self, _rule: &ProjectedRule) {
+        #[cfg(test)]
+        for head in &_rule.head {
+            *self
+                .tuple_bind_attempts
+                .entry(head.relation.clone())
+                .or_default() += 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn tuple_bind_attempts(&self, relation: &str) -> usize {
+        self.tuple_bind_attempts
+            .get(relation)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 /// Total derived-tuple budget for one saturation.
 ///
 /// Saturation is an OPTIMISATION. A KB whose least model is enormous would spend more
@@ -791,6 +822,11 @@ pub(super) struct Materialized {
     pub(super) refused: HashMap<String, Ineligible>,
     /// Projected arity per relation — how many role places its tuples carry.
     pub(super) arity: HashMap<String, usize>,
+    /// Query roots whose dependency cones are represented by this cache. A later query
+    /// unions its missing roots and recomputes that cumulative cone; treating any
+    /// partial cache as globally complete would strand the positive fast path.
+    pub(super) requested: HashSet<String>,
+    pub(super) work: MaterializationWork,
 }
 
 impl Materialized {
@@ -800,6 +836,8 @@ impl Materialized {
             complete: HashSet::new(),
             refused: HashMap::new(),
             arity: HashMap::new(),
+            requested: HashSet::new(),
+            work: MaterializationWork::default(),
         }
     }
 
@@ -983,6 +1021,7 @@ fn eval_rule(
     delta: &Extensions,
     delta_pos: Option<usize>,
     out: &mut Vec<(String, Vec<GroundTerm>)>,
+    work: &mut MaterializationWork,
 ) {
     fn walk(
         pr: &ProjectedRule,
@@ -992,6 +1031,7 @@ fn eval_rule(
         i: usize,
         bindings: HashMap<String, GroundTerm>,
         out: &mut Vec<(String, Vec<GroundTerm>)>,
+        work: &mut MaterializationWork,
     ) {
         if i == pr.positive.len() {
             // Built-ins first: they are the cheapest and often the most selective
@@ -1028,12 +1068,13 @@ fn eval_rule(
             return;
         };
         for tuple in tuples {
+            work.note_tuple_bind_attempt(pr);
             if let Some(b) = bind_tuple(&atom.values, tuple, &bindings) {
-                walk(pr, ext, delta, delta_pos, i + 1, b, out);
+                walk(pr, ext, delta, delta_pos, i + 1, b, out, work);
             }
         }
     }
-    walk(pr, ext, delta, delta_pos, 0, HashMap::new(), out);
+    walk(pr, ext, delta, delta_pos, 0, HashMap::new(), out, work);
 }
 
 /// Saturate `targets` and everything they depend on, stratum by stratum.
@@ -1070,6 +1111,8 @@ pub(super) fn saturate(
             complete: HashSet::new(),
             refused,
             arity: HashMap::new(),
+            requested: targets.clone(),
+            work: MaterializationWork::default(),
         };
     }
 
@@ -1110,6 +1153,7 @@ pub(super) fn saturate(
 
     let mut complete: HashSet<String> = HashSet::new();
     let mut budget = MAX_MATERIALIZED_TUPLES;
+    let mut work = MaterializationWork::default();
     let mut idx = 0usize;
     while idx < by_stratum.len() {
         let level = by_stratum[idx].0;
@@ -1205,7 +1249,7 @@ pub(super) fn saturate(
             let mut produced: Vec<(String, Vec<GroundTerm>)> = Vec::new();
             for pr in &stratum_rules {
                 if round == 0 {
-                    eval_rule(pr, &ext, &delta, None, &mut produced);
+                    eval_rule(pr, &ext, &delta, None, &mut produced, &mut work);
                 } else {
                     for pos in 0..pr.positive.len() {
                         // Skip positions whose relation gained nothing last round —
@@ -1216,7 +1260,7 @@ pub(super) fn saturate(
                         {
                             continue;
                         }
-                        eval_rule(pr, &ext, &delta, Some(pos), &mut produced);
+                        eval_rule(pr, &ext, &delta, Some(pos), &mut produced, &mut work);
                     }
                 }
             }
@@ -1309,6 +1353,8 @@ pub(super) fn saturate(
         complete,
         refused,
         arity,
+        requested: targets.clone(),
+        work,
     }
 }
 
@@ -1344,7 +1390,13 @@ pub(super) fn collect_negated_relations(
                 }
             }
             LogicNode::NotNode(inner) => walk(buffer, *inner, true, out, seen),
-            LogicNode::AndNode((l, r)) | LogicNode::OrNode((l, r)) => {
+            LogicNode::AndNode((l, r)) => {
+                walk(buffer, *l, under_not, out, seen);
+                if !is_abstraction_marker(buffer, *l) {
+                    walk(buffer, *r, under_not, out, seen);
+                }
+            }
+            LogicNode::OrNode((l, r)) => {
                 walk(buffer, *l, under_not, out, seen);
                 walk(buffer, *r, under_not, out, seen);
             }
@@ -1366,22 +1418,132 @@ pub(super) fn collect_negated_relations(
     }
 }
 
-/// Every surface relation mentioned anywhere in a compiled buffer — the query-side target
+/// Every surface relation reachable from a compiled buffer's query roots — the target
 /// set for the POSITIVE fast path.
 ///
 /// Unlike [`collect_negated_relations`] this ignores polarity: a positive query over a
 /// saturable relation should hit the lookup too, and a relation named here that turns out
-/// not to be saturable is simply dropped by the eligibility filter.
+/// not to be saturable is simply dropped by the eligibility filter. Traversing from roots
+/// is load-bearing: split buffers share an arena with unreachable sibling statements, and
+/// opaque abstraction content is encoded into a marker rather than evaluated as actuality.
 pub(super) fn collect_query_relations(
     buffer: &nibli_types::logic::LogicBuffer,
     out: &mut HashSet<String>,
 ) {
     use nibli_types::logic::LogicNode;
-    for node in &buffer.nodes {
-        if let LogicNode::Predicate((rel, _)) = node {
-            out.insert(surface_relation(rel).to_string());
+
+    fn walk(
+        buffer: &nibli_types::logic::LogicBuffer,
+        id: u32,
+        out: &mut HashSet<String>,
+        seen: &mut HashSet<u32>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        let Some(node) = buffer.nodes.get(id as usize) else {
+            return;
+        };
+        match node {
+            LogicNode::Predicate((rel, _)) => {
+                out.insert(surface_relation(rel).to_string());
+            }
+            LogicNode::ComputeNode(_) => {}
+            LogicNode::AndNode((left, right)) => {
+                walk(buffer, *left, out, seen);
+                if !is_abstraction_marker(buffer, *left) {
+                    walk(buffer, *right, out, seen);
+                }
+            }
+            LogicNode::OrNode((left, right)) => {
+                walk(buffer, *left, out, seen);
+                walk(buffer, *right, out, seen);
+            }
+            LogicNode::NotNode(inner)
+            | LogicNode::ExistsNode((_, inner))
+            | LogicNode::ForAllNode((_, inner))
+            | LogicNode::CountNode((_, _, inner))
+            | LogicNode::PastNode(inner)
+            | LogicNode::PresentNode(inner)
+            | LogicNode::FutureNode(inner)
+            | LogicNode::ObligatoryNode(inner)
+            | LogicNode::PermittedNode(inner) => walk(buffer, *inner, out, seen),
         }
     }
+
+    for &root in &buffer.roots {
+        walk(buffer, root, out, &mut HashSet::new());
+    }
+}
+
+/// Whether any relation reachable from this query's positive roots reads a negative
+/// dependency. Such cones are materialised before backward chaining because NAF needs a
+/// complete extension and is the workload the fast path exists to accelerate. Purely
+/// positive cones stay lazy until the ordinary proof path cannot decide the query.
+pub(super) fn query_cone_has_negative_dependency(
+    buffer: &nibli_types::logic::LogicBuffer,
+    graph: &HashMap<String, Vec<(String, bool)>>,
+) -> bool {
+    let mut pending = HashSet::new();
+    collect_query_relations(buffer, &mut pending);
+    let mut seen = HashSet::new();
+    while let Some(relation) = pending.iter().next().cloned() {
+        pending.remove(&relation);
+        if !seen.insert(relation.clone()) {
+            continue;
+        }
+        let Some(dependencies) = graph.get(&relation) else {
+            continue;
+        };
+        for (dependency, negative) in dependencies {
+            if *negative {
+                return true;
+            }
+            if !seen.contains(dependency) {
+                pending.insert(dependency.clone());
+            }
+        }
+    }
+    false
+}
+
+/// Extend the cumulative materialisation cache with these surface-relation roots.
+///
+/// This is shared by top-level query planning and the backward-chainer's lazy
+/// positive-subgoal fallback. The cache represents the union of every requested
+/// root until KB mutation; adding one root recomputes that union rather than
+/// replacing earlier completed extensions.
+pub(super) fn ensure_materialized_targets(
+    inner: &KnowledgeBaseInner,
+    targets: &HashSet<String>,
+) -> bool {
+    if !inner.materialization {
+        return false;
+    }
+    if targets.is_empty() {
+        if inner.materialized.borrow().is_none() {
+            *inner.materialized.borrow_mut() = Some(Materialized::empty());
+        }
+        return false;
+    }
+
+    let previous_targets = inner
+        .materialized
+        .borrow()
+        .as_ref()
+        .map(|materialized| materialized.requested.clone())
+        .unwrap_or_default();
+    if targets.is_subset(&previous_targets) {
+        return false;
+    }
+
+    let mut cumulative = targets.clone();
+    cumulative.extend(previous_targets);
+    let eligibility = eligible_relations(inner);
+    let strata = compute_strata(&inner.pred_dep_graph);
+    let materialized = saturate(inner, &eligibility, &strata, &cumulative);
+    *inner.materialized.borrow_mut() = Some(materialized);
+    true
 }
 
 /// Project a `~P` group under a rule's current bindings into a ground surface tuple —
@@ -1398,6 +1560,30 @@ pub(super) fn probe_negated_group(
     let atom = project_negated_group(group).ok()?;
     let tuple = ground_values(&atom.values, bindings)?;
     if tuple.iter().any(|t| matches!(t, GroundTerm::PatternVar(_))) {
+        return None;
+    }
+    Some((atom.relation, tuple))
+}
+
+/// Project one rule's complete positive antecedent into a ground surface tuple.
+/// Returns `None` for multiple surface atoms, flat/equality conditions, flavours,
+/// negation (screened by the caller), or any surviving unbound value. A successful
+/// projection is exact, so a complete materialised extension can replace the
+/// event-witness search without weakening the rule.
+pub(super) fn probe_positive_rule_conditions(
+    conditions: &[StoredFact],
+    bindings: &HashMap<String, GroundTerm>,
+) -> Option<(String, Vec<GroundTerm>)> {
+    let (mut projected, flat) = project_atoms(conditions).ok()?;
+    if projected.len() != 1 || !flat.is_empty() {
+        return None;
+    }
+    let atom = projected.remove(0);
+    let tuple = ground_values(&atom.values, bindings)?;
+    if tuple
+        .iter()
+        .any(|term| matches!(term, GroundTerm::PatternVar(_)))
+    {
         return None;
     }
     Some((atom.relation, tuple))

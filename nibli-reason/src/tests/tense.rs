@@ -8,6 +8,103 @@ fn future(nodes: &mut Vec<LogicNode>, inner: u32) -> u32 {
     id
 }
 
+fn permitted(nodes: &mut Vec<LogicNode>, inner: u32) -> u32 {
+    let id = nodes.len() as u32;
+    nodes.push(LogicNode::PermittedNode(inner));
+    id
+}
+
+/// Existential candidate narrowing is flavor-exact for the full stored-fact sum,
+/// including the two deontic wrappers. A wrapper may choose an index bucket, never
+/// silently fall back to Bare or borrow a witness from another flavor.
+#[test]
+fn existential_anchor_candidates_preserve_all_six_fact_flavors() {
+    let flavors = ["", "past ", "now ", "future ", "must ", "may "];
+    for asserted in flavors {
+        let kb = new_kb();
+        assert_buf(&kb, compile_surface(&format!("{asserted}person(Ara).")));
+        assert_buf(&kb, compile_surface(&format!("{asserted}dog(Ara).")));
+
+        for queried in flavors {
+            let query_buffer = compile_surface(&format!("{queried}dog(some person)."));
+            let verdict = query_result(&kb, query_buffer.clone());
+            assert_eq!(
+                verdict,
+                if queried == asserted {
+                    QueryResult::True
+                } else {
+                    QueryResult::False
+                },
+                "asserted flavor {asserted:?}, queried flavor {queried:?}, buffer={query_buffer:#?}"
+            );
+        }
+    }
+}
+
+/// A deontic literal nested beside a bare restrictor carries its own flavor into
+/// candidate narrowing. This valid programmatic shape has one wrapper per formula
+/// path; treating the deontic anchor as Bare would incorrectly produce no witness.
+#[test]
+fn nested_deontic_existential_anchors_keep_their_local_flavor() {
+    for wrap in [obligatory as fn(&mut Vec<LogicNode>, u32) -> u32, permitted] {
+        let kb = new_kb();
+
+        let mut person_nodes = Vec::new();
+        let person = pred(
+            &mut person_nodes,
+            "person",
+            vec![LogicalTerm::Constant("Ara".into())],
+        );
+        assert_buf(
+            &kb,
+            LogicBuffer {
+                nodes: person_nodes,
+                roots: vec![person],
+            },
+        );
+
+        let mut dog_nodes = Vec::new();
+        let dog = pred(
+            &mut dog_nodes,
+            "dog",
+            vec![LogicalTerm::Constant("Ara".into())],
+        );
+        let flavored_dog = wrap(&mut dog_nodes, dog);
+        assert_buf(
+            &kb,
+            LogicBuffer {
+                nodes: dog_nodes,
+                roots: vec![flavored_dog],
+            },
+        );
+
+        let mut query_nodes = Vec::new();
+        let person = pred(
+            &mut query_nodes,
+            "person",
+            vec![LogicalTerm::Variable("subject".into())],
+        );
+        let dog = pred(
+            &mut query_nodes,
+            "dog",
+            vec![LogicalTerm::Variable("subject".into())],
+        );
+        let flavored_dog = wrap(&mut query_nodes, dog);
+        let body = and(&mut query_nodes, person, flavored_dog);
+        let root = exists(&mut query_nodes, "subject", body);
+        assert_eq!(
+            query_result(
+                &kb,
+                LogicBuffer {
+                    nodes: query_nodes,
+                    roots: vec![root],
+                },
+            ),
+            QueryResult::True
+        );
+    }
+}
+
 #[test]
 fn test_past_tense_wrapper_assert_query() {
     let kb = new_kb();

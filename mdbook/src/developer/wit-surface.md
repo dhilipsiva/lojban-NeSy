@@ -55,8 +55,9 @@ The IR and verdict types ([Pipeline & IR](pipeline-and-ir.md)):
   `proof-trace { steps, root, naf-dependent, cwa-false }` — the NAF/CWA flags
   are computed once in the engine and carried across so consumers never
   recompute them.
-- `materialization-report { complete, refused }` — which relations the NAF
-  saturation completed, and which it refused with a one-line reason each.
+- `materialization-report { complete, refused }` — cumulative requested query
+  cones since the last KB mutation: completed relations and one-line refusal
+  reasons. It may remain empty when an exact positive proof needed no saturation.
 
 ### `compute-backend` (the host import)
 
@@ -96,7 +97,7 @@ its policy metadata is outside the current proof schema.
 | `register-compute-predicate(name)` | Marks a relation for compute dispatch |
 | `set-strict(bool)` | Off = permissive warn-and-insert; on = arity/integrity violations reject atomically |
 | `set-existential-import(bool)` / `existential-import-enabled()` | Default OFF = clean-core classical ∃. Explicit ON enables legacy xorlo witnesses, which participate in ∃/∀/find/count/aggregate. The setter returns `result` because it transactionally rebuilds the active KB; the getter reports the effective profile |
-| `set-materialization(bool)` / `materialization-report()` | NAF saturation toggle + its report — added in 0.7.0 because the optimisation is invisible when it fails: without the report, a KB whose `~p(x)` stays slow has no way to learn which relation fell out of the materialisable fragment, or why. A definitive TRUE/FALSE can never flip (the `materialize_diff` gate enforces it); a non-definitive OFF verdict may become definitive under ON — the deliberate depth-bound completeness gain |
+| `set-materialization(bool)` / `materialization-report()` | Query-cone materialisation toggle + its cumulative-since-mutation report — added in 0.7.0 because the optimisation is invisible when it fails: without the report, a KB whose `~p(x)` stays slow has no way to learn which requested relation fell out of the materialisable fragment, or why. Purely positive entailment stays lazy unless exact reasoning remains non-definitive; find/count request complete positive cones. A definitive TRUE/FALSE can never flip (the `materialize_diff` gate enforces it); a non-definitive OFF verdict may become definitive under ON — the deliberate completeness gain |
 
 ### `authorizer` (export)
 
