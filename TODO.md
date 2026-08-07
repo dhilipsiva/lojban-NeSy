@@ -173,6 +173,29 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   delta-driven round. `Invalid` for retraction, rebuild, reset, rule registration, and
   any non-`Bare` or `equals` insert (both can retroactively disqualify a relation).
 
+  **Now the top materialisation cost, measured.** With the per-candidate binding clone
+  gone (`9671e2e`), a 555-pin run over a 2004-line constitution spends its time in
+  `eval_rule::walk` itself. The suite carries 66 KB-mutating directives interleaved
+  with 492 queries, and each one drops the saturation: 20 identical queries with no
+  mutation cost 0.13 s, the same 20 with a `:accept-scoped` between each cost 1.16 s
+  (~9x). A `:refuse` costs the same as a real mutation even though the KB ends
+  semantically identical — `rebuild_inner` (`nibli-reason/src/lib.rs`:479) nulls the
+  saturation unconditionally on the rollback. Preserving it across a rollback that
+  restores the prior state is a smaller, strictly-sound subset of C3 and would cover
+  36 of those 66 directives.
+
+- **Index the join on already-bound positions.** `eval_rule`'s inner `walk` does a FULL
+  relation scan per level (`nibli-reason/src/materialize.rs`, the `for tuple in tuples`
+  loop) with no index on the positions a partial binding has already fixed. For a
+  transitive-closure shape (`earlier($a,$b) & earlier($b,$c) -> earlier($a,$c)`) that is
+  O(|R|²) per round where an index on the bound position is O(|R| · fanout). Since the
+  binding clone landed this is the largest remaining cost: `walk` went from 4.98% to
+  13.97% of self time and is now the top symbol. The set of positions bound on entry to
+  level `i` is statically derivable from the rule's templates, so the index key is known
+  per (rule, level); the index must be rebuilt per round because `ext`/`delta` grow. If
+  it comes with join REORDERING, note that the undo trail is order-independent by
+  construction, which is what makes permuting `positive` safe.
+
 - **Bind proof traces to the full verdict and durable evidence.** `ProofStep` exposes only
   `holds: bool`, while `ProofTrace` carries `naf_dependent` and `cwa_false` but not the
   root `QueryResult`, UNKNOWN reason, or RESOURCE_EXCEEDED kind
@@ -265,6 +288,21 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   passes the flag. A one-line grep guard in the Justfile, or a test asserting the recipe's
   argv, would stop a future edit from quietly opening it.
 
+- **The mutation baseline is stale enough that `just mutants` fails on `main`.**
+  `mutants-baseline.txt` was cut 2026-07-19 from a 985-mutant sweep; the tree now
+  generates **1507**, and 24 commits have touched soundness paths since — so roughly
+  312 mutants of code that has never been through the gate. That is not caused by any
+  one change and cannot be triaged as part of one: a re-cut means adjudicating
+  survivors across `reasoning.rs`, `rules.rs`, `kb.rs` and `nibli-semantics`, each
+  either killed with a test or added to the baseline with a documented reason.
+  `materialize.rs` joined `examine_globs` on 2026-08-07 (+210 mutants) and its slice
+  was swept once — 152 caught / 24 missed / 5 timeout / 29 unviable — but those 24
+  survivors are deliberately NOT in the baseline for the same reason. Until the re-cut,
+  `cargo mutants --in-diff` is the working gate, as CLAUDE.md already says.
+  **Gotcha for whoever runs it:** `cargo mutants -f <path>` does NOT scope the sweep
+  when `examine_globs` is set — the config wins and you get the full run. Check the
+  "Found N mutants to test" line before walking away.
+
 ---
 
 ## Docs hosting — site primary
@@ -325,13 +363,16 @@ exists.
   The who-selection appears keyed to the converted routing. Fix the base-spelling
   collapse; ripple: re-check nibli-wasm's `c18_draft_error_glosses_are_verbatim`
   pin and the book's Ch 18 alias note.
-- **README's merged REPL-commands table** (README.md:241 `### REPL Commands`, table header still `| Command | Description |`) lists host-only commands
-  (`:backend`/`:fuel`/`:memory`/`:strict`/`:existential-import`) and
-  debug-REPL-only commands (`:contradictions`/`:trace`/`:untrace`/`:traces`) in
-  one table with no binary column. It has ALSO gone stale a second way: it omits the
-  host's `:materialize`/`:db`/`:dump`/`:export`/`:proof-verbose`
-  (`nibli-host/src/main.rs`:1194, 1070, 1516, 1551, 1568) and the short aliases entirely.
-  Split per surface or add a Surface column, and sweep the omissions in the same pass.
+- **README's REPL-commands table is missing four entries** (README.md:**329**
+  `### REPL Commands`, header still `| Command | Description |`). RE-CHECKED
+  2026-08-07 and most of this entry's original complaint no longer holds — `41a0c43`
+  fixed it. What is actually left: the table omits the host's `:dump` and `:export`
+  (`nibli-host/src/main.rs`:1516, :1551) and all six short aliases
+  (`:b :f :h :m :q :r`). NOT still true, and struck from this entry: it does NOT list
+  `:contradictions`/`:trace`/`:untrace`/`:traces` (a paragraph below the table already
+  separates the debug REPL as a different surface), and it DOES list
+  `:materialize`/`:db`/`:proof-verbose`. A Surface column would still read better than
+  the prose caveat, but that is polish, not a defect.
 - **The component's import list is not gated.** Docs (book Ch 13/15/App C) state
   "no clock or filesystem imports" — true today (imports are the
   `wasi:cli`/`wasi:io` set + `wasi:random/insecure-seed`), but no CI check pins
@@ -359,7 +400,9 @@ exists.
 - **`wit/world.wit`:234 `proof-ref` doc comment is wrong.** It claims "No children —
   the full proof was shown at its first occurrence," but the step always carries
   exactly one back-reference child (the memo hit pushes
-  `children: vec![cached_idx]`, `nibli-reason/src/reasoning.rs`:3050); the verbose
+  `children: vec![cached_idx]`, `nibli-reason/src/reasoning.rs`:**2716-2720**, in
+  `trace_predicate_provenance_typed`'s memo-hit arm — the older :3050 citation in this
+  entry pointed into a test module); the verbose
   text renderer re-expands that child while the collapsed/UI renderings drop it.
   Decide whether that divergence is intentional, then fix the comment; ripple:
   the book's Appendix C reproduces `world.wit` in full and must be updated
