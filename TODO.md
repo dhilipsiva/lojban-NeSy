@@ -2,9 +2,14 @@
 
 **Future-facing only.** An entry is here because it is still true and still wants doing —
 delete it when it lands rather than marking it done, and put the record in the commit.
-The pre-existing entries were re-verified against the tree on 2026-08-01. The
-review-derived entries added on 2026-08-04 were checked against the cited current source;
-where a claim cites a line, that line was checked, not remembered.
+
+Every surviving entry was re-verified against HEAD on 2026-08-08, after the 15-commit
+merge `a7d288a` — against CURRENT source and, where the claim was behaviourally testable,
+against a command actually run rather than remembered. That merge moved a great many line
+numbers, so the citations below were corrected in the same pass; still check a line before
+trusting it, and correct it in place when you do. A prior sweep dated 2026-08-01 is
+superseded: reading this file against a pre-merge checkout will report items as open that
+the merge closed. Entries the merge closed were deleted by the commits that closed them.
 
 Release runbook: **`RELEASING.md`**. Docs hosting: **`DEPLOY.md`**. Book manuscript:
 separate `book/` repo (`book/TODO.md`). The docs + release tracker `DOCS_TODO.md` was
@@ -136,16 +141,26 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 - **Make numeric comparisons in rules compositional or reject the ambiguous
   syntax.** `greater` / `less` / `num_equal` remain ordinary `Predicate` nodes
   in the IR; query evaluation recognizes their event-decomposed numeric shape
-  operationally in `try_evaluate_numeric_group`, but rule compilation lowers
+  operationally in `try_evaluate_numeric_group` (`nibli-reason/src/compute.rs`:193), but
+  rule compilation lowers
   the same atoms to plain `StoredFact` templates. A positive numeric guard is
   therefore inert, a negated guard can overfire under NAF because the stored
   extension is empty, and a numeric comparison in a rule head is shadowed by
-  query-time evaluation. The new `ComputeNode` assertion guard cannot cover
+  query-time evaluation. The `ComputeNode` assertion guard cannot cover
   this without also banning legitimate nonnumeric relational uses such as
   `greater(Alis, Bob)`. Choose a typed rule-atom representation with bound-value
   numeric dispatch and four-valued/proof propagation, or define a conservative
   assertion-time sort rule that rejects only potentially operational comparison
-  atoms. **Exit:** surface and raw-IR tests cover positive/negated antecedents and
+  atoms. Two things to clean up in the narrow guard that stands in today —
+  `asserted_numeric_comparison` (`nibli-reason/src/kb.rs`:3231), called from
+  `process_assertion` at :2964: it runs AFTER id allocation, unlike the `ComputeNode` guard
+  in `preflight_assertion_buffer`, so a rejected `greater(3, 1).` burns a fact id and
+  leaves a hole (observed: `dog(Adam).` → #0, `greater(3, 1).` → error, `cat(Bela).` → #2,
+  with `:facts` showing #0 and #2); and its user-facing message still quotes Lojban — "(A
+  non-numeric comparison like `la .alis. cu zmadu la .bob.` is a relational fact and asserts
+  normally.)" (:2968-2969) — with `zmadu` also in the surrounding comments (:2958, :2963)
+  and the guard's own doc (:3228). THE DROP left no Lojban in shipped output; this is the
+  exception. **Exit:** surface and raw-IR tests cover positive/negated antecedents and
   heads, numeric and nonnumeric bindings, non-finite values, materialisation
   refusal, stratification, proof children, and external-oracle differentials;
   accepted syntax can never compile to a store lookup whose query twin computes.
@@ -209,16 +224,16 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   equality, duplicate assertions, proof-local compute evidence, and replay; WIT/protocol/host/UI and
   Appendix C evolve together.
 
-- **Use structural proof-memo keys and checked proof indices.** The provenance tracer
-  memoizes by `fact.to_display_string()` (`nibli-reason/src/reasoning.rs`:2700-2719), even
-  though `StoredFact` already implements structural `Eq + Hash`. Human rendering is not a
-  safe identity boundary (numeric bit patterns, wrappers, descriptions, and future display
-  changes can alias), and step indices repeatedly cast `usize` to `u32`. Key memoization by
-  `StoredFact` (plus any proof context that affects derivation), keep display at the render
-  edge, and fail cleanly if a proof cannot be indexed. **Exit:** collision-shaped tests
-  exercise structurally distinct facts with identical/ambiguous renderings and confirm no
-  cross-reference reuse; oversized/deep traces return a typed resource/error outcome; the
-  memo regression suite and `just verify-proofs` remain green.
+- **Check proof indices instead of casting them.** The display-string half of this entry
+  LANDED in `706bfb9`: the provenance tracer now keys structurally on `StoredFact`
+  (`memo: &mut HashMap<StoredFact, u32>`, `nibli-reason/src/reasoning.rs`:556 and :3163,
+  read at :3168), so human rendering is no longer an identity boundary and display stays at
+  the render edge. What remains is the index half: every step index is produced by an
+  unchecked `steps.len() as u32` — `reasoning.rs`:2752, :3173, :3197, :3243, :3265, :3284,
+  :3326, :3440, :3469 — so a trace that outgrows `u32` wraps into a valid-looking
+  back-reference instead of failing. Fail cleanly if a proof cannot be indexed. **Exit:**
+  oversized/deep traces return a typed resource/error outcome rather than a silently
+  truncated index; the memo regression suite and `just verify-proofs` remain green.
 
 - **Preserve or explicitly invalidate rule execution settings across rebuild.**
   `set_rule_forward` and `set_rule_priority` mutate compiled `UniversalRuleRecord`s, but
@@ -327,42 +342,92 @@ Surfaced by the book's review passes (2026-07-26) and RE-VERIFIED against the tr
 exists.
 
 - **Render computed FALSE as a decision, not closed-world non-derivability.** A query such
-  as `greater(3, 5)` carries a false `ComputeCheck` leaf, but
-  `nibli-render/src/summary.rs`:191-211 has no compute-false arm and falls back to “could
-  not be derived from the known facts and rules.” Handle local arithmetic/numeric FALSE
-  and trusted-backend FALSE explicitly, without a CWA caveat, while ordinary missing-fact
-  FALSE keeps the non-derivability explanation. **Exit:** renderer, host, UI, protocol and
-  WASM tests distinguish local computed FALSE, backend FALSE, backend unavailable,
-  non-finite UNKNOWN, and ordinary CWA FALSE; Chapter 17 is recaptured from real bytes.
+  as `greater(3, 5)` carries a false `ComputeCheck` leaf, but `summarize_false`
+  (`nibli-render/src/summary.rs`:223-249) has arms only for `PredicateNotFound`,
+  `ForallCounterexample` and `ExistsFailed`, and otherwise returns the fallback at :248,
+  "This could not be derived from the known facts and rules." `summarize_true` calls
+  `collect_extras` (:475) at :85 and that is the ONLY place a `ComputeCheck` becomes English
+  (through `computed_extra_label`, :466); the FALSE path never calls it. Observed through
+  nibli-host: `? greater(3, 5).` prints that CWA sentence one line above
+  `⊢ greater  [computed (local)] -> FALSE`. The discriminator already exists and already
+  crosses the WIT boundary — `ProofTrace.cwa_false` — and nibli-render already reads it at
+  `collapse.rs`:221 and `proof.rs`:99, just never in `summary.rs`, so the fix need not
+  re-derive it from the steps. The same fallback also fires under a
+  `RESOURCE_EXCEEDED (depth)` verdict, so cover resource verdicts, not only `ComputeCheck`.
+  Handle local arithmetic/numeric FALSE and trusted-backend FALSE explicitly, without a CWA
+  caveat, while ordinary missing-fact FALSE keeps the non-derivability explanation.
+  **Exit:** renderer, host, UI, protocol and WASM tests distinguish local computed FALSE,
+  backend FALSE, backend unavailable, non-finite UNKNOWN, resource-exceeded, and ordinary
+  CWA FALSE; Chapter 17 is recaptured from real bytes.
 
-- **Settle the RDF export contract.** `nibli-import/src/export.rs`:1-17 calls its output
-  N-Triples/RDF-like but emits only comment lines of the form `# fact:<id> <label>` and
-  still describes labels as Lojban source. This is neither RDF nor a typed round-trip,
-  while Chapter 21 advertises Turtle import and export. Either implement valid
-  Turtle/N-Triples export from typed facts with tested IRI/literal mapping, or rename the
-  feature to a fact-label dump and remove RDF-export claims. **Exit:** real RDF takes an
-  export -> independent parser -> re-import round trip with identity/literal/alias tests;
-  a narrowed dump gets an exact-format contract and stale comments removed. Synchronize
-  Chapters 16/21, CLI help, README, and the reference gate.
+- **Settle the RDF export contract.** `nibli-import/src/export.rs`:1-18 (the whole file)
+  calls its output N-Triples (:1) but the sole emitter (:15) writes
+  `# fact:<id> <label>` — a valid but EMPTY N-Triples document, all comment lines. Its doc
+  comment still describes labels as "Lojban source or `:assert` form" (:6) and points at
+  "the original Lojban text (the canonical source of truth for the KB)" (:8-10), wording
+  that is doubly stale since gismu stopped resolving at the committed-corpus milestone. The
+  labels it reaches are not round-trippable either: importing `ex:Rex a ex:dog .` and
+  running `nibli-import <f>.ttl --export` emits `# fact:0 :assert a`. This is neither RDF
+  nor a typed round-trip, while Chapter 21 advertises Turtle import and export. Either
+  implement valid Turtle/N-Triples export from typed facts (`list_facts`, not labels) with
+  tested IRI/literal mapping, or rename the module and feature to a fact-label dump and
+  remove the RDF-export claims. **Exit:** real RDF takes an export -> independent parser ->
+  re-import round trip with identity/literal/alias tests; a narrowed dump gets an
+  exact-format contract and stale comments removed. Synchronize Chapters 16/21, CLI help,
+  README, and the reference gate.
 
 - **Remove the retired two-path retraction story from active docs and benchmarks.**
-  `KnowledgeBase::retract_fact_inner` now always rebuilds and ID-sorts survivors
-  (`nibli-reason/src/lib.rs`:200-229,286-295), but the public API comment at :1179-1180,
-  `nibli-engine/benches/engine_bench.rs`:198-246, and Chapter 11 still describe or measure
-  an incremental/O(1) ground-fact path. Rename or remove the stale benchmark leg, measure
-  the one real path, and reconcile API prose plus Chapter 11. **Exit:**
-  `rg -n 'incremental.*retract|retraction_incremental|two-path' nibli-reason nibli-engine/benches book/P3_C11*`
-  finds no active two-path claim; the replacement benchmark asserts its fixture/verdicts
-  and reports reproducible hardware/profile/methodology; retraction tests remain green.
+  `retract_fact_inner` (`nibli-reason/src/lib.rs`:411-421) has no branch at all: it flips
+  `r.retracted = true` and calls `rebuild_inner` unconditionally at :418, which ID-sorts the
+  survivors (:488). Its OWN doc block (:391-410) correctly narrates the 2026-08-01
+  retirement and cites `retract_diff.rs` — but the public API comment further down, at
+  :1497-1498, still says "Uses incremental removal for ground facts, full rebuild for facts
+  that compiled into rules." Two comments on adjacent functions disagree and the public one
+  is the wrong one. Three sites:
+  (1) `nibli-reason/src/lib.rs`:1497-1498 — the stale public `retract_fact` doc, unchanged
+  since 009a663 (2026-04-07);
+  (2) `nibli-engine/benches/engine_bench.rs`:196-204 narrates "two groups, one per
+  retraction path", so `bench_retraction_incremental` (:229-247, comment "Flat
+  direct-inject ground facts … → incremental path" at :235, registered at :257) measures
+  the rebuild path under a false label;
+  (3) `nibli-reason/src/kb.rs`:1423-1425 documents `rule_source_map` as "Used for
+  incremental retraction: … the corresponding rules can be removed without full rebuild",
+  but at HEAD that map is WRITE-ONLY — writes at `rules.rs`:674 and :1727, clears at
+  `lib.rs`:470 and `kb.rs`:1762, a clone at `kb.rs`:1644, and no reader anywhere. Decide
+  whether the map itself is now vestigial.
+  Chapter 11 still describes and measures the same retired path. Rename or remove the stale
+  benchmark leg, measure the one real path, and reconcile API prose plus Chapter 11.
+  **Exit:** the three sites above are fixed. Do NOT use
+  `rg -n 'incremental.*retract|retraction_incremental|two-path'` as the gate — it matches
+  NOTHING in `nibli-reason/src/lib.rs` (the stale doc reads "Retract … Uses incremental
+  removal": wrong word order, capital R), so it goes green with the worst site untouched; a
+  case-insensitive `incremental` sweep over `nibli-reason/src` plus the bench does fire.
+  The replacement benchmark asserts its fixture/verdicts and reports reproducible
+  hardware/profile/methodology; retraction tests remain green.
 
-- **`obliged`-spelled every-duty renders the wrong obligated party.**
-  `obliged(every data governs, event { message() }).` back-translates as "For every
-  X, if X governs and X is data, then **Y** is obligated to notify" — the
-  post-`8286738` deontic collapse picks the event variable as the duty-holder for
-  the BASE spelling, while the converted `obligated_by` spelling correctly binds X.
-  The who-selection appears keyed to the converted routing. Fix the base-spelling
-  collapse; ripple: re-check nibli-wasm's `c18_draft_error_glosses_are_verbatim`
-  pin and the book's Ch 18 alias note.
+- **`obliged`-spelled duties render the wrong obligated party (TWO defects, one entry).**
+  `obliged(every data governs, event { message() }).` back-translates as "For every X, if X
+  governs and X is data, then **Y** is obligated to notify", while the converted
+  `obligated_by` spelling correctly binds X. (a) WHO-SELECTION — both
+  `collapse_deontic_event_duties` (`nibli-render/src/logic.rs`:379-383) and `render_frame`'s
+  early deontic branch (:405-419, taken whenever place 1 is a Constant and place 2 exists,
+  bypassing `frame_template`/`fill_template` entirely) hardcode place 2 as the duty-holder.
+  That is right only for the CONVERTED argument order: both spellings compile to the SAME
+  base relation with the places SWAPPED (`obliged(Adam, Bel)` emits
+  `obliged_x1(_ev0, adam)`/`obliged_x2(_ev0, bel)`; `obligated_by(Adam, Bel)` emits x1=bel,
+  x2=adam), and the corpus places are `[bound, duty, standard]` — the bound party is x1
+  (`nibli-lexicon/src/corpus/predicates.rs`:1627). (b) INVERTED TEMPLATE — the override row
+  `("obliged", "{x2} is obligated that {x1}")` (`nibli-render/src/frame.rs`:19) is likewise
+  converted-ordered. It is NOT reached for (a) — the early branch wins — but it IS reached
+  at arity 1, where `fill_template`'s trailing-elision cut (frame.rs:243-251) drops the
+  whole string: `obliged(Adam).` renders as the EMPTY string, and
+  `permitted(every person where obliged).` (`gdpr.nibli`:52) renders "For every X, if ,
+  then …" — GDPR Article 6(1)(c) with its antecedent silently gone, in a shipped corpus the
+  Transparency Triad asks reviewers to check. Fixing either half alone leaves the other. The
+  `obligated_by` row at frame.rs:18 is dead for rendering but cannot be deleted without
+  updating its assertion at frame.rs:310-313. Ripple: re-check nibli-wasm's
+  `c18_draft_error_glosses_are_verbatim` pin (`nibli-wasm/src/lib.rs`:454) and the book's
+  Ch 18 alias note.
 - **README's REPL-commands table is missing four entries** (README.md:**329**
   `### REPL Commands`, header still `| Command | Description |`). RE-CHECKED
   2026-08-07 and most of this entry's original complaint no longer holds — `41a0c43`
@@ -379,34 +444,36 @@ exists.
   it and `wasm-tools` sits unused in the flake. A one-line `ci-wasm` smoke
   (`wasm-tools component wit target/wasm32-wasip2/release/nibli.wasm` + grep for
   the absent interfaces) closes the gap.
-- **`resource_hint`'s Depth arm is dead code.** Hints fire only on the trap path
-  (`nibli-host/src/main.rs`:1696) and `classify_resource_trap` never yields
-  Depth, so a `RESOURCE_EXCEEDED (depth)` verdict prints no hint line — and the
-  unreachable hint text (~main.rs:537) recommends raising `max_chain_depth`, a
-  knob no shipped surface exposes. Wire a real Depth hint into the verdict path
-  or drop the dead arm.
-- **nibli-engine persist-before-assert leaves an orphan that BRICKS the database.** The
-  store write-through (`nibli-engine/src/lib.rs`:292-308) mints the id and writes the
-  durable row (`insert_fact`, :298) BEFORE `assert_fact_with_id` (:303). If the assert
-  fails the in-memory KB rolls back (`nibli-reason/src/lib.rs`:179-186) but the persisted
-  row gets no compensating tombstone — even though `NibliStore::retract_fact` exists and is
-  used on the retract path (lib.rs:410). Consequence, reproduced with an unstratifiable-NAF
-  rule: `replay_from_store` hard-fails on the orphan (`?` at lib.rs:229) and `open()` calls
-  it unconditionally (:210), so EVERY later `NibliEngine::open` on that path returns
-  `Err("Replay error (fact 2): Unstratifiable negation…")`. In-memory stays clean; the file
-  is unopenable, with no engine-level recovery. Fix: write the durable row only AFTER the
-  assert succeeds, or tombstone it on the error path — and add a nibli-engine test that
-  asserts a refused fact and then reopens.
-- **`wit/world.wit`:234 `proof-ref` doc comment is wrong.** It claims "No children —
-  the full proof was shown at its first occurrence," but the step always carries
-  exactly one back-reference child (the memo hit pushes
-  `children: vec![cached_idx]`, `nibli-reason/src/reasoning.rs`:**2716-2720**, in
-  `trace_predicate_provenance_typed`'s memo-hit arm — the older :3050 citation in this
-  entry pointed into a test module); the verbose
-  text renderer re-expands that child while the collapsed/UI renderings drop it.
-  Decide whether that divergence is intentional, then fix the comment; ripple:
-  the book's Appendix C reproduces `world.wit` in full and must be updated
-  together.
+- **`resource_hint`'s Depth arm is dead code.** `resource_hint`
+  (`nibli-host/src/main.rs`:587) has exactly one call site, :1803, inside the `Err(e)` trap
+  arm of `run_proof_query`; an engine-returned Depth verdict takes the `Ok(Ok(…))` arm at
+  :1758 and never reaches it, and `classify_resource_trap` (:566) cannot yield Depth — its
+  own doc says so at :564-565, so dropping the arm contradicts nothing already written.
+  Reproduced: a 13-link `X(every Y).` chain at the default `max_chain_depth` of 10
+  (`awake(every actual). … dark(every cyan). actual(Rex).` then `? dark(Rex).`) prints
+  `[Query] RESOURCE_EXCEEDED (depth)` with no hint line — and with the same false
+  `[Why] This could not be derived from the known facts and rules.` the compute-FALSE entry
+  above describes, so that renderer fix should cover resource verdicts too. The unreachable
+  hint text (:595) recommends raising `max_chain_depth`, a knob no shipped surface exposes:
+  the only setter is the Rust API `KnowledgeBase::set_max_chain_depth`
+  (`nibli-reason/src/lib.rs`:559) — there is no `:depth` command and no `NIBLI_DEPTH`, and
+  GUARANTEES.md:131 states the shipped runtime surfaces keep the default. Wire a real Depth
+  hint into the verdict path (and something for it to recommend), or drop the dead arm.
+- **`wit/world.wit`:281 `proof-ref` doc comment is wrong.** It claims "No children — the
+  full proof was shown at its first occurrence," but the memo-hit arm of
+  `trace_predicate_provenance_typed` (`nibli-reason/src/reasoning.rs`:3168-3180) always
+  pushes `children: vec![cached_idx]` (:3177), and nothing strips it: `children` lives on
+  `proof-step` (`wit/world.wit`:292-296), not on the rule variant, and
+  `nibli-pipeline/src/lib.rs`:199 clones it across the component boundary with no ProofRef
+  special case. The verbose text renderer re-expands that child while the collapsed/UI
+  renderings drop it. So the COMMENT is what is wrong, not the behaviour — the "decide
+  whether that divergence is intentional" step concerns only the renderers. The merge
+  `a7d288a` edited the variant list directly above this comment (adding `presupposed`) and
+  left it. If a test ships with the fix, note that
+  `nibli-reason/src/tests/memo_regressions.rs`:540
+  (`test_proof_ref_carries_cached_index`) is an `if let` inside a `for` with no "at least
+  one ProofRef was seen" assertion, so it passes vacuously on a trace containing none.
+  Ripple: the book's Appendix C reproduces `world.wit` in full and must be updated together.
 
 ---
 
