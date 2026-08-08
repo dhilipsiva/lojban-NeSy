@@ -138,30 +138,24 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Reasoning / evaluation
 
-- **Decide whether a numeric comparison in a rule should COMPUTE.** The ambiguous syntax
-  is now REFUSED rather than silently divergent (`validate_no_operational_comparisons`,
-  `nibli-reason/src/kb.rs`), so the three wrong behaviours are gone: a positive guard no
-  longer sits inert, a negated guard no longer overfires into a definitive wrong TRUE, and
-  a rule head no longer derives a fact the query twin ignores. The refusal tests the
-  OPERANDS, not the relation, so `greater(Alis, Bob)` keeps the relational reading — store
-  lookup on both sides, hence no divergence.
-  WHAT IS STILL OPEN is the capability: there is currently NO way to write "if quantity is
-  greater than 15 then …". A rule cannot carry a comparison over a variable or a literal,
-  and the ground fact it would need is refused too. That is a real limit on the
-  quantitative direction Chapter 20 gestures at (dosage thresholds), and the alternative
-  the original entry named is still available — give rule bodies a typed comparison atom
-  that dispatches on bound values at firing time, so the syntax means what it looks like.
-  Refusing first was chosen deliberately as forward-compatible: that change would only ever
-  ACCEPT more, so nothing refused today becomes wrong later.
-  If it is taken up, the parts a refusal did not have to answer are: operands unbound or
-  non-numeric at firing time (fail closed), NAF semantics over a computed guard,
-  stratification (a comparison is currently classified `base`, so its extension reads as
-  complete-and-empty — that is precisely what made `~greater` overfire), materialisation
-  refusal (`Ineligible::ComputeCondition` already exists), and proof children.
-  **Exit:** surface and raw-IR tests cover positive/negated antecedents and heads, numeric
-  and nonnumeric bindings, and non-finite values; the stratifier stops calling a computed
-  comparison a base relation; materialisation refuses a rule carrying one; and the
-  Vampire/clingo differentials cover the new shape.
+- **Witness enumeration does not evaluate ARITHMETIC groups (it now evaluates
+  comparisons).** `find_witnesses`' `ExistsNode` arm consults
+  `try_evaluate_numeric_group` under `GroupScope::ComparisonsOnly`
+  (`nibli-reason/src/reasoning.rs`), so `quantity($x, $n) & greater($n, 15).` finds
+  exactly the rows past the threshold and agrees with the boolean verdict. A
+  `ComputeNode` head is deliberately NOT consumed there: it can dispatch to the external
+  backend, and enumeration evaluates its body once per candidate, so admitting it would
+  turn one query into a burst of network calls against a transport with no request
+  binding or idempotency guarantee. The gap is currently FAIL-CLOSED, not silent — an
+  arithmetic group's head yields `Unknown(BackendUnavailable)`, which IS a
+  `witness_search_cut`, so find/count/aggregate REFUSE rather than undercount (pinned by
+  `a_compute_group_is_not_consumed_by_the_find_hook_and_refuses_instead`). Closing it
+  means deciding what a per-candidate backend dispatch is allowed to cost, and whether
+  the within-query memo is enough of an answer.
+  **Exit:** `product`/`sum`/`quotient` groups filter witnesses like comparisons do; a
+  registered external relation either does the same under a stated dispatch budget or
+  keeps refusing by an explicit rule rather than by accident; and the choice is disclosed
+  in GUARANTEES §Compute Result Lifecycle.
 
 - **Materialisation: the trace story (C2).** Proof-traced queries keep the
   backward-chaining path (`positive_lookup` lowered for their duration) because a

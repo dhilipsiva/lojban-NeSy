@@ -921,9 +921,15 @@ fn check_formula_holds_core<S: TraceSink>(
             // Decomposed numeric/compute group: gather the surface operands
             // from role predicates, then evaluate locally or dispatch using the
             // same public-term contract as the flat ComputeNode arm.
-            if let Some(group) =
-                try_evaluate_numeric_group(&*inner, buffer, v, *body, subs, compute_memo)
-            {
+            if let Some(group) = try_evaluate_numeric_group(
+                &*inner,
+                buffer,
+                v,
+                *body,
+                subs,
+                compute_memo,
+                GroupScope::All,
+            ) {
                 let res = group.verdict.clone();
                 let idx = if S::RECORDING {
                     sink.push(ProofStep {
@@ -1712,6 +1718,46 @@ pub(super) fn find_witnesses(
     }
     match get_node(buffer, node_id)? {
         LogicNode::ExistsNode((v, body)) => {
+            // Decomposed numeric COMPARISON group — the same seam the verdict path
+            // takes at its own `ExistsNode` arm. Without this, enumeration peels the
+            // group's `∃_ev`, sweeps domain candidates, and degrades every conjunct to
+            // a store lookup that finds nothing (a comparison is never stored — the
+            // assertion guard refuses one). The query then answered TRUE as a boolean
+            // and returned ZERO rows here: a jointly inconsistent pair, and the reason
+            // `quantity($da,$de) & greater($de, 15).` could not be used to FIND the
+            // doses past a threshold even though it could be asked about them.
+            //
+            // `ComparisonsOnly` keeps enumeration LOCAL: a compute head may dispatch to
+            // the external backend, and find/count/aggregate evaluate their body once
+            // per candidate. That gap (find over `sum`/`quotient`/registered relations)
+            // stays open deliberately and is tracked in TODO.md.
+            //
+            // Nothing else changes shape: the group binds no user-visible variable, so
+            // a satisfied one yields the same empty binding set the satisfied-leaf arm
+            // below returns, and a group whose operands are NOT numeric
+            // (`greater(Alis, Bob)`) still returns None and falls through to the store.
+            if let Some(group) = try_evaluate_numeric_group(
+                &*inner,
+                buffer,
+                v,
+                *body,
+                subs,
+                compute_memo,
+                GroupScope::ComparisonsOnly,
+            ) {
+                if group.verdict.is_true() {
+                    return Ok(vec![vec![]]);
+                }
+                // Reuse the shared cut classifier rather than re-deciding which
+                // non-True verdicts mean "incomplete": `Unknown(NonFinite)` is
+                // deliberately NOT a cut — a non-finite operand satisfies no
+                // comparison, which is a genuine no, not a budget exhaustion.
+                if witness_search_cut(&group.verdict) {
+                    inner.find_horizon_hit = true;
+                }
+                return Ok(Vec::new());
+            }
+
             let mut results = Vec::new();
 
             // Candidate enumeration MUST match the verdict path's ExistsNode arm

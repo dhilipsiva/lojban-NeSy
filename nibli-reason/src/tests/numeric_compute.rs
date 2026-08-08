@@ -972,6 +972,171 @@ fn a_flat_raw_ir_comparison_is_refused_too() {
     );
 }
 
+// ─── Verdict ≡ witness enumeration ──────────────────────────────────────────
+//
+// `try_evaluate_numeric_group` used to have exactly ONE caller — the `ExistsNode`
+// arm of `check_formula_holds_core`. `find_witnesses` has its own `ExistsNode` arm,
+// which peeled the comparison group's `∃_ev` and swept domain candidates, so every
+// conjunct degraded to a store lookup and found nothing (a comparison is never
+// stored — the assertion guard refuses one). The boolean verdict computed TRUE while
+// find/count/aggregate returned zero rows with no error: a jointly inconsistent pair.
+//
+// These pin the agreement. `greater($de, 15)` filtering a `quantity` join is the
+// shape the quantitative direction actually needs — a rule cannot carry a comparison,
+// but a QUERY may, and enumeration must honour it.
+
+/// Every comparison relation, over and under its threshold, agreeing across the
+/// boolean verdict, `query_find`, and `count_witnesses`.
+#[test]
+fn verdict_and_find_agree_for_every_comparison() {
+    for (rel, over, under) in [
+        ("greater", "quantity($x, $n) & greater($n, 15).", 20.0),
+        ("less", "quantity($x, $n) & less($n, 15).", 7.0),
+        ("num_equal", "quantity($x, $n) & num_equal($n, 20).", 20.0),
+    ]
+    .map(|(rel, text, expect)| (rel, text, expect))
+    {
+        let kb = new_kb();
+        assert_buf(&kb, compile_surface("quantity(Varfarin, 20)."));
+        assert_buf(&kb, compile_surface("quantity(Fenitoin, 7)."));
+
+        assert!(
+            query(&kb, compile_surface(over)),
+            "{rel}: the boolean verdict must compute the comparison"
+        );
+        let rows = query_find(&kb, compile_surface(over));
+        assert_eq!(
+            rows.len(),
+            1,
+            "{rel}: enumeration must agree with the verdict, got {rows:?}"
+        );
+        assert!(
+            rows[0]
+                .iter()
+                .any(|b| b.variable == "$n" && b.term == LogicalTerm::Number(under)),
+            "{rel}: the surviving witness must be the one past the threshold, got {rows:?}"
+        );
+        assert_eq!(
+            kb.count_witnesses(compile_surface(over)).unwrap(),
+            1,
+            "{rel}: count must agree with find"
+        );
+    }
+}
+
+/// Aggregation runs over the enumerated witnesses, so a threshold-filtered sum was
+/// silently `None` before the hook — the shape `drug-interactions.nibli`'s dose data
+/// is one line away from.
+#[test]
+fn aggregate_sums_only_witnesses_past_the_threshold() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("quantity(Varfarin, 20)."));
+    assert_buf(&kb, compile_surface("quantity(Fenitoin, 7)."));
+    let total = kb
+        .aggregate(
+            compile_surface("quantity($x, $n) & greater($n, 15)."),
+            "$n",
+            nibli_types::logic::AggregateOp::Sum,
+        )
+        .unwrap();
+    assert_eq!(
+        total,
+        Some(20.0),
+        "only the dose past the threshold may be summed"
+    );
+}
+
+/// A non-finite operand satisfies no comparison. That is a genuine NO, not a search
+/// cut, so enumeration must return zero rows rather than refusing the whole query as
+/// incomplete — `witness_search_cut` deliberately excludes `Unknown(NonFinite)`, and
+/// this pins that exclusion as a decision rather than a fallout.
+#[test]
+fn a_non_finite_operand_yields_no_witness_not_an_incomplete_refusal() {
+    let kb = new_kb();
+    // A non-finite value never reaches the KR surface (the `number` rule is digits
+    // only), so build the stored fact the way `stored_non_finite_witnesses_...` does.
+    assert_buf(&kb, decomposed_big_fact(f64::INFINITY));
+    let buf = compile_surface("big($n) & greater($n, 15).");
+    assert_eq!(
+        kb.query_find_inner(buf)
+            .expect("find must not refuse")
+            .len(),
+        0,
+        "a non-finite operand yields no witness, not an incomplete-enumeration error"
+    );
+}
+
+/// The hook must not STEAL a comparison from the store. `greater(Alis, Bob)`
+/// ("taller than") has non-numeric operands, so `try_numeric_comparison` returns
+/// None, the group falls through, and the stored row is still enumerated.
+#[test]
+fn a_relational_comparison_still_finds_its_stored_witness() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("greater(Alis, Bob)."));
+    let rows = query_find(&kb, compile_surface("greater($a, $b)."));
+    assert_eq!(
+        rows.len(),
+        1,
+        "the stored relational comparison must still be found, got {rows:?}"
+    );
+    assert!(
+        rows[0]
+            .iter()
+            .any(|b| b.variable == "$a" && b.term == LogicalTerm::Constant("alis".to_string())),
+        "the relational row must carry its stored arguments, got {rows:?}"
+    );
+}
+
+/// The comparison group binds nothing user-visible, so adding one as a filtering
+/// conjunct must narrow the ROWS without changing their SHAPE — no `_ev` from the
+/// comparison leaks into the reported bindings.
+#[test]
+fn find_row_shape_is_unchanged_by_a_comparison_conjunct() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("quantity(Varfarin, 20)."));
+    let plain = query_find(&kb, compile_surface("quantity($x, $n)."));
+    let filtered = query_find(&kb, compile_surface("quantity($x, $n) & greater($n, 15)."));
+    assert_eq!(plain.len(), 1, "control: one stored quantity");
+    assert_eq!(filtered.len(), 1, "the row survives its own filter");
+    let names = |rows: &Vec<Vec<WitnessBinding>>| {
+        let mut v: Vec<String> = rows[0].iter().map(|b| b.variable.clone()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        names(&plain),
+        names(&filtered),
+        "a comparison conjunct must not add a binding to the reported row"
+    );
+}
+
+/// The find hook is scoped to COMPARISON heads on purpose: a `ComputeNode` head can
+/// dispatch to the external backend, and enumeration evaluates its body once per
+/// candidate, so admitting them would turn one query into a burst of network calls.
+///
+/// That gap is safe to leave open because a compute group in enumeration already
+/// fails CLOSED: its head yields `Unknown(BackendUnavailable)`, which IS a
+/// `witness_search_cut`, so find/count/aggregate REFUSE rather than undercount. That
+/// asymmetry is exactly why comparisons were the dangerous case — a comparison
+/// degrades to a store lookup returning definitive FALSE, which reads as a genuine
+/// "no such witness" and silently produced zero rows against a TRUE verdict.
+#[test]
+fn a_compute_group_is_not_consumed_by_the_find_hook_and_refuses_instead() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("quantity(Varfarin, 20)."));
+    assert!(
+        query(&kb, compile_surface("product(10, 2, 5).")),
+        "control: the verdict path still evaluates arithmetic"
+    );
+    let err = kb
+        .query_find_inner(compile_surface("quantity($x, $n) & product(10, 2, 5)."))
+        .expect_err("an arithmetic group in enumeration must refuse, not undercount");
+    assert!(
+        err.contains("witness enumeration incomplete"),
+        "the refusal must be the incomplete-enumeration one: {err}"
+    );
+}
+
 /// The guard runs in `preflight_assertion_buffer`, before id allocation — so a
 /// rejected comparison no longer consumes a fact id and leaves a hole in the
 /// registry. (It used to be refused later, on the collected ground leaves.)

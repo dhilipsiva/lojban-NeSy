@@ -80,7 +80,10 @@ pub fn transform_compute_nodes(buf: &mut LogicBuffer, compute_preds: &HashSet<St
 
 pub mod kb;
 pub(crate) use kb::*;
-pub use kb::{KnowledgeBase, contains_asserted_compute_node, contains_asserted_count_node};
+pub use kb::{
+    KnowledgeBase, contains_asserted_compute_node, contains_asserted_count_node,
+    validate_no_operational_comparisons,
+};
 
 /// One predicate's row in [`KnowledgeBase::stratification_report`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

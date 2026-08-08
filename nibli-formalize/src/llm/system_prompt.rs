@@ -46,6 +46,12 @@ The arithmetic predicates \"product\", \"sum\", and \"quotient\" are also query-
 formulas. Do not emit them as KB facts, rule guards, or rule conclusions; executable compute \
 in asserted output is rejected before it can become a premise. Compute text inside an opaque \
 fact/event abstraction remains quoted content.
+The comparisons \"greater\", \"less\", and \"num_equal\" are query-only WHENEVER an operand is a \
+number or a variable: a query computes them arithmetically, so an asserted one would never be \
+consulted. There is no numeric threshold rule — do not write \"& greater($n, 15) ->\". Assert the \
+classification the source states (a predicate like \"thin(Varfarin).\") instead of inventing a \
+numeric condition around it. A comparison between two named things (\"greater(Alis, Bob).\" for \
+\"Alis is taller than Bob\") is an ordinary relational fact and is fine.
 When the body is compound or a variable must be shared across conjuncts, use a binder block:
   every dog $d: animal($d) & runs($d).
   some dog $d: big($d) & goes($d).

@@ -13,7 +13,57 @@ here first.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A numeric comparison now filters witnesses, not just verdicts.**
+  `try_evaluate_numeric_group` had exactly one caller — the `ExistsNode` arm of the
+  entailment evaluator. `find_witnesses` has its own `ExistsNode` arm, which peeled the
+  comparison group's `∃ev` and swept domain candidates, so every conjunct degraded to a
+  store lookup that finds nothing (a comparison is never stored — assertion ingress
+  refuses one). `quantity($da, $de) & greater($de, 15).` therefore answered **TRUE** as a
+  boolean and returned **zero rows** from `find` / `count_witnesses` / `aggregate`, with
+  no error: a jointly inconsistent pair, and the real reason a dose threshold could not
+  be used to select the doses. The find path now consults the same group evaluator under
+  a new `GroupScope::ComparisonsOnly`, so one shape recogniser serves both halves.
+  Arithmetic and externally-dispatched groups are deliberately excluded — a dispatching
+  head evaluated once per candidate would turn one query into a burst of backend calls —
+  and that side already fails CLOSED, refusing the enumeration as incomplete rather than
+  undercounting. Pinned by `verdict_and_find_agree_for_every_comparison`,
+  `numeric_threshold_verdict_and_find_agree`, and siblings covering non-finite operands,
+  the relational reading, row shape, and the excluded arithmetic case.
+- **`nibli-verify`'s fragment filters admitted numeric comparisons.** Comparisons are
+  not `ComputeNode`s (only built-in arithmetic is registered), so nothing in
+  `buffer_non_classical` or either ASP filter rejected them. Neither oracle has a theory
+  of arithmetic — Vampire's path is FOF with numbers as `num_<n>` Herbrand constants,
+  and the ASP path renders them the same way — so an admitted comparison would have been
+  a false alarm (`Diverge`), not a missed case. Latent only because no generator or
+  curated case emits one; closed now, in both the flat and event-decomposed spellings,
+  before something walks into it.
+- **Formalize's assertion gate had no comparison guard.** It checked exact-count and
+  compute nodes and stopped, so LLM-authored text carrying `greater($n, 15)` passed the
+  whole gate stack and was refused only by the engine, burning an agent retry that no
+  gate had objected to. It now calls the engine's own
+  `validate_no_operational_comparisons` (newly public), so the two sides cannot drift,
+  and the system prompt states the rule.
+
 ### Changed
+
+- **Rule-position numeric comparison: DECIDED, not deferred.** Whether a comparison in a
+  rule body should COMPUTE on bound values was evaluated in full and declined. Four
+  things settled it, none visible from the surface syntax: `greater` has four places, so
+  it is a group-level rewrite of rule compilation (across `typed_conditions` *and*
+  `negated_exists_groups`, with index and dependency-edge accounting), not an atom swap;
+  the assertion guard cannot be made position-aware where it runs, since a rule arrives
+  as a quantified disjunction over a shared DAG with no `ImpliesNode` to split on;
+  `materialize::project_rule` does not already refuse the shape (`ComputeCondition`
+  fires only on flat conditions, and a decomposed comparison projects as an ordinary
+  atom that would be seeded empty and marked complete) — it is unreachable only because
+  the ingress guard exists; and **neither differential oracle can judge arithmetic**, so
+  the feature would ship unchecked by the two gates built to catch exactly this class.
+  The refusal message now names the three honest idioms (query it, assert the
+  classification, use the numeral-free ordering relations), `GUARANTEES.md` carries the
+  reasoning and the re-open trigger — a differential oracle that can judge arithmetic —
+  and `pins/numeric-comparison-boundary.nibli` pins the boundary in both directions.
 
 - **Rule-tuple binding is in place, and saturation is ~3x faster:** `eval_rule`'s
   join cloned the whole binding environment once per candidate tuple per join

@@ -91,6 +91,13 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   `rel_tol 1e-9, abs_tol 0` — `0.3 = 0.1 + 0.2` is TRUE. The comparison
   predicate `num_equal` is exact `==`. Non-finite operands yield
   `UNKNOWN (non-finite)`.
+- **Comparisons are query-only, and that is decided:** `greater` / `less` /
+  `num_equal` over operands that could be numbers are refused at assertion
+  ingress in facts and in every rule position, so there is no numeric threshold
+  rule. On the query side they decide a verdict and also filter witnesses in
+  `find` / `count_witnesses` / `aggregate`. Arithmetic and externally-dispatched
+  groups deliberately do NOT filter witnesses (one dispatch per candidate);
+  enumeration refuses as incomplete instead of undercounting.
 - **Admission policy (explicitly low-assurance):** an external reply is trusted
   evidence for the current `ComputeCheck`. The stock client is plaintext and
   unauthenticated, with no peer identity, confidentiality, integrity or

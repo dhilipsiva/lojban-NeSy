@@ -5369,6 +5369,46 @@ fn ddi_dose_sum_aggregation() {
     assert_eq!(total, Some(12.0), "Summed dose across drugs should be 12");
 }
 
+/// The boolean verdict and the witness enumeration must AGREE about a numeric
+/// comparison. `try_evaluate_numeric_group` used to have exactly one caller — the
+/// `ExistsNode` arm of `check_formula_holds_core` — while `find_witnesses` had its own
+/// `ExistsNode` arm that peeled the comparison group's `∃_ev` and enumerated domain
+/// candidates, so every conjunct degraded to a store lookup that finds nothing. The
+/// query then answered TRUE as a boolean and returned ZERO rows from
+/// find/count/aggregate, with no error: a jointly inconsistent pair, which is the one
+/// failure class this engine exists to prevent.
+#[test]
+fn numeric_threshold_verdict_and_find_agree() {
+    let engine = engine_with_facts(&["quantity(Varfarin, 20).", "quantity(Fenitoin, 7)."]);
+    let q = "quantity($da, $de) & greater($de, 15).";
+
+    assert_eq!(
+        engine.query_holds(q).unwrap(),
+        EngineQueryResult::True,
+        "the boolean verdict computes the comparison"
+    );
+    assert_eq!(
+        engine.count_witnesses_text(q).unwrap(),
+        1,
+        "witness enumeration must find the one drug over the threshold, not zero"
+    );
+    let rows = engine.query_find_text(q).unwrap();
+    assert_eq!(rows.len(), 1, "exactly one row past the threshold");
+    assert!(
+        rows[0].iter().any(|b| {
+            b.variable == "$da" && nibli_engine::display_term(&b.term).contains("varfarin")
+        }),
+        "the row must be the drug whose quantity exceeds 15, got {rows:?}"
+    );
+    assert_eq!(
+        engine
+            .aggregate_text(q, "$de", EngineAggregateOp::Sum)
+            .unwrap(),
+        Some(20.0),
+        "aggregate sums only the witnesses past the threshold"
+    );
+}
+
 /// Regression (query-level DoS): cyclic rules through the FULL pipeline must not hang
 /// the witness search. `ro lo gerku cu danlu` + `ro lo danlu cu gerku` is a
 /// relation-level cycle; before the `cycle_key` backward-chain guard,

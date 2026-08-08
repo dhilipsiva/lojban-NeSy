@@ -563,6 +563,16 @@ pub(super) fn project_rule(rule: &UniversalRuleRecord) -> Result<ProjectedRule, 
         if !is_builtin(f.relation()) {
             // A flat condition we cannot decide — most often a compute predicate,
             // whose domain is not enumerable.
+            //
+            // NOTE the reach of this check: it sees only FLAT conditions. A numeric
+            // comparison written at the surface (`greater($n, 15)`) is event-decomposed,
+            // so it takes the event-group path in `project_atoms` and projects as an
+            // ORDINARY atom — it never arrives here. Were such a rule registrable, the
+            // saturator would then call `greater` EDB, seed it empty, and mark that empty
+            // extension complete, so `~greater(…)` would read as definitively TRUE. It is
+            // unreachable only because `validate_no_operational_comparisons` refuses the
+            // rule at assertion ingress. If that guard is ever relaxed, this check must be
+            // taught the decomposed shape FIRST.
             return Err(Ineligible::ComputeCondition(label.clone()));
         }
         builtins.push((f, negated));

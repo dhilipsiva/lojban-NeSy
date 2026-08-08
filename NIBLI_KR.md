@@ -250,6 +250,12 @@ rain().                                # observative — all places Unspecified
   `product(50, 5, 10).` (`pilji`; tolerant isclose, trusted-backend policy unchanged).
   Compute formulas are query-only: asserting one directly or placing one in a rule
   guard/head is rejected until the rule IR can execute compute compositionally.
+  The comparisons `greater`/`less`/`num_equal` are query-only on the same terms
+  WHENEVER an operand could be a number, and that one is **decided, not pending**: a
+  numeric threshold cannot be a rule guard, and the alternative was evaluated and
+  declined (GUARANTEES §Disclosed Sharp Edges records why, and the re-open trigger).
+  A comparison between non-numeric terms (`greater(Alis, Bob)`) is an ordinary
+  relational fact and asserts normally.
   There is deliberately **no infix arithmetic sugar** — the three equality notions
   (du / dunli / compute-isclose) must stay unconflatable.
 - **Modal tags** (`via`): `goes(me, destination: some market) via cause(some rain).`

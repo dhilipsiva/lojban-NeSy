@@ -55,7 +55,9 @@ Each query rebuilds a fresh engine from the KR pane, so revising the KB is just 
 
 ## Built-in vs external compute
 
-In-browser: built-in arithmetic (`product` / `sum` / `quotient`) and ground numeric comparisons work locally. External compute backend predicates need the host + backend path (`just run-with-backend`) — not the pure playground.
+In-browser: built-in arithmetic (`product` / `sum` / `quotient`) and numeric comparisons work locally. External compute backend predicates need the host + backend path (`just run-with-backend`) — not the pure playground.
+
+Both are **query-only**. A comparison decides a verdict and filters witnesses, so a threshold reads as a query; it cannot be a rule guard, and asserting one is a compile error. See [Guarantees](guarantees.md).
 
 ## More
 

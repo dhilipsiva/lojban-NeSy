@@ -325,10 +325,39 @@ pub(super) fn validate_assertion_buffer(buffer: &LogicBuffer) -> Result<(), Stri
 /// a rejected atom is a compile error the author can see, an accepted one can never compile
 /// to a store lookup whose query twin computes.
 ///
-/// This is a REFUSAL, not a semantics: making the guard compute on bound values is the open
-/// alternative, tracked in TODO.md. Refusing first is forward-compatible, since that change
-/// would only ever accept more.
-pub(super) fn validate_no_operational_comparisons(buffer: &LogicBuffer) -> Result<(), String> {
+/// This is a REFUSAL, not a semantics, and as of 2026-08-08 it is also the DECISION: making a
+/// rule-position comparison compute on bound values was evaluated in full and declined. Four
+/// things settled it, none of which is visible from the surface syntax:
+///
+/// 1. **It is not an atom swap.** `greater` has FOUR places (`less` four, `num_equal` three), so
+///    `greater($n, 15)` compiles to an anchor plus N role predicates. The per-atom operand test
+///    below cannot divert a group; diversion has to be group-level across `typed_conditions`
+///    AND `negated_exists_groups` (a `~greater` never enters `typed_conditions` at all —
+///    `register_clause_rule` turns it into a `NegatedExistsGroup`), with
+///    `negated_condition_indices` remapped at every consumer and `register_rule`'s dependency-edge
+///    rollback kept equal to the edges actually pushed.
+/// 2. **The guard cannot be made position-aware where it runs.** There is no `ImpliesNode`; a
+///    rule reaches `preflight_assertion_buffer` as a quantified disjunction over a DAG with
+///    shared subtrees, and `Or(Q, Not(P))` is a reversed rule. "Antecedent, not head" is not
+///    recoverable here, so a rule-only relaxation has no place to live.
+/// 3. **Neither differential oracle can check the result.** `nibli-verify`'s TPTP path is FOF
+///    with numbers as `num_<n>` Herbrand constants, and the ASP path renders them the same way;
+///    teaching clingo to compare them as integers is a global rendering change, and mixing
+///    constants with integers under a relational operator is vacuously true by ASP-Core-2 term
+///    order — a wrong oracle rather than a skip. A computed rule guard would ship unchecked by
+///    the two gates that exist to catch exactly this.
+/// 4. **`materialize::project_rule` does not already refuse it.** `Ineligible::ComputeCondition`
+///    fires only on FLAT conditions; a decomposed comparison takes the event-group path and
+///    projects as an ordinary atom, so the saturator would seed it EMPTY and mark it complete.
+///    That is latent today only because this guard makes it unreachable.
+///
+/// The capability therefore stays closed, and the honest idioms are named in the error message.
+/// **Re-open trigger:** a differential oracle that can judge arithmetic (a TPTP TFA path, or a
+/// number rendering both translators share with clingo's integer builtins). Until one exists,
+/// refusing remains forward-compatible — that change would only ever ACCEPT more, so nothing
+/// refused today becomes wrong later. What DID change is the query side: a comparison now filters
+/// witnesses in find/count/aggregate as well as deciding the boolean verdict.
+pub fn validate_no_operational_comparisons(buffer: &LogicBuffer) -> Result<(), String> {
     let Some(rel) = operational_comparison_in_assertion(buffer) else {
         return Ok(());
     };
@@ -336,9 +365,15 @@ pub(super) fn validate_no_operational_comparisons(buffer: &LogicBuffer) -> Resul
         "`{rel}` over numeric operands is a computed comparison, not an assertable fact or \
          rule literal: a query evaluates it arithmetically and the computed value wins, so \
          an asserted one is never consulted — inert in a rule antecedent, and under `~` it \
-         succeeds for every binding because nothing is stored. Evaluate the comparison in a \
-         query instead. (A comparison between non-numeric terms, such as \
-         `greater(Alis, Bob)`, is an ordinary relational fact and asserts normally.)"
+         succeeds for every binding because nothing is stored. Three ways to say what you \
+         meant: (1) evaluate the comparison in a QUERY — it decides the verdict and also \
+         filters witnesses, so `quantity($x, $n) & {rel}($n, …)` finds exactly the rows past \
+         the threshold; (2) assert the CLASSIFICATION as an ordinary predicate and let rules \
+         read that, the way a narrow-therapeutic-index drug is marked `thin(Varfarin).`; \
+         (3) for ordering rather than magnitude, use the numeral-free time relations \
+         (`earlier`/`later`, `continue`/`cease`) — see `pins/temporal-order.nibli`. \
+         (A comparison between non-numeric terms, such as `greater(Alis, Bob)`, is an \
+         ordinary relational fact and asserts normally.)"
     ))
 }
 

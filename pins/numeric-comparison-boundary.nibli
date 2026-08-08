@@ -1,0 +1,127 @@
+# ── Numeric-comparison boundary pins ──────────────────────────────────────────
+#
+# KIND: MECHANISM pin — fixture inline by design, see pins/rights-floor.nibli.
+#
+# Run by `just verify-pins` (nibli-pin, native).
+#
+# WHAT THIS GUARDS. `greater` / `less` / `num_equal` live on BOTH sides of a seam,
+# and which side an atom lands on is decided by its OPERANDS, not by its name:
+#
+#   greater(20, 15).      numeric  — a query COMPUTES it; the store never holds it
+#   greater(Alis, Bob).   relational — "taller than"; an ordinary stored fact
+#
+# The first spelling is refused in every ASSERTED position (ground fact, rule
+# antecedent, negated antecedent, rule head). That refusal is not tidiness. A rule
+# lowers its atoms to store-lookup templates, so an asserted comparison is inert as
+# a positive guard, and under `~` it succeeds for EVERY binding because nothing is
+# stored — concluding the head for exactly the subjects whose value really was
+# greater. A definitive wrong TRUE, which is the one failure class this engine
+# exists to prevent.
+#
+# The second spelling must survive untouched, because banning three relation names
+# would take a legitimate relational predicate with it. That asymmetry is the whole
+# design, and nothing in the surface syntax shows it — which is why it is pinned
+# here rather than left to the tests that happen to cover it today.
+#
+# DECIDED, NOT DEFERRED (2026-08-08). Making a rule-position comparison compute on
+# bound values was evaluated and declined: it is a group-level rewrite of rule
+# compilation, the guard cannot be made position-aware where it runs, and NEITHER
+# differential oracle can judge arithmetic — so the feature would ship unchecked by
+# the two gates that exist to catch this class. GUARANTEES §Disclosed Sharp Edges
+# carries the re-open trigger.
+#
+# WHAT THIS FILE CANNOT PIN. The pin language has `? <query>` and a verdict, but no
+# find/count/aggregate form. That the boolean verdict AGREES with witness
+# enumeration — the defect fixed alongside this decision — is pinned in Rust
+# (`verdict_and_find_agree_for_every_comparison`, nibli-reason; and
+# `numeric_threshold_verdict_and_find_agree`, nibli-engine). Do not read this file
+# as covering it.
+
+# ── THE COMPUTED READING IS REFUSED IN EVERY ASSERTED POSITION ────────────────
+# All four carry the same needle, so a typo (a Syntax error) cannot satisfy them.
+
+# A ground fact. Nothing would ever consult it: the query recomputes.
+:refuse reasoning /computed comparison/
+greater(3, 1).
+
+# A positive rule guard. This is the "threshold rule" a reader reaches for first.
+:refuse reasoning /computed comparison/
+all $x: all $n: person($x) & quantity($x, $n) & greater($n, 15) -> fit($x).
+
+# A NEGATED rule guard — the dangerous one. Refused, so it can never overfire.
+:refuse reasoning /computed comparison/
+all $x: all $n: person($x) & quantity($x, $n) & ~greater($n, 15) -> rotten($x).
+
+# A rule HEAD. Dead on arrival: computation runs before any store lookup.
+:refuse reasoning /computed comparison/
+all $x: all $n: quantity($x, $n) -> greater($n, 100).
+
+# A variable is refused as readily as a literal — it COULD bind to a number, and
+# the guard is conservative in the safe direction.
+:refuse reasoning /computed comparison/
+all $a: all $b: person($a) & less($a, $b) -> fit($a).
+
+# ── THE RELATIONAL READING IS NOT COLLATERAL DAMAGE ───────────────────────────
+# Non-numeric operands mean store lookup on BOTH sides, so the two halves cannot
+# disagree and the fact asserts normally. These are premises for the queries below,
+# so they stay resident deliberately (not `:accept-scoped`).
+
+:accept
+greater(Alis, Bob).
+
+? greater(Alis, Bob).
+# => TRUE
+
+# Not asserted, and no rule concludes it — the closed-world answer, not an error.
+? greater(Bob, Alis).
+# => FALSE
+
+# And it still works as a rule guard, which is the part a name-based ban would
+# have destroyed.
+person(Ara).
+
+:accept
+all $x: person($x) & greater(Alis, Bob) -> fit($x).
+
+? fit(Ara).
+# => TRUE
+
+# ── THE QUERY SIDE IS WHERE A COMPARISON BELONGS ──────────────────────────────
+# Arithmetic, not lookup: a FALSE here is decided, not an absence of evidence.
+
+? greater(5, 3).
+# => TRUE
+
+? greater(3, 5).
+# => FALSE
+
+? less(3, 5).
+# => TRUE
+
+? num_equal(5, 5).
+# => TRUE
+
+? num_equal(5, 3).
+# => FALSE
+
+# ── THE HONEST BOUNDARY ───────────────────────────────────────────────────────
+# There is no numeric threshold RULE, and this file is where that is stated rather
+# than discovered. The two idioms that cover the real cases:
+#
+# (1) Assert the CLASSIFICATION the source states and let rules read that. This is
+#     what `drug-interactions.nibli` does with `thin` (narrow therapeutic index) —
+#     a clinical judgement, not a workaround for a missing comparison.
+thin(Varfarin).
+
+:accept
+all $d: thin($d) -> dangerous($d).
+
+? dangerous(Varfarin).
+# => TRUE
+
+# (2) For ORDER rather than magnitude, the numeral-free time relations already
+#     carry it — see pins/temporal-order.nibli. Nothing here reopens that door:
+#     a magnitude may be stated as an opaque term, but no arithmetic follows from
+#     it, and no rule may compare two of them.
+
+:expect-pins 17

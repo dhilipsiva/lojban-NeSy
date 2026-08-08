@@ -133,6 +133,19 @@ pub fn validate(candidate: &str) -> Result<LogicBuffer, GateError> {
                 .to_string(),
         ));
     }
+    // The comparison guard is the ENGINE's own predicate, not a re-implementation:
+    // Formalize authors assertions, so anything the engine refuses at ingress must be
+    // caught here or the agent burns a retry on text that could never load. Sharing the
+    // one function is what keeps the two sides from drifting — before this, a candidate
+    // carrying `greater($n, 15)` passed the whole gate stack and was then rejected by
+    // `assert_text` with no gate ever having objected.
+    if let Err(why) = nibli_reason::validate_no_operational_comparisons(&buf) {
+        return Err(GateError::Semantic(format!(
+            "{why} A threshold cannot be a rule guard: assert the classification the source \
+             states (a predicate like `thin(Varfarin).`) rather than inventing a numeric \
+             condition around it."
+        )));
+    }
     Ok(buf)
 }
 
@@ -289,6 +302,34 @@ mod tests {
 
         validate("believe(me, fact { sum(5, 2, 3) }).")
             .expect("compute inside opaque quoted content is not executed as a KB premise");
+    }
+
+    /// The engine refuses a numeric comparison whose operands could be numbers, in a
+    /// ground fact and in every rule position alike. Formalize authors ASSERTIONS, so it
+    /// must refuse the same text — otherwise the agent spends a retry discovering at
+    /// `assert_text` what no gate objected to. The guard is the engine's own function,
+    /// so the two sides cannot drift.
+    #[test]
+    fn numeric_comparisons_compile_for_queries_but_are_rejected_as_formalized_kb_output() {
+        local_gates("greater(20, 15).")
+            .expect("the compiler/query surface must retain comparison syntax");
+
+        for candidate in [
+            "greater(20, 15).",
+            "all $x: all $n: quantity($x, $n) & greater($n, 15) -> fit($x).",
+            "all $x: all $n: quantity($x, $n) & ~greater($n, 15) -> fit($x).",
+            "all $x: all $n: quantity($x, $n) -> greater($n, 15).",
+        ] {
+            let err = validate(candidate)
+                .expect_err("Formalize must not emit a computed comparison as a KB assertion");
+            assert!(matches!(err, GateError::Semantic(_)), "{err:?}");
+            assert!(err.message().contains("computed comparison"), "{err:?}");
+        }
+
+        // The test is on the OPERANDS, so the relational reading still passes: it is
+        // answered from the store on both sides and cannot diverge.
+        validate("greater(Alis, Bob).")
+            .expect("a comparison between non-numeric terms is an ordinary relational fact");
     }
 
     #[test]

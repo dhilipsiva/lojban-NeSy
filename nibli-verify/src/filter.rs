@@ -25,6 +25,36 @@ pub fn source_has_negation(line: &str) -> bool {
     line.contains('~')
 }
 
+/// Whether a relation name belongs to the numeric-comparison family — either the bare
+/// name (`greater`) or one of its event-decomposition role predicates (`greater_x2`).
+///
+/// NEITHER oracle has a theory of arithmetic, and nothing in the translators supplies
+/// one. `tptp.rs` emits FOF only, with numbers as `num_<n>` Herbrand constants, so
+/// Vampire reads `greater(num_20, num_15)` as an uninterpreted relation with zero
+/// axioms — `CounterSatisfiable`, against an engine that computes TRUE. `asp.rs` folds
+/// the same group through `regroup_event` to `goal :- greater(num_5, num_3).`, likewise
+/// unentailed. Making clingo compare them as integers is not a `BodyLit` arm: it needs
+/// the GLOBAL number rendering changed, and mixing `num_<n>` constants with integers
+/// under a relational operator is vacuously true by ASP-Core-2 term order — a wrong
+/// oracle verdict, not a skip.
+///
+/// So these are skipped in every filter. Nothing generates one today, which is why the
+/// hole was silent; this closes it before a generator or curated case walks into it.
+/// `equals` is the contrasting case and the reason this needs its own predicate: it is
+/// the one relation nibli never event-decomposes, so `equals_args` can match it flatly
+/// and both oracles have a native theory for identity.
+///
+/// The `_xN` suffix strip is deliberately re-implemented here rather than reaching for
+/// `nibli_reason::materialize::surface_relation`: nibli-verify stays independent of the
+/// thing it checks (the same reason `asp.rs` re-derives the event regrouping).
+fn is_numeric_comparison_relation(rel: &str) -> bool {
+    let base = match rel.rsplit_once("_x") {
+        Some((head, tail)) if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) => head,
+        _ => rel,
+    };
+    nibli_types::relations::is_numeric_comparison(base)
+}
+
 /// Ground `du` in the ONE verified shape both oracles can judge: the buffer's sole root,
 /// with exactly two `Constant` args — i.e. a bare `la .X. cu du la .Y.` fact or query
 /// (`du` is never event-decomposed, so this is precisely how nibli-semantics compiles it). The
@@ -50,6 +80,9 @@ pub fn buffer_non_classical(buf: &LogicBuffer) -> Option<&'static str> {
             LogicNode::ObligatoryNode(_) | LogicNode::PermittedNode(_) => "deontic",
             LogicNode::CountNode(_) => "exact-count quantifier",
             LogicNode::Predicate((rel, _)) if rel.starts_with("__abs_") => "abstraction",
+            LogicNode::Predicate((rel, _)) if is_numeric_comparison_relation(rel) => {
+                "numeric comparison (no theory of arithmetic)"
+            }
             LogicNode::Predicate((rel, args))
                 if rel == "equals" && !du_mappable(buf, idx, args) =>
             {
@@ -109,6 +142,9 @@ pub fn buffer_asp_mappable_with(
             LogicNode::ComputeNode(_) => "compute predicate",
             LogicNode::ObligatoryNode(_) | LogicNode::PermittedNode(_) => "deontic",
             LogicNode::CountNode(_) => "exact-count quantifier",
+            LogicNode::Predicate((rel, _)) if is_numeric_comparison_relation(rel) => {
+                "numeric comparison (no theory of arithmetic)"
+            }
             LogicNode::Predicate((rel, args))
                 if rel == "equals"
                     && !du_mappable(buf, idx, args)
@@ -145,6 +181,9 @@ pub fn buffer_asp_mappable_query(buf: &LogicBuffer) -> Option<&'static str> {
             LogicNode::ObligatoryNode(_) | LogicNode::PermittedNode(_) => "deontic",
             LogicNode::CountNode(_) if buf.roots.as_slice() != [idx as u32] => {
                 "exact-count quantifier (nested / non-root)"
+            }
+            LogicNode::Predicate((rel, _)) if is_numeric_comparison_relation(rel) => {
+                "numeric comparison (no theory of arithmetic)"
             }
             LogicNode::Predicate((rel, args))
                 if rel == "equals" && !du_mappable(buf, idx, args) =>
@@ -340,5 +379,76 @@ mod tests {
         };
         assert_eq!(buffer_non_classical(&abs), Some("abstraction"));
         assert_eq!(buffer_asp_mappable(&abs), None);
+    }
+
+    /// A numeric comparison must be skipped by EVERY filter, in both the flat and the
+    /// event-decomposed spelling. Neither oracle has a theory of arithmetic, so an
+    /// admitted comparison is a false alarm (`Diverge`) rather than a missed case.
+    /// Nothing generates one today — which is exactly why this needs pinning.
+    #[test]
+    fn a_numeric_comparison_is_not_mappable_by_any_filter() {
+        const REASON: &str = "numeric comparison (no theory of arithmetic)";
+
+        // Flat two-argument spelling (raw-IR injection, persisted-buffer replay).
+        for rel in ["greater", "less", "num_equal"] {
+            let flat = LogicBuffer {
+                nodes: vec![LogicNode::Predicate((
+                    rel.into(),
+                    vec![LogicalTerm::Number(5.0), LogicalTerm::Number(3.0)],
+                ))],
+                roots: vec![0],
+            };
+            assert_eq!(buffer_non_classical(&flat), Some(REASON), "{rel} classical");
+            assert_eq!(buffer_asp_mappable(&flat), Some(REASON), "{rel} asp");
+            assert_eq!(
+                buffer_asp_mappable_with(&flat, true),
+                Some(REASON),
+                "{rel} asp, non-ground equals allowed"
+            );
+            assert_eq!(
+                buffer_asp_mappable_query(&flat),
+                Some(REASON),
+                "{rel} asp query"
+            );
+        }
+
+        // Event-decomposed spelling — what the KR surface actually produces. The role
+        // predicate carries the operand, so the ROLE name has to be caught too.
+        let decomposed = LogicBuffer {
+            nodes: vec![
+                LogicNode::Predicate(("greater".into(), vec![LogicalTerm::Variable("ev".into())])),
+                LogicNode::Predicate((
+                    "greater_x1".into(),
+                    vec![
+                        LogicalTerm::Variable("ev".into()),
+                        LogicalTerm::Number(20.0),
+                    ],
+                )),
+                LogicNode::AndNode((0, 1)),
+                LogicNode::ExistsNode(("ev".into(), 2)),
+            ],
+            roots: vec![3],
+        };
+        assert_eq!(buffer_non_classical(&decomposed), Some(REASON));
+        assert_eq!(buffer_asp_mappable(&decomposed), Some(REASON));
+        assert_eq!(buffer_asp_mappable_query(&decomposed), Some(REASON));
+
+        // The suffix strip must not over-reach: an ordinary relation whose name merely
+        // ends in a role-shaped suffix, or contains a comparison name as a substring,
+        // stays mappable.
+        for rel in ["dog_x1", "greatest", "lesson", "ungreater"] {
+            let ordinary = LogicBuffer {
+                nodes: vec![LogicNode::Predicate((
+                    rel.into(),
+                    vec![LogicalTerm::Constant("adam".into())],
+                ))],
+                roots: vec![0],
+            };
+            assert_eq!(
+                buffer_non_classical(&ordinary),
+                None,
+                "{rel} must stay mappable"
+            );
+        }
     }
 }

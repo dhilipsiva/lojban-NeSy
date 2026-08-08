@@ -185,7 +185,14 @@ proof-local: built-in evaluation or an external reply decides that node in the c
 derivation but is never inserted into the typed fact store or assertion registry. It has no
 fact id, domain, persistence, replay, retraction, or forward-chaining effect. Executable
 `ComputeNode`s are query-only; assertion ingress rejects them in facts and every rule
-position before allocating an id, while opaque abstraction bodies remain quoted. Each
+position before allocating an id, while opaque abstraction bodies remain quoted. The
+numeric comparisons `greater`/`less`/`num_equal` stay plain `Predicate`s — they are never
+in the compute-predicate set — but the reasoner recognises them by name and decides them
+arithmetically whenever both operands resolve to numbers, on the verdict path AND during
+witness enumeration. That reading is likewise query-only: an atom whose operands could be
+numbers is refused at assertion ingress in facts and in every rule position, so a numeric
+threshold cannot be a rule guard (GUARANTEES §Disclosed Sharp Edges). An atom whose
+operands are non-numeric keeps the ordinary relational reading and is stored. Each
 top-level query recomputes or redispatches; a transient within-query memo may stabilize
 repeated identical external checks but never survives to the next query. A backend error is
 always `Unknown(BackendUnavailable)`, even
