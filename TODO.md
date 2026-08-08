@@ -157,6 +157,39 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   keeps refusing by an explicit rule rather than by accident; and the choice is disclosed
   in GUARANTEES §Compute Result Lifecycle.
 
+- **An external compute relation asserted BEFORE it is registered becomes an unreachable
+  stored fact.** A relation is marked `ComputeNode` by `transform_compute_nodes` at COMPILE
+  time, against the session's registry (`nibli-session/src/lib.rs`:63-66, 124-125). So
+  `exponential(2, 3, 8).` asserted before `register_compute_predicate("exponential")`
+  carries no compute node, `validate_no_compute_assertions` has nothing to object to, and
+  it stores as an ordinary fact. Verified on 2026-08-08 through `NibliEngine`: the
+  assertion succeeds (fact id minted), the query answers `True` from the store, and after
+  registration the SAME query answers `Unknown(BackendUnavailable)` — the stored fact is
+  never consulted again, cannot be reached, and is still listed in `:facts` and still
+  retractable. This is the assert/query divergence class the numeric-comparison guard
+  closes, minus the guard: there is no operand-based test to apply, because the divergence
+  is caused by REGISTRATION ORDER rather than by the atom. It is fail-CLOSED (Unknown, not
+  a wrong TRUE), which is why it is an entry rather than a defect, but a KB whose facts
+  silently stop being consulted halfway through a session is not a contract anyone stated.
+  Options: refuse a ground assertion of any name in `REFERENCE_EXTERNAL_COMPUTE`
+  regardless of registration; refuse REGISTRATION when a stored fact for that relation
+  already exists; or accept and disclose it. **Exit:** the chosen rule is pinned in both
+  orders (assert-then-register and register-then-assert) at the engine level, `:compute`
+  in nibli-host reports whatever it invalidates, and GUARANTEES §Compute Result Lifecycle
+  states the contract instead of leaving registration order load-bearing and undocumented.
+
+- **`collect_negated_relations` misses the opposite-polarity visit of a shared subtree.**
+  The walker (`nibli-reason/src/materialize.rs`:1457-1470) threads `under_not` as a
+  parameter but keys its `seen` set on node id ALONE, so a node first reached positively
+  is never re-walked under a negation. A compiled buffer is a DAG — `<->` and `xor` share
+  subtrees between both polarities — so the set is in that case an UNDER-approximation,
+  which is precisely what the function's own doc comment says it is not ("deliberately
+  over-approximating … MISSING one only costs the optimisation"). The second half of that
+  sentence is true and is why this is low priority: a missing target falls back to backward
+  chaining and no verdict moves. Key `seen` on `(id, under_not)`. **Exit:** a `<->`/`xor`
+  case whose negative-polarity relation is currently missed is pinned, and the doc comment
+  matches what the code does.
+
 - **Materialisation: the trace story (C2).** Proof-traced queries keep the
   backward-chaining path (`positive_lookup` lowered for their duration) because a
   materialised verdict has no derivation to record. To let them use the fast path,
@@ -186,7 +219,7 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   with 492 queries, and each one drops the saturation: 20 identical queries with no
   mutation cost 0.13 s, the same 20 with a `:accept-scoped` between each cost 1.16 s
   (~9x). A `:refuse` costs the same as a real mutation even though the KB ends
-  semantically identical — `rebuild_inner` (`nibli-reason/src/lib.rs`:479) nulls the
+  semantically identical — `rebuild_inner` (`nibli-reason/src/lib.rs`:482) nulls the
   saturation unconditionally on the rollback. Preserving it across a rollback that
   restores the prior state is a smaller, strictly-sound subset of C3 and would cover
   36 of those 66 directives.
@@ -218,8 +251,8 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 - **Check proof indices instead of casting them.** The display-string half of this entry
   LANDED in `706bfb9`: the provenance tracer now keys structurally on `StoredFact`
-  (`memo: &mut HashMap<StoredFact, u32>`, `nibli-reason/src/reasoning.rs`:556 and :3163,
-  read at :3168), so human rendering is no longer an identity boundary and display stays at
+  (`memo: &mut HashMap<StoredFact, u32>`, `nibli-reason/src/reasoning.rs`:556 and :3209,
+  read at :3214), so human rendering is no longer an identity boundary and display stays at
   the render edge. What remains is the index half: every step index is produced by an
   unchecked `steps.len() as u32` — `reasoning.rs`:2752, :3173, :3197, :3243, :3265, :3284,
   :3326, :3440, :3469 — so a trace that outgrows `u32` wraps into a valid-looking
@@ -231,7 +264,7 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
   `set_rule_forward` and `set_rule_priority` mutate compiled `UniversalRuleRecord`s, but
   those settings are not part of `FactRecord`; `rebuild_inner` recreates rules at default
   `forward=false, priority=0` and suppresses forward firing while `rebuilding` is true
-  (`nibli-reason/src/lib.rs`:238-308; `rules.rs`:599-607,985-988). An unrelated retraction
+  (`nibli-reason/src/lib.rs`:434-535; `rules.rs`:599-607,985-988). An unrelated retraction
   therefore changes rule configuration and fact-store/proof shape even when definitive
   query answers remain backward-derivable. Either persist/reapply the settings as session
   configuration or make the setters explicitly ephemeral and remove claims of replay
@@ -241,7 +274,7 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 - **Make aggregation fail closed instead of returning a partial numeric result.**
   `KnowledgeBase::aggregate` uses `filter_map` over witness bindings
-  (`nibli-reason/src/lib.rs`:1128-1159), silently dropping a witness when the requested
+  (`nibli-reason/src/lib.rs`:1451-1480), silently dropping a witness when the requested
   variable is absent or nonnumeric and then summing/averaging the survivors. It also does
   not reject non-finite operands or overflowed results, while the embedding API exposes
   only `Option<f64>`. Define a typed outcome that distinguishes empty input, incomplete or
@@ -369,20 +402,20 @@ exists.
   README, and the reference gate.
 
 - **Remove the retired two-path retraction story from active docs and benchmarks.**
-  `retract_fact_inner` (`nibli-reason/src/lib.rs`:411-421) has no branch at all: it flips
-  `r.retracted = true` and calls `rebuild_inner` unconditionally at :418, which ID-sorts the
-  survivors (:488). Its OWN doc block (:391-410) correctly narrates the 2026-08-01
+  `retract_fact_inner` (`nibli-reason/src/lib.rs`:414-424) has no branch at all: it flips
+  `r.retracted = true` and calls `rebuild_inner` unconditionally at :421, which ID-sorts the
+  survivors (:491). Its OWN doc block (:394-413) correctly narrates the 2026-08-01
   retirement and cites `retract_diff.rs` — but the public API comment further down, at
-  :1497-1498, still says "Uses incremental removal for ground facts, full rebuild for facts
+  :1500-1501, still says "Uses incremental removal for ground facts, full rebuild for facts
   that compiled into rules." Two comments on adjacent functions disagree and the public one
   is the wrong one. Three sites:
-  (1) `nibli-reason/src/lib.rs`:1497-1498 — the stale public `retract_fact` doc, unchanged
+  (1) `nibli-reason/src/lib.rs`:1500-1501 — the stale public `retract_fact` doc, unchanged
   since 009a663 (2026-04-07);
   (2) `nibli-engine/benches/engine_bench.rs`:196-204 narrates "two groups, one per
   retraction path", so `bench_retraction_incremental` (:229-247, comment "Flat
   direct-inject ground facts … → incremental path" at :235, registered at :257) measures
   the rebuild path under a false label;
-  (3) `nibli-reason/src/kb.rs`:1423-1425 documents `rule_source_map` as "Used for
+  (3) `nibli-reason/src/kb.rs`:1584-1586 documents `rule_source_map` as "Used for
   incremental retraction: … the corresponding rules can be removed without full rebuild",
   but at HEAD that map is WRITE-ONLY — writes at `rules.rs`:674 and :1727, clears at
   `lib.rs`:470 and `kb.rs`:1762, a clone at `kb.rs`:1644, and no reader anywhere. Decide
@@ -448,13 +481,13 @@ exists.
   above describes, so that renderer fix should cover resource verdicts too. The unreachable
   hint text (:595) recommends raising `max_chain_depth`, a knob no shipped surface exposes:
   the only setter is the Rust API `KnowledgeBase::set_max_chain_depth`
-  (`nibli-reason/src/lib.rs`:559) — there is no `:depth` command and no `NIBLI_DEPTH`, and
+  (`nibli-reason/src/lib.rs`:562) — there is no `:depth` command and no `NIBLI_DEPTH`, and
   GUARANTEES.md:131 states the shipped runtime surfaces keep the default. Wire a real Depth
   hint into the verdict path (and something for it to recommend), or drop the dead arm.
 - **`wit/world.wit`:281 `proof-ref` doc comment is wrong.** It claims "No children — the
   full proof was shown at its first occurrence," but the memo-hit arm of
-  `trace_predicate_provenance_typed` (`nibli-reason/src/reasoning.rs`:3168-3180) always
-  pushes `children: vec![cached_idx]` (:3177), and nothing strips it: `children` lives on
+  `trace_predicate_provenance_typed` (`nibli-reason/src/reasoning.rs`:3214-3226) always
+  pushes `children: vec![cached_idx]` (:3223), and nothing strips it: `children` lives on
   `proof-step` (`wit/world.wit`:292-296), not on the rule variant, and
   `nibli-pipeline/src/lib.rs`:199 clones it across the component boundary with no ProofRef
   special case. The verbose text renderer re-expands that child while the collapsed/UI
