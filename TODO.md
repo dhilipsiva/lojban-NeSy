@@ -138,26 +138,6 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Reasoning / evaluation
 
-- **Negation loses the reason a leaf was undecided, so `~<undecided>` under find reports
-  zero rows instead of refusing.** `negate_result` (`nibli-reason/src/reasoning.rs`)
-  collapses EVERY non-definitive inner verdict to `Unknown(NafDependent)` — deliberately,
-  since that is the four-valued contract's promised reason — and `witness_search_cut`
-  deliberately EXCLUDES `NafDependent` as "a defensibly-excluded NAF-dependent
-  existential". Between them, "the inner leaf was refused/cut" and "the inner existential
-  is NAF-undetermined" become the same value, and enumeration reports a definitive zero
-  for the first. Reproduced with a compute leaf
-  (`a_negated_compute_leaf_under_find_reports_zero_rows_rather_than_refusing`,
-  `nibli-reason/src/tests/numeric_compute.rs`): `dog($x) & ~exponential(8, 2, 3).` yields
-  `Ok(0 rows)` where the positive, obligation and permission routes all refuse. NOT
-  compute-specific — the same holds for a `~` over any depth-cut or cycle-cut leaf, which
-  is the larger reason to fix it. The dispatch budget is unaffected (zero calls either
-  way); the gap is in REPORTING. Separating the two readings changes NAF semantics for
-  every negated query, so it wants its own decision rather than riding a compute change.
-  **Exit:** a refused or cut leaf under `~` makes find/count/aggregate refuse, a genuinely
-  NAF-undetermined existential still does not, the distinction is stated in GUARANTEES
-  §Query Result Contract, and the existing NAF find/count pins in
-  `nibli-reason/src/tests/find_aggregates.rs` still hold.
-
 - **An external compute relation asserted BEFORE it is registered becomes an unreachable
   stored fact.** A relation is marked `ComputeNode` by `transform_compute_nodes` at COMPILE
   time, against the session's registry (`nibli-session/src/lib.rs`:63-66, 124-125). So

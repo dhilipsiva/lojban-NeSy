@@ -1240,38 +1240,36 @@ fn find_refuses_a_compute_group_on_every_positive_route() {
     }
 }
 
-/// KNOWN GAP, pinned so it cannot drift silently: a compute leaf under `~` yields
-/// zero rows instead of refusing, even though the leaf was never decided.
+/// The NEGATED route refuses too, so all four routes agree.
 ///
-/// The cause is not compute-specific and predates this work. `negate_result` collapses
-/// EVERY non-definitive inner verdict to `Unknown(NafDependent)` — deliberately, since
-/// that is the four-valued contract's promised reason — and `witness_search_cut`
-/// deliberately EXCLUDES `NafDependent` as "a defensibly-excluded NAF-dependent
-/// existential". Between them, the fact that the inner leaf was refused rather than
-/// merely unprovable is lost, so enumeration reports a definitive zero. The same holds
-/// for any undecided leaf under `~`, not just a compute one.
+/// `negate_result` collapses every non-definitive inner verdict to
+/// `Unknown(NafDependent)` — deliberately, and pinned by the Lean model — and
+/// `witness_search_cut` deliberately excludes `NafDependent`. Between them the fact
+/// that the inner leaf was REFUSED rather than merely unprovable used to be lost, so
+/// enumeration reported a definitive zero for a leaf it never decided. A monotone
+/// `naf_cut_epoch` now records the laundering at the collapse point, and the leaf guard
+/// consults it only when the leaf ends non-definitive.
 ///
-/// Not fixed here: separating the two readings changes NAF semantics for every negated
-/// query, which is a wider decision than this change. Tracked in TODO.md.
-///
-/// The dispatch budget still holds — zero calls — so the gap is in the REPORTING, not
-/// in the refusal.
+/// The dispatch budget holds either way: refusing costs zero calls.
 #[test]
-fn a_negated_compute_leaf_under_find_reports_zero_rows_rather_than_refusing() {
+fn a_negated_compute_leaf_under_find_refuses_as_incomplete() {
     FIND_DISPATCH_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let kb = new_kb();
     kb.set_compute_dispatch(recording_find_backend, recording_find_batch);
     assert_buf(&kb, compile_surface("dog(Adam)."));
-    let rows = kb
+    let err = kb
         .query_find_inner(compile_surface_with_exponential(
             "dog($x) & ~exponential(8, 2, 3).",
         ))
-        .expect("today the negated route does not refuse");
-    assert_eq!(rows.len(), 0, "and it reports zero rows");
+        .unwrap_err();
+    assert!(
+        err.contains("witness enumeration incomplete"),
+        "a refused leaf under `~` must refuse the enumeration too: {err}"
+    );
     assert_eq!(
         FIND_DISPATCH_CALLS.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "the budget still holds: the gap is in reporting, not in dispatch"
+        "refusing must still cost zero dispatches"
     );
 }
 
@@ -1399,6 +1397,56 @@ fn a_role_first_arithmetic_group_is_consumed_too() {
         query_find(&kb, buf).len(),
         1,
         "and role-first still yields the same one row"
+    );
+}
+
+/// `NonFinite` is the ONE negated `Unknown` that still does not refuse — the sole
+/// inhabitant of the "defensibly excluded" category, and therefore what gives that
+/// category meaning.
+///
+/// It is a claim about f64 range, not about the search: a non-finite operand satisfies
+/// no arithmetic, and negating that does not make a witness more likely to exist beyond
+/// some budget. So it is non-cut on BOTH polarities — the positive twin is
+/// `an_overflowing_arithmetic_result_under_find_is_no_witness_not_a_refusal`. Treating
+/// the negated case as a cut while the positive case is not would be an asymmetry with
+/// no principle behind it.
+///
+/// The trailing control matters: it pins that the epoch bump (or absence of one) left no
+/// residue that truncates the rest of the sweep.
+#[test]
+fn a_negated_non_finite_group_under_find_is_zero_rows_not_a_refusal() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Adam)."));
+
+    // ¬(∃ev. product-group(f64::MAX, 1e308, 1e308)) — finite operands, overflowing
+    // result, so the inner verdict is Unknown(NonFinite) rather than a cut.
+    let mut nodes = Vec::new();
+    let ev = || LogicalTerm::Variable("_ev0".to_string());
+    let head = compute(&mut nodes, "product", vec![ev()]);
+    let mut acc = head;
+    for (i, v) in [f64::MAX, 1e308, 1e308].iter().enumerate() {
+        let role = pred(
+            &mut nodes,
+            &format!("product_x{}", i + 1),
+            vec![ev(), LogicalTerm::Number(*v)],
+        );
+        acc = and(&mut nodes, acc, role);
+    }
+    let grp = exists(&mut nodes, "_ev0", acc);
+    let root = not(&mut nodes, grp);
+    let rows = kb
+        .query_find_inner(LogicBuffer {
+            nodes,
+            roots: vec![root],
+        })
+        .expect("a negated non-finite group must not refuse the enumeration");
+    assert_eq!(rows.len(), 0, "it yields no witness, got {rows:?}");
+
+    // Control, same KB: nothing was truncated and no epoch residue leaked.
+    assert_eq!(
+        query_find(&kb, compile_surface("dog($x).")).len(),
+        1,
+        "the rest of the sweep must be unaffected"
     );
 }
 

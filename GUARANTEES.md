@@ -157,6 +157,8 @@ Every query returns exactly one of four results:
 
 There is no confident-sounding middle ground. The engine never guesses. (One deliberately DECIDED numeric case that surprises: divide-by-zero over finite operands is a confident FALSE, not non-finite — see "Disclosed Sharp Edges".)
 
+`NafDependent` is the single verdict-level reason for a negation over any non-definitive sub-goal: the inner reason collapses into it, which keeps the four-valued contract small and is what the mechanised negation model pins. It therefore cannot, on its own, distinguish "the inner leaf was CUT" from "the inner leaf was merely unprovable" — a distinction the VERDICT does not need (both are non-definitive) but witness enumeration does, since only the second is a defensible absence. The engine records it separately at the point of collapse rather than widening the reason; §Compute Result Lifecycle states the resulting enumeration rule.
+
 ## Compute Result Lifecycle
 
 Built-in arithmetic and external compute replies are **proof-local evidence**. A
@@ -195,14 +197,23 @@ enumeration means the engine declined to consult the backend, not that the backe
 failed — it was never contacted. The verdict path is deliberately different, and MAY
 forward a free or non-numeric operand to the backend.
 
-Two disclosed residuals. An arithmetic result that overflows f64 is `Unknown(NonFinite)`,
-which is deliberately not a search cut, so enumeration reports no witness without
-refusing — a claim about f64 range, not about the data. And a compute leaf under `~`
-reports zero rows instead of refusing: negation collapses every non-definitive inner
-verdict to the NAF-dependent reason, which enumeration defensibly excludes, so the fact
-that the leaf was refused rather than merely unprovable is lost. That is not
-compute-specific — it holds for any undecided leaf under `~` — and is tracked in
-`TODO.md`. The dispatch budget still holds there: zero calls either way.
+**Negation does not launder a cut.** An undecided leaf refuses whether or not a `~` sits
+between it and the query. The verdict-level reason for any negated non-definitive is
+`NafDependent` (see §Query Result Contract), which by itself cannot say whether the inner
+leaf was CUT or merely unprovable — so the engine records the distinction separately, at
+the point of collapse, and enumeration consults it only when the leaf's own verdict is
+non-definitive. That gating is load-bearing rather than cautious: a negation is evaluated
+inside a rule ATTEMPT the engine may then abandon, so a goal that ends TRUE — or
+definitively FALSE by another rule — still enumerates, and rule registration order never
+decides answer-versus-refusal. This covers the case with no `~` on the surface at all: a
+rule with an undecided negated antecedent makes its own head refuse.
+
+One disclosed residual, symmetric across polarity. `Unknown(NonFinite)` — a non-finite
+operand, or a finite-operand computation whose result overflows f64 — is deliberately not
+a search cut, so enumeration reports no witness without refusing, both plainly and under
+`~`. It is a claim about f64 range rather than about the search, and negating it does not
+make a witness likelier to exist beyond some budget. The dispatch budget holds throughout:
+zero calls either way.
 
 Every top-level query starts with no compute results from an earlier query.
 Built-ins recompute locally; registered external predicates redispatch to the

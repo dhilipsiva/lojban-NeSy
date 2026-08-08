@@ -359,6 +359,11 @@ fn combine_disjunction(left: QueryResult, right: QueryResult) -> QueryResult {
 /// reason (e.g. CycleCut) is the root cause and remains visible in the trace;
 /// the verdict reason becomes the negation-specific `NafDependent`.
 /// `ResourceExceeded` is polarity-independent and forwarded unchanged.
+///
+/// EVERY caller should be [`negate_result_tracked`], not this function directly: the
+/// collapse is where the "was the inner CUT?" information is lost, and witness
+/// enumeration needs it. The bare form stays for the Lean-parity test, which pins this
+/// exact mapping.
 fn negate_result(result: QueryResult) -> QueryResult {
     match result {
         QueryResult::True => QueryResult::False,
@@ -366,6 +371,40 @@ fn negate_result(result: QueryResult) -> QueryResult {
         QueryResult::Unknown(_) => QueryResult::Unknown(UnknownReason::NafDependent),
         QueryResult::ResourceExceeded(kind) => QueryResult::ResourceExceeded(kind),
     }
+}
+
+/// [`negate_result`], plus a note in `naf_cut_epoch` when the collapse just hid a
+/// SEARCH CUT.
+///
+/// The verdict is bit-identical to `negate_result`'s — the mapping is pinned by
+/// `exhaustive_soundness_matches_lean_model` and by `proofs/Combiner.lean`, and
+/// `NafDependent` remains the one verdict-level reason for a negated non-definitive.
+/// What is added is a side note, because `Unknown(CycleCut)` and
+/// `Unknown(NafDependent)` are indistinguishable AFTER the collapse and only the
+/// second is treated as a defensible absence. Enumeration would otherwise report a
+/// definitive zero rows for a leaf it never decided.
+///
+/// The epoch RECORDS; it never decides. That separation is what makes this sound:
+/// a collapse site sits upstream of every pending-discard point in rule firing, so a
+/// rule attempt the engine deliberately abandons also bumps the counter. The leaf
+/// guard in `find_witnesses` therefore consults the epoch ONLY when the leaf's own
+/// verdict is non-definitive — a goal that ends `True`, or definitively `False` by
+/// another rule, ignores the bump entirely. Modelled on `cycle_cut_epoch`, which
+/// guards `depth_cut_table` inserts by exactly the same discipline.
+///
+/// A bump asserts nothing, so every negation site can call this unconditionally
+/// without a per-site "is it safe here" argument — including the materialised fast
+/// path (whose input is always definitive, so it never bumps) and the candidate
+/// filter (whose verdict never escapes).
+fn negate_result_tracked(result: QueryResult, inner: &KnowledgeBaseInner) -> QueryResult {
+    if let QueryResult::Unknown(r) = &result
+        && unknown_reason_is_cut(r)
+    {
+        inner
+            .naf_cut_epoch
+            .set(inner.naf_cut_epoch.get().wrapping_add(1));
+    }
+    negate_result(result)
 }
 
 /// Evaluate a negated event-decomposed restrictor (`poi na <predicate>`) by
@@ -408,11 +447,14 @@ fn eval_negated_exists_group(
         && let Some((rel, tuple)) = crate::materialize::probe_negated_group(group, bindings)
         && m.is_complete_for(&rel, tuple.len())
     {
-        return negate_result(if m.contains(&rel, &tuple) {
-            QueryResult::True
-        } else {
-            QueryResult::False
-        });
+        return negate_result_tracked(
+            if m.contains(&rel, &tuple) {
+                QueryResult::True
+            } else {
+                QueryResult::False
+            },
+            inner,
+        );
     }
 
     // Flavor-exact NAF: the group's inner templates carry exactly the flavor
@@ -461,7 +503,7 @@ fn eval_negated_exists_group(
     } else {
         best.unwrap_or(QueryResult::False)
     };
-    negate_result(exists_verdict)
+    negate_result_tracked(exists_verdict, inner)
 }
 
 /// Fold each negated-exists group's NAF verdict into a rule's condition
@@ -704,7 +746,7 @@ fn check_formula_holds_core<S: TraceSink>(
                 compute_memo,
                 sink,
             )?;
-            let verdict = negate_result(iv.clone());
+            let verdict = negate_result_tracked(iv.clone(), &*inner);
             let idx = if S::RECORDING {
                 sink.push(ProofStep {
                     rule: ProofRule::Negation,
@@ -1735,17 +1777,14 @@ pub(super) fn find_witnesses(
             // a satisfied one yields the same empty binding set the satisfied-leaf arm
             // below returns, and a group whose operands are non-numeric CONSTANTS
             // (`greater(Alis, Bob)`) still returns None and falls through to the store.
+            let epoch_before = inner.naf_cut_epoch.get();
             if let Some(group) =
                 try_evaluate_numeric_group(&*inner, buffer, v, *body, subs, compute_memo)
             {
                 if group.verdict.is_true() {
                     return Ok(vec![vec![]]);
                 }
-                // Reuse the shared cut classifier rather than re-deciding which
-                // non-True verdicts mean "incomplete": `Unknown(NonFinite)` is
-                // deliberately NOT a cut — a non-finite operand satisfies no
-                // comparison, which is a genuine no, not a budget exhaustion.
-                if witness_search_cut(&group.verdict) {
+                if leaf_search_incomplete(&group.verdict, &*inner, epoch_before) {
                     inner.find_horizon_hit = true;
                 }
                 return Ok(Vec::new());
@@ -1846,17 +1885,22 @@ pub(super) fn find_witnesses(
             Ok(results)
         }
         _ => {
+            // Snapshot BEFORE evaluating: `leaf_search_incomplete` compares against it
+            // to see whether a cut was laundered by a negation anywhere in this leaf's
+            // subtree. Nothing on the find path evaluates before this point —
+            // `collect_entailment_candidates` narrows from MANDATORY POSITIVE anchors
+            // and skips `NotNode`, so it cannot negate. If a future collector ever
+            // evaluates NAF, this snapshot has to move ahead of candidate collection.
+            let epoch_before = inner.naf_cut_epoch.get();
             let verdict = check_formula_holds(buffer, node_id, subs, inner, tense, compute_memo)?;
             if verdict.is_true() {
                 Ok(vec![vec![]])
             } else {
-                // Not a witness. Distinguish a genuine "no" (`False` /
-                // `Unknown(NafDependent)`) from the search being CUT at the
-                // depth/cycle horizon — the latter means a witness may exist beyond
-                // the budget, so flag the enumeration incomplete. `query_find_inner`
-                // then refuses a definitive count/aggregate rather than silently
-                // undercounting.
-                if witness_search_cut(&verdict) {
+                // Not a witness. Distinguish a genuine "no" from the search being CUT —
+                // the latter means a witness may exist beyond the budget, so flag the
+                // enumeration incomplete. `query_find_inner` then refuses a definitive
+                // count/aggregate rather than silently undercounting.
+                if leaf_search_incomplete(&verdict, &*inner, epoch_before) {
                     inner.find_horizon_hit = true;
                 }
                 Ok(vec![])
@@ -1865,20 +1909,70 @@ pub(super) fn find_witnesses(
     }
 }
 
+/// Whether an `Unknown` reason means the SEARCH was cut, as opposed to a
+/// genuine/defensible absence.
+///
+/// The two exclusions are deliberate and different in kind. `NafDependent` is the
+/// collapsed reason `negate_result` produces for any negated non-definitive inner; it
+/// says nothing about whether the inner was cut, which is exactly why
+/// `naf_cut_epoch` exists to record that separately. `NonFinite` is a claim about f64
+/// range rather than about the search — a non-finite operand satisfies no arithmetic —
+/// and it is non-cut on BOTH polarities, so negating it changes nothing.
+///
+/// Single source of truth: `witness_search_cut` delegates here, and so does the
+/// epoch bump in [`negate_result_tracked`]. A second copy of this list is how the
+/// two would come to disagree.
+fn unknown_reason_is_cut(r: &UnknownReason) -> bool {
+    matches!(
+        r,
+        UnknownReason::CycleCut
+            | UnknownReason::IncompleteKnowledge
+            | UnknownReason::BackendUnavailable
+    )
+}
+
 /// True when a non-`True` witness-leaf verdict means the search was CUT (a witness
 /// may exist beyond the depth budget or behind a cut cycle), as opposed to a
-/// genuine/defensible absence. `False` is a real no; `Unknown(NafDependent)` is a
-/// defensibly-excluded NAF-dependent existential. Everything else
-/// (`ResourceExceeded(_)`, `CycleCut`, `IncompleteKnowledge`, `BackendUnavailable`)
-/// marks the witness set INCOMPLETE.
+/// genuine/defensible absence. `False` is a real no; see [`unknown_reason_is_cut`]
+/// for why `NafDependent` and `NonFinite` are excluded. `ResourceExceeded(_)` is
+/// always a cut and is polarity-independent (`negate_result` forwards it unchanged),
+/// so a negated depth cut already refuses without help from the epoch.
 fn witness_search_cut(v: &QueryResult) -> bool {
-    matches!(
-        v,
-        QueryResult::ResourceExceeded(_)
-            | QueryResult::Unknown(UnknownReason::CycleCut)
-            | QueryResult::Unknown(UnknownReason::IncompleteKnowledge)
-            | QueryResult::Unknown(UnknownReason::BackendUnavailable)
-    )
+    match v {
+        QueryResult::ResourceExceeded(_) => true,
+        QueryResult::Unknown(r) => unknown_reason_is_cut(r),
+        QueryResult::True | QueryResult::False => false,
+    }
+}
+
+/// Whether a non-`True` witness leaf leaves the witness set INCOMPLETE — either
+/// because its own verdict is a cut, or because a negation inside its subtree
+/// COLLAPSED a cut into `NafDependent` while the leaf itself stayed undecided.
+///
+/// `epoch_before` is `naf_cut_epoch` sampled immediately before the leaf was
+/// evaluated.
+///
+/// The `!is_definitive()` conjunct is the whole safety argument, and it is not
+/// belt-and-braces. Rule firing tries every matching rule and every candidate
+/// binding, and a negation collapse happens INSIDE an attempt the engine may then
+/// abandon — a later rule concludes the goal, or a sibling conjunct is definitively
+/// false. Gating on the leaf's OWN verdict means an abandoned attempt cannot turn an
+/// answer into a refusal, and rule registration order cannot decide
+/// answer-vs-refusal. Without it, the ordinary "default via NAF, with an explicit
+/// override" idiom would start refusing.
+///
+/// The remaining conservatism is bounded and deliberate: a leaf that ends
+/// non-definitive for an UNRELATED reason, while a cut was negated somewhere in its
+/// subtree, refuses. That only ever turns `Ok(no row)` into `Err` — the row was never
+/// going to be emitted — so it cannot flip a `True` row or a definitive `False` into a
+/// refusal. Same class as the And/Or split that already ships.
+fn leaf_search_incomplete(
+    verdict: &QueryResult,
+    inner: &KnowledgeBaseInner,
+    epoch_before: u64,
+) -> bool {
+    witness_search_cut(verdict)
+        || (!verdict.is_definitive() && inner.naf_cut_epoch.get() != epoch_before)
 }
 
 // ─── Typed Backward-Chaining (Phase 4-5b) ────────────────────────
@@ -2389,7 +2483,7 @@ fn filter_event_candidates(
                 }
                 let result = check_predicate_in_kb_typed(&cs, inner, depth + 1, visited);
                 let verdict = if rule.negated_condition_indices.contains(&idx) {
-                    negate_result(result)
+                    negate_result_tracked(result, inner)
                 } else {
                     result
                 };
@@ -2644,7 +2738,7 @@ fn search_event_bindings(
             let substituted = substitute_fact(condition, bindings);
             let result = check_predicate_in_kb_typed(&substituted, inner, depth + 1, visited);
             let verdict = if rule.negated_condition_indices.contains(&idx) {
-                negate_result(result)
+                negate_result_tracked(result, inner)
             } else {
                 result
             };
@@ -3005,7 +3099,7 @@ fn process_phase<S: TraceSink>(
                 // Negated antecedent conditions hold via negation-as-failure: invert
                 // the verdict so ¬P holds iff P is unprovable (False), not iff P is True.
                 let verdict = if rule.negated_condition_indices.contains(&idx) {
-                    negate_result(result)
+                    negate_result_tracked(result, inner)
                 } else {
                     result
                 };

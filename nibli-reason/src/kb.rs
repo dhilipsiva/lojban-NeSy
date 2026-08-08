@@ -1660,6 +1660,21 @@ pub(super) struct KnowledgeBaseInner {
     /// detector for `depth_cut_table` inserts (snapshot before deriving a
     /// goal; unchanged ⇒ the subtree's Depth verdict is path-independent).
     pub(super) cycle_cut_epoch: Cell<u64>,
+    /// Monotone counter bumped whenever `negate_result_tracked` collapses a
+    /// SEARCH-CUT reason into `NafDependent` — the contamination detector for
+    /// witness enumeration (snapshot before evaluating a witness leaf; changed ⇒ a
+    /// cut was laundered somewhere in that leaf's subtree).
+    ///
+    /// Needed because the collapse is deliberate and Lean-pinned: after it,
+    /// `Unknown(CycleCut)` and `Unknown(NafDependent)` are the same value, and only
+    /// the second is a defensible absence. Sibling of `cycle_cut_epoch`, with the
+    /// same rule — consulted ONLY on a non-definitive branch, so an abandoned rule
+    /// attempt cannot turn an answer into a refusal.
+    ///
+    /// Wraparound is irrelevant: every use is an inequality against a snapshot.
+    /// Zeroed by `Clone` (so `with_assumptions` never inherits a snapshot across KB
+    /// instances) and not touched by `reset()`.
+    pub(super) naf_cut_epoch: Cell<u64>,
     /// Transient SHARED budget for du-equivalence variant derivations
     /// (`DU_VARIANT_BOUND`): the OUTERMOST fallback invocation owns it
     /// (None → Some(bound)), nested probe fallbacks drain the same budget —
@@ -1790,8 +1805,9 @@ pub(super) struct KnowledgeBaseInner {
     /// comparison, or built-in arithmetic over resolved operands) is decided before
     /// reaching a dispatch and is unaffected.
     ///
-    /// Same lifecycle as `find_horizon_hit`: `query_find_inner` sets it, the entailment
-    /// entry clears it, `reset()` does not touch it.
+    /// Scoped to the DYNAMIC EXTENT of `query_find_inner`, which sets it on the way in
+    /// and clears it on the way out (including every error path). The entailment
+    /// entries also clear it as defence in depth. `reset()` does not touch it.
     pub(super) find_enumeration: bool,
 }
 
@@ -1839,6 +1855,7 @@ impl Clone for KnowledgeBaseInner {
             pred_cache_enabled: Cell::new(false),
             depth_cut_table: RefCell::new(HashMap::new()),
             cycle_cut_epoch: Cell::new(0),
+            naf_cut_epoch: Cell::new(0),
             du_variant_budget: Cell::new(None),
             verbose: self.verbose,
             strict: self.strict,
@@ -1899,6 +1916,7 @@ impl KnowledgeBaseInner {
             pred_cache_enabled: Cell::new(false),
             depth_cut_table: RefCell::new(HashMap::new()),
             cycle_cut_epoch: Cell::new(0),
+            naf_cut_epoch: Cell::new(0),
             du_variant_budget: Cell::new(None),
             verbose: false,
             strict: false,

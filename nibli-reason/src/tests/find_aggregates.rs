@@ -289,6 +289,161 @@ fn test_find_cycle_cut_errs() {
     );
 }
 
+// ─── Negation hiding a search cut ────────────────────────────────────────────
+//
+// `negate_result` collapses EVERY non-definitive inner verdict to
+// `Unknown(NafDependent)` — deliberately, and pinned by the Lean model. But
+// `witness_search_cut` deliberately EXCLUDES `NafDependent` as a defensible
+// exclusion, so between them the fact that the inner leaf was CUT rather than
+// merely unprovable used to be lost, and enumeration reported a definitive zero.
+//
+// Note what the query below does NOT contain: a `~`. The laundering happens inside
+// RULE FIRING, so an ordinary positive goal inherits it whenever a rule concluding
+// that goal has an undecided negated antecedent. That is the wide half of the
+// defect and the harder one to notice, because there is no negation on the surface
+// to look at.
+
+/// A find over a rule-derived head whose negated antecedent is UNDECIDED must refuse
+/// as incomplete, not report zero rows.
+#[test]
+fn a_find_over_a_rule_head_with_an_undecided_negated_antecedent_refuses() {
+    let kb = new_kb();
+    // Clean-core: an imported witness would make `xange` DERIVABLE and decide the
+    // negated antecedent, greening this for the wrong reason.
+    kb.set_existential_import(false)
+        .expect("a fresh KB must accept clean-core");
+
+    // danlu(x) :- gerku(x) & ~xange(x).   — the negated antecedent is `xange`.
+    assert_buf(&kb, make_universal_naf("gerku", "xange", "danlu"));
+    // `xange` is concluded only through a positive CYCLE with no stored facts, so its
+    // extension is never complete and the cut survives materialisation — the same
+    // shape `test_find_cycle_cut_errs` above relies on.
+    assert_buf(&kb, make_universal("zdile", "xange"));
+    assert_buf(&kb, make_universal("xange", "zdile"));
+    assert_buf(&kb, make_assertion("alis", "gerku"));
+
+    // PREMISE GUARD: if this stops being NafDependent the test below stops testing
+    // anything, so assert the shape rather than trusting it.
+    assert!(
+        matches!(
+            query_result(&kb, make_find_query("danlu")),
+            QueryResult::Unknown(UnknownReason::NafDependent)
+        ),
+        "premise: the head's verdict must be the laundered NAF-dependent one, got {:?}",
+        query_result(&kb, make_find_query("danlu"))
+    );
+
+    assert!(
+        kb.query_find(make_find_query("danlu")).is_err(),
+        "an undecided negated antecedent must make find refuse, not report zero rows"
+    );
+    assert!(
+        kb.count_witnesses(make_find_query("danlu")).is_err(),
+        "count must refuse for the same reason"
+    );
+}
+
+/// FALSE-POSITIVE guard #1 — a laundered cut must not cost a TRUE row.
+///
+/// A negation collapse happens inside a rule ATTEMPT, and the engine tries every
+/// matching rule. Here the NAF rule is undecided and then abandoned because a second
+/// rule concludes the goal definitively — the ordinary "default via NAF, with an
+/// explicit override" idiom, which must still ENUMERATE.
+///
+/// Which mechanism protects this case is worth being precise about: a `True` leaf
+/// returns early in `find_witnesses` and never consults the incompleteness guard at
+/// all, so this row survives structurally. A latch set at the COLLAPSE point would
+/// have refused anyway, because it decides before the leaf's verdict is known — and it
+/// would have made the answer depend on rule registration order. The sibling
+/// `a_false_conjunct_after_a_naf_cut_still_answers_definitively` covers the case the
+/// `!is_definitive()` gate itself protects (a definitively-FALSE leaf), and goes red
+/// without it.
+#[test]
+fn a_definitive_rule_head_is_still_enumerated_when_another_rule_attempt_was_naf_cut() {
+    let kb = new_kb();
+    kb.set_existential_import(false)
+        .expect("a fresh KB must accept clean-core");
+
+    // FIRST: danlu(x) :- gerku(x) & ~xange(x).  — will be undecided for bob.
+    assert_buf(&kb, make_universal_naf("gerku", "xange", "danlu"));
+    // SECOND: danlu(x) :- mlatu(x).  — decides bob definitively TRUE.
+    assert_buf(&kb, make_universal("mlatu", "danlu"));
+    // `xange` only through a positive cycle with no facts → never definitive.
+    assert_buf(&kb, make_universal("zdile", "xange"));
+    assert_buf(&kb, make_universal("xange", "zdile"));
+    assert_buf(&kb, make_assertion("bob", "gerku"));
+    assert_buf(&kb, make_assertion("bob", "mlatu"));
+
+    let epoch_before = kb.inner.borrow().naf_cut_epoch.get();
+    let rows = kb
+        .query_find(make_find_query("danlu"))
+        .expect("a definitively-derived head must enumerate, not refuse");
+    assert_eq!(
+        rows.len(),
+        1,
+        "exactly bob, from the override rule, got {rows:?}"
+    );
+    assert_eq!(
+        kb.count_witnesses(make_find_query("danlu"))
+            .expect("count must not refuse either"),
+        1
+    );
+    // PREMISE GUARD. Without this the test passes vacuously the moment the NAF rule
+    // stops being evaluated at all (rule ordering, a short-circuit, a cycle that
+    // resolves definitively) — and then it is no longer a false-positive guard. The
+    // epoch MUST have moved: a cut was laundered, and the row came back anyway.
+    assert_ne!(
+        kb.inner.borrow().naf_cut_epoch.get(),
+        epoch_before,
+        "premise: the abandoned NAF attempt must actually have laundered a cut, \
+         otherwise this test is not guarding anything"
+    );
+}
+
+/// The other discard shape: the NAF condition is undecided, but a LATER condition in
+/// the same rule is definitively false, so the attempt is abandoned and the goal ends
+/// definitively FALSE. Zero rows and `Ok`, never a refusal.
+#[test]
+fn a_false_conjunct_after_a_naf_cut_still_answers_definitively() {
+    let kb = new_kb();
+    kb.set_existential_import(false)
+        .expect("a fresh KB must accept clean-core");
+    assert_buf(&kb, make_universal("zdile", "xange"));
+    assert_buf(&kb, make_universal("xange", "zdile"));
+    assert_buf(&kb, make_assertion("alis", "gerku"));
+    {
+        let mut inner = kb.inner.borrow_mut();
+        let pv = |n: &str| GroundTerm::PatternVar(n.to_string());
+        let bare = |rel: &str| {
+            StoredFact::Bare(GroundFact::new(
+                rel,
+                vec![pv("x__v0"), GroundTerm::Unspecified],
+            ))
+        };
+        // danlu(x) :- gerku(x) & ~xange(x) & never(x).   `never` is never asserted,
+        // so condition 3 is definitively FALSE and kills the attempt after the
+        // collapse at condition 2 has already bumped the epoch.
+        crate::rules::register_rule(
+            &mut inner,
+            crate::kb::RuleKind::Conditional,
+            "danlu <- gerku + ~xange + never".to_string(),
+            vec!["x__v0".to_string()],
+            vec![bare("gerku"), bare("xange"), bare("never")],
+            vec![bare("danlu")],
+            vec![1],
+            vec![],
+            false,
+            false,
+        )
+        .expect("the three-condition NAF rule must register (stratifiable)");
+    }
+
+    let rows = kb
+        .query_find(make_find_query("danlu"))
+        .expect("a definitively-false goal must answer, not refuse");
+    assert_eq!(rows.len(), 0, "no witness, definitively: {rows:?}");
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // ARGUMENT-POSITION INDEX TESTS
 // ═══════════════════════════════════════════════════════════════════

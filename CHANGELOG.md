@@ -15,6 +15,31 @@ here first.
 
 ### Fixed
 
+- **Negation no longer launders a search cut past witness enumeration.** `negate_result`
+  collapses every non-definitive inner verdict to `Unknown(NafDependent)` — deliberately,
+  and pinned by `proofs/Combiner.lean` — while `witness_search_cut` deliberately excludes
+  `NafDependent` as a defensible absence. Between them, a leaf that was CUT
+  (`CycleCut`/`IncompleteKnowledge`/`BackendUnavailable`) and then negated became
+  indistinguishable from one that was merely unprovable, so `find`/`count_witnesses`/
+  `aggregate` reported a definitive ZERO for a leaf they never decided. This was not
+  limited to a surface `~`: rule firing negates antecedents too, so an ordinary positive
+  goal inherited the laundering whenever a rule concluding it had an undecided negated
+  antecedent — a silent zero for a query containing no negation at all.
+  A monotone `naf_cut_epoch` now records the collapse at the six negation sites, and the
+  witness-leaf guard consults it ONLY when the leaf's own verdict is non-definitive. That
+  gating is the correctness argument, not caution: a negation is evaluated inside a rule
+  attempt the engine may abandon, so a goal that ends TRUE — or definitively FALSE by
+  another rule — still enumerates, and rule registration order cannot decide
+  answer-versus-refusal. Pinned in both directions, including two false-positive guards
+  (the "default via NAF plus explicit override" idiom, and a definitively-false conjunct
+  after a collapse) and the negated non-finite case, which stays non-cut on both
+  polarities. `negate_result`, `UnknownReason`, the WIT surface and the Lean model are all
+  unchanged; `ResourceExceeded` under `~` already refused, being forwarded rather than
+  collapsed.
+- **`find_enumeration` is now scoped to `query_find_inner`'s dynamic extent.** It was set
+  on entry and cleared only at the two entailment entries, which two thin wrappers bypass
+  — so a latch left set could have disabled the compute backend for a later ordinary
+  query. Cleared on the way out instead, error paths included.
 - **Witness enumeration now decides EVERY locally-decidable compute group, and never
   dispatches.** The comparison fix below shipped with a scope parameter that declined
   every non-comparison head, on two stated grounds that were both wrong. *Declining* the

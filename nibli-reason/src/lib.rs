@@ -682,7 +682,29 @@ impl KnowledgeBase {
 
     /// Find all satisfying binding sets for existential variables in the query formula.
     /// Returns one `Vec<WitnessBinding>` per satisfying assignment.
-    fn query_find_inner(&self, mut logic: LogicBuffer) -> Result<Vec<Vec<WitnessBinding>>, String> {
+    /// Witness enumeration, with `find_enumeration` scoped to its DYNAMIC EXTENT.
+    ///
+    /// The latch is cleared here rather than at the entailment entries alone because
+    /// this function returns from several places and two thin wrappers
+    /// (`run_entailment_check`, `run_entailment_check_with_proof`) reach evaluation
+    /// without passing through either clear — so a latch left set would silently
+    /// disable the compute backend for a subsequent ordinary query. Clearing on the way
+    /// out closes all of them at once.
+    ///
+    /// Not a `Drop` guard: the inner function holds a `RefMut` for its whole body, so a
+    /// guard's destructor would re-borrow while that is live and panic. No save/restore
+    /// either — a nested find already panics on the `RefCell`, so the flag cannot be
+    /// nested. The entailment-entry clears stay as defence in depth.
+    fn query_find_inner(&self, logic: LogicBuffer) -> Result<Vec<Vec<WitnessBinding>>, String> {
+        let out = self.query_find_enumerate(logic);
+        self.inner.borrow_mut().find_enumeration = false;
+        out
+    }
+
+    fn query_find_enumerate(
+        &self,
+        mut logic: LogicBuffer,
+    ) -> Result<Vec<Vec<WitnessBinding>>, String> {
         validate_single_flavor_paths(&logic)?;
         canonicalize_abstraction_markers(&mut logic)?;
         // Surfaced (as an Err) when witness enumeration is CUT at the depth/cycle
