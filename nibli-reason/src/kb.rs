@@ -288,7 +288,133 @@ fn contains_reachable_assertion_node(
 pub(super) fn validate_assertion_buffer(buffer: &LogicBuffer) -> Result<(), String> {
     validate_single_flavor_paths(buffer)?;
     validate_no_count_assertions(buffer)?;
-    validate_no_compute_assertions(buffer)
+    validate_no_compute_assertions(buffer)?;
+    validate_no_operational_comparisons(buffer)
+}
+
+/// Reject an asserted `greater` / `less` / `num_equal` whose operands could be NUMBERS at
+/// evaluation time — in a rule as much as in a ground fact.
+///
+/// These relations are ordinary `Predicate` nodes in the IR, but a QUERY does not answer
+/// them from the store: `try_evaluate_numeric_group` computes them, and the computed value
+/// wins. An ASSERTION has no such path — rule compilation lowers the same atom to a plain
+/// `StoredFact` template — so the two halves disagree, and every way that disagreement can
+/// show up is wrong:
+///
+/// * A positive guard is INERT. `person($x) & quantity($x, $n) & greater($n, 15) -> fit($x)`
+///   looks up `greater` in a store that holds none, so the rule never fires and `fit` is
+///   under-derived.
+/// * A negated guard OVERFIRES. `… & ~greater($n, 15) -> rotten($x)` succeeds for EVERY
+///   binding, because the stored extension is empty — so a subject whose quantity really is
+///   greater than 15 is still concluded `rotten`. That is a definitive wrong TRUE, the one
+///   failure class this engine exists to prevent. Worse, the stratifier classifies the
+///   comparison as a BASE relation, so its extension reads as complete-and-empty rather
+///   than unknown.
+/// * A rule HEAD is dead on arrival. `quantity($x, $n) -> greater($n, 100)` derives a fact
+///   the query twin never consults, because computation runs first.
+///
+/// The `ComputeNode` guard above cannot cover this: these atoms are not `ComputeNode`s, and
+/// banning the relation outright would also ban the legitimate RELATIONAL reading —
+/// `greater(Alis, Bob)` meaning "taller than", which is answered from the store on both
+/// sides and is therefore consistent.
+///
+/// So the test is on the OPERANDS, not the relation: an operand that is a number literal
+/// (definitely computable) or a variable (could bind to one) makes the atom potentially
+/// operational and is refused; an atom whose operands are all non-numeric ground terms
+/// keeps the relational reading and asserts normally. Conservative in the safe direction —
+/// a rejected atom is a compile error the author can see, an accepted one can never compile
+/// to a store lookup whose query twin computes.
+///
+/// This is a REFUSAL, not a semantics: making the guard compute on bound values is the open
+/// alternative, tracked in TODO.md. Refusing first is forward-compatible, since that change
+/// would only ever accept more.
+pub(super) fn validate_no_operational_comparisons(buffer: &LogicBuffer) -> Result<(), String> {
+    let Some(rel) = operational_comparison_in_assertion(buffer) else {
+        return Ok(());
+    };
+    Err(format!(
+        "`{rel}` over numeric operands is a computed comparison, not an assertable fact or \
+         rule literal: a query evaluates it arithmetically and the computed value wins, so \
+         an asserted one is never consulted — inert in a rule antecedent, and under `~` it \
+         succeeds for every binding because nothing is stored. Evaluate the comparison in a \
+         query instead. (A comparison between non-numeric terms, such as \
+         `greater(Alis, Bob)`, is an ordinary relational fact and asserts normally.)"
+    ))
+}
+
+/// The base comparison relation of the first potentially-operational atom reachable from
+/// `roots`, if any.
+///
+/// Reachability and opaque-abstraction skipping match
+/// [`contains_reachable_assertion_node`]: unreachable arena entries belong to sibling roots,
+/// and a quoted abstraction body is not an assertion about the surrounding knowledge base.
+fn operational_comparison_in_assertion(buffer: &LogicBuffer) -> Option<String> {
+    let mut stack = buffer.roots.clone();
+    let mut visited = HashSet::new();
+    while let Some(node_id) = stack.pop() {
+        if !visited.insert(node_id) {
+            continue;
+        }
+        let Some(node) = buffer.nodes.get(node_id as usize) else {
+            continue;
+        };
+        match node {
+            LogicNode::Predicate((relation, args)) => {
+                if let Some(rel) = operational_comparison_atom(relation, args) {
+                    return Some(rel);
+                }
+            }
+            LogicNode::AndNode((left, right)) => {
+                if !is_abstraction_marker(buffer, *left) {
+                    stack.push(*right);
+                }
+                stack.push(*left);
+            }
+            LogicNode::OrNode((left, right)) => {
+                stack.push(*right);
+                stack.push(*left);
+            }
+            LogicNode::NotNode(inner)
+            | LogicNode::ExistsNode((_, inner))
+            | LogicNode::ForAllNode((_, inner))
+            | LogicNode::PastNode(inner)
+            | LogicNode::PresentNode(inner)
+            | LogicNode::FutureNode(inner)
+            | LogicNode::ObligatoryNode(inner)
+            | LogicNode::PermittedNode(inner)
+            | LogicNode::CountNode((_, _, inner)) => stack.push(*inner),
+            LogicNode::ComputeNode(_) => {}
+        }
+    }
+    None
+}
+
+/// Whether one atom is a comparison carrying an operand that could be a number.
+///
+/// Two spellings reach here. The event-decomposed one is what the KR surface produces —
+/// `greater($n, 15)` becomes `∃ev. greater(ev) ∧ greater_x1(ev, $n) ∧ greater_x2(ev, 15)`,
+/// so the OPERAND sits at `args[1]` of the `_x1`/`_x2` role atoms and the bare `greater(ev)`
+/// anchor carries none. The flat two-argument one is reachable through direct `LogicBuffer`
+/// injection and persisted-buffer replay, which do not event-decompose.
+///
+/// Only places 1 and 2 are inspected: `try_numeric_comparison` reads exactly those, so a
+/// number in place 3 is inert on both sides and not a divergence. `Unspecified` (an unfilled
+/// place) and `Description` are non-numeric and never make an atom operational.
+fn operational_comparison_atom(relation: &str, args: &[LogicalTerm]) -> Option<String> {
+    let computable =
+        |t: &LogicalTerm| matches!(t, LogicalTerm::Number(_) | LogicalTerm::Variable(_));
+    for base in nibli_types::relations::NUMERIC_COMPARISONS {
+        let decomposed_operand = relation
+            .strip_prefix(base)
+            .is_some_and(|s| s == "_x1" || s == "_x2");
+        if decomposed_operand && args.len() >= 2 && computable(&args[1]) {
+            return Some((*base).to_string());
+        }
+        if relation == *base && args.len() >= 2 && (computable(&args[0]) || computable(&args[1])) {
+            return Some((*base).to_string());
+        }
+    }
+    None
 }
 
 /// Canonicalize/validate internal abstraction markers before using them as
@@ -2955,21 +3081,11 @@ pub(super) fn process_assertion(
             let mut typed_leaves = Vec::new();
             collect_ground_facts(logic, root_id, &skolem_subs, None, &mut typed_leaves);
 
-            // FAIL CLOSED: a numeric comparison (zmadu/mleca/dunli over number
-            // literals) is computed ground truth — the engine evaluates it at query
-            // time and the computed value always wins (try_numeric_comparison runs
-            // before the store), so an asserted one could only ever be a shadowed,
-            // unreachable fact. Reject it rather than store a lie. (A non-numeric
-            // comparison like `zmadu(alis, bob)` is a relational fact and stores.)
-            if let Some(rel) = asserted_numeric_comparison(&typed_leaves) {
-                return Err(format!(
-                    "`{rel}` over numeric literals is a computed comparison, not an \
-                     assertable fact: the engine evaluates it at query time and the \
-                     computed value always wins, so an asserted fact could never be \
-                     consulted. (A non-numeric comparison like `la .alis. cu zmadu \
-                     la .bob.` is a relational fact and asserts normally.)"
-                ));
-            }
+            // (A numeric comparison used to be refused HERE, on the collected leaves.
+            // `validate_no_operational_comparisons` now refuses it on the BUFFER, inside the
+            // `preflight_assertion_buffer` call at the top of this function — before id
+            // allocation, so a rejected `greater(3, 1).` no longer burns a fact id, and in
+            // rule positions this walk never reached.)
 
             // FAIL CLOSED: EDB/IDB separation. A relation declared derived-only
             // may become true ONLY by derivation, so a direct ground assertion of
@@ -3221,50 +3337,6 @@ fn first_non_declaration_relation(inner: &KnowledgeBaseInner) -> Option<String> 
     found
 }
 
-/// Detect an asserted NUMERIC comparison (zmadu/mleca/dunli over number
-/// LITERALS) among the collected ground leaves — both the flat 2-arg form
-/// `rel(num, num)` and the event-decomposed form `rel_x1(ev, num) ∧
-/// rel_x2(ev, num)` (the todo requires covering both). Returns the relation
-/// name if found. A non-numeric comparison (`zmadu(alis, bob)`, the relational
-/// "taller-than" reading) returns None and asserts/stores normally, since it is
-/// answered from the store, not the built-in evaluator.
-fn asserted_numeric_comparison(leaves: &[StoredFact]) -> Option<&'static str> {
-    const CMP: [&str; 3] = ["greater", "less", "num_equal"];
-    let is_num = |t: &GroundTerm| matches!(t, GroundTerm::Number(_));
-    // Flat: rel(num, num, ...) — the evaluator (`try_numeric_comparison`) reads
-    // only the first two operands, so a flat fact at full arity (`zmadu(5,3,_,_)`)
-    // counts whenever those two are numeric.
-    for f in leaves {
-        let gf = f.inner();
-        if gf.args.len() >= 2 && is_num(&gf.args[0]) && is_num(&gf.args[1]) {
-            if let Some(rel) = CMP.iter().copied().find(|&c| c == gf.relation.as_str()) {
-                return Some(rel);
-            }
-        }
-    }
-    // Decomposed: rel_x1(ev, num) ∧ rel_x2(ev, num) sharing the event arg.
-    for &base in &CMP {
-        let (x1, x2) = (format!("{base}_x1"), format!("{base}_x2"));
-        for a in leaves {
-            let ga = a.inner();
-            if ga.relation == x1
-                && ga.args.len() == 2
-                && is_num(&ga.args[1])
-                && leaves.iter().any(|b| {
-                    let gb = b.inner();
-                    gb.relation == x2
-                        && gb.args.len() == 2
-                        && gb.args[0] == ga.args[0]
-                        && is_num(&gb.args[1])
-                })
-            {
-                return Some(base);
-            }
-        }
-    }
-    None
-}
-
 // Test-only accounting for rule-derived candidate Cartesian visits.
 #[cfg(test)]
 thread_local! {
@@ -3427,7 +3499,8 @@ fn prioritize_candidates_by_dependency(
 /// the SURFACE relation, so a decomposed role predicate of an arithmetic or
 /// comparison relation (`sum_x1`, `greater_x2`) is refused like its base: its
 /// store extension is not a complete account of query-time evaluation
-/// (`asserted_numeric_comparison` also refuses comparison facts outright), so an
+/// (`validate_no_operational_comparisons` also refuses comparison atoms with
+/// potentially-numeric operands at assertion ingress), so an
 /// empty index entry is not "no witness", and a mandatory anchor built on one
 /// let its empty candidate set win the narrowing pick — turning
 /// `sum(some big, 2, 3).` into a definitive FALSE.

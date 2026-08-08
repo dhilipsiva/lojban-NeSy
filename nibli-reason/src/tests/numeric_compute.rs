@@ -868,3 +868,126 @@ fn du_linked_numbers_count_once() {
         "the du class must not count twice"
     );
 }
+
+// ─── Comparisons in rules are REFUSED, not silently divergent ────────────────
+//
+// `greater` / `less` / `num_equal` are ordinary `Predicate` nodes, but the two
+// halves of the engine read them differently: a QUERY computes them
+// arithmetically (`try_evaluate_numeric_group`) and the computed value wins,
+// while rule compilation lowers the same atom to a plain `StoredFact` template
+// looked up in a store that holds none. Every way that divergence surfaced was
+// wrong, and one of them was wrong in the worst direction:
+//
+//   * positive guard  — INERT: the rule never fires, so the head is under-derived.
+//   * negated guard   — OVERFIRES: `~greater($n, 15)` succeeds for EVERY binding
+//                       because the extension is empty, so a subject whose value
+//                       really is greater than 15 is still concluded. A definitive
+//                       wrong TRUE.
+//   * rule head       — DEAD: the derived fact is never consulted, because
+//                       computation runs before the store.
+//
+// The refusal is on the OPERANDS, not the relation, so the relational reading
+// (`greater(Alis, Bob)`, "taller than") keeps working — it is answered from the
+// store on both sides and so cannot diverge.
+
+/// Every rule position that used to accept a computable comparison now refuses it,
+/// and refuses it without leaving a registry record.
+#[test]
+fn a_numeric_comparison_in_a_rule_is_refused_in_every_position() {
+    for (position, text) in [
+        (
+            "positive antecedent",
+            "all $x: all $n: person($x) & quantity($x, $n) & greater($n, 15) -> fit($x).",
+        ),
+        (
+            "negated antecedent",
+            "all $x: all $n: person($x) & quantity($x, $n) & ~greater($n, 15) -> rotten($x).",
+        ),
+        (
+            "rule head",
+            "all $x: all $n: quantity($x, $n) -> greater($n, 100).",
+        ),
+        (
+            "numeric literals in an antecedent",
+            "all $x: person($x) & greater(3, 1) -> fit($x).",
+        ),
+    ] {
+        let kb = new_kb();
+        let error = kb
+            .assert_fact_inner(compile_surface(text), position.to_string())
+            .unwrap_err();
+        assert!(
+            error.contains("computed comparison"),
+            "{position} must be refused with the comparison contract: {error}"
+        );
+        assert!(
+            kb.list_facts_inner().unwrap().is_empty(),
+            "{position} rejection must leave no registry record"
+        );
+    }
+}
+
+/// The RELATIONAL reading is not collateral damage: it still asserts, still answers
+/// from the store, and still works as a rule guard. This is what makes the refusal a
+/// judgement about operands rather than a ban on three relation names.
+#[test]
+fn a_relational_comparison_still_asserts_and_still_guards_a_rule() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("greater(Alis, Bob)."));
+    assert!(
+        query(&kb, compile_surface("greater(Alis, Bob).")),
+        "a stored relational comparison must answer from the store"
+    );
+    assert_buf(&kb, compile_surface("person(Ara)."));
+    assert_buf(
+        &kb,
+        compile_surface("all $x: person($x) & greater(Alis, Bob) -> fit($x)."),
+    );
+    assert!(
+        query(&kb, compile_surface("fit(Ara).")),
+        "a relational comparison must still fire a rule — store lookup on both sides"
+    );
+}
+
+/// Queries are untouched: the arithmetic path is exactly where a comparison belongs.
+#[test]
+fn queries_still_compute_comparisons_arithmetically() {
+    let kb = new_kb();
+    assert!(query(&kb, make_numeric_query("greater", 20.0, 15.0)));
+    assert!(query_false(&kb, make_numeric_query("greater", 3.0, 5.0)));
+}
+
+/// The flat two-argument spelling never event-decomposes, so it reaches the guard by
+/// a different arm. Direct `LogicBuffer` injection and persisted-buffer replay both
+/// produce it, and neither goes through the KR surface.
+#[test]
+fn a_flat_raw_ir_comparison_is_refused_too() {
+    let kb = new_kb();
+    let error = kb
+        .assert_fact_inner(make_numeric_query("greater", 3.0, 1.0), "flat".to_string())
+        .unwrap_err();
+    assert!(
+        error.contains("computed comparison"),
+        "the flat raw-IR spelling must be refused as well: {error}"
+    );
+}
+
+/// The guard runs in `preflight_assertion_buffer`, before id allocation — so a
+/// rejected comparison no longer consumes a fact id and leaves a hole in the
+/// registry. (It used to be refused later, on the collected ground leaves.)
+#[test]
+fn a_refused_comparison_does_not_burn_a_fact_id() {
+    let kb = new_kb();
+    let first = assert_id(&kb, compile_surface("dog(Adam)."), "dog");
+    assert!(
+        kb.assert_fact_inner(compile_surface("greater(3, 1)."), "cmp".to_string())
+            .is_err(),
+        "the ground comparison must be refused"
+    );
+    let second = assert_id(&kb, compile_surface("cat(Bela)."), "cat");
+    assert_eq!(
+        second,
+        first + 1,
+        "a rejected comparison must not consume a fact id"
+    );
+}

@@ -138,32 +138,30 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Reasoning / evaluation
 
-- **Make numeric comparisons in rules compositional or reject the ambiguous
-  syntax.** `greater` / `less` / `num_equal` remain ordinary `Predicate` nodes
-  in the IR; query evaluation recognizes their event-decomposed numeric shape
-  operationally in `try_evaluate_numeric_group` (`nibli-reason/src/compute.rs`:193), but
-  rule compilation lowers
-  the same atoms to plain `StoredFact` templates. A positive numeric guard is
-  therefore inert, a negated guard can overfire under NAF because the stored
-  extension is empty, and a numeric comparison in a rule head is shadowed by
-  query-time evaluation. The `ComputeNode` assertion guard cannot cover
-  this without also banning legitimate nonnumeric relational uses such as
-  `greater(Alis, Bob)`. Choose a typed rule-atom representation with bound-value
-  numeric dispatch and four-valued/proof propagation, or define a conservative
-  assertion-time sort rule that rejects only potentially operational comparison
-  atoms. Two things to clean up in the narrow guard that stands in today —
-  `asserted_numeric_comparison` (`nibli-reason/src/kb.rs`:3231), called from
-  `process_assertion` at :2964: it runs AFTER id allocation, unlike the `ComputeNode` guard
-  in `preflight_assertion_buffer`, so a rejected `greater(3, 1).` burns a fact id and
-  leaves a hole (observed: `dog(Adam).` → #0, `greater(3, 1).` → error, `cat(Bela).` → #2,
-  with `:facts` showing #0 and #2); and its user-facing message still quotes Lojban — "(A
-  non-numeric comparison like `la .alis. cu zmadu la .bob.` is a relational fact and asserts
-  normally.)" (:2968-2969) — with `zmadu` also in the surrounding comments (:2958, :2963)
-  and the guard's own doc (:3228). THE DROP left no Lojban in shipped output; this is the
-  exception. **Exit:** surface and raw-IR tests cover positive/negated antecedents and
-  heads, numeric and nonnumeric bindings, non-finite values, materialisation
-  refusal, stratification, proof children, and external-oracle differentials;
-  accepted syntax can never compile to a store lookup whose query twin computes.
+- **Decide whether a numeric comparison in a rule should COMPUTE.** The ambiguous syntax
+  is now REFUSED rather than silently divergent (`validate_no_operational_comparisons`,
+  `nibli-reason/src/kb.rs`), so the three wrong behaviours are gone: a positive guard no
+  longer sits inert, a negated guard no longer overfires into a definitive wrong TRUE, and
+  a rule head no longer derives a fact the query twin ignores. The refusal tests the
+  OPERANDS, not the relation, so `greater(Alis, Bob)` keeps the relational reading — store
+  lookup on both sides, hence no divergence.
+  WHAT IS STILL OPEN is the capability: there is currently NO way to write "if quantity is
+  greater than 15 then …". A rule cannot carry a comparison over a variable or a literal,
+  and the ground fact it would need is refused too. That is a real limit on the
+  quantitative direction Chapter 20 gestures at (dosage thresholds), and the alternative
+  the original entry named is still available — give rule bodies a typed comparison atom
+  that dispatches on bound values at firing time, so the syntax means what it looks like.
+  Refusing first was chosen deliberately as forward-compatible: that change would only ever
+  ACCEPT more, so nothing refused today becomes wrong later.
+  If it is taken up, the parts a refusal did not have to answer are: operands unbound or
+  non-numeric at firing time (fail closed), NAF semantics over a computed guard,
+  stratification (a comparison is currently classified `base`, so its extension reads as
+  complete-and-empty — that is precisely what made `~greater` overfire), materialisation
+  refusal (`Ineligible::ComputeCondition` already exists), and proof children.
+  **Exit:** surface and raw-IR tests cover positive/negated antecedents and heads, numeric
+  and nonnumeric bindings, and non-finite values; the stratifier stops calling a computed
+  comparison a base relation; materialisation refuses a rule carrying one; and the
+  Vampire/clingo differentials cover the new shape.
 
 - **Materialisation: the trace story (C2).** Proof-traced queries keep the
   backward-chaining path (`positive_lookup` lowered for their duration) because a
