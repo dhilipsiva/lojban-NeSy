@@ -95,9 +95,14 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   `num_equal` over operands that could be numbers are refused at assertion
   ingress in facts and in every rule position, so there is no numeric threshold
   rule. On the query side they decide a verdict and also filter witnesses in
-  `find` / `count_witnesses` / `aggregate`. Arithmetic and externally-dispatched
-  groups deliberately do NOT filter witnesses (one dispatch per candidate);
-  enumeration refuses as incomplete instead of undercounting.
+  `find` / `count_witnesses` / `aggregate`.
+- **Witness enumeration never dispatches:** `find` / `count_witnesses` /
+  `aggregate` run the same group recogniser the verdict path does, so anything
+  decidable locally — a comparison, or built-in arithmetic over resolved
+  operands — filters rows. Anything whose routing would reach the backend is
+  refused at the dispatch choke point with a budget of ZERO calls, and the
+  enumeration is reported incomplete. `UNKNOWN (backend-unavailable)` there means
+  the engine declined to call out, not that the backend failed.
 - **Admission policy (explicitly low-assurance):** an external reply is trusted
   evidence for the current `ComputeCheck`. The stock client is plaintext and
   unauthenticated, with no peer identity, confidentiality, integrity or

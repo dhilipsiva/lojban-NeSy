@@ -15,6 +15,28 @@ here first.
 
 ### Fixed
 
+- **Witness enumeration now decides EVERY locally-decidable compute group, and never
+  dispatches.** The comparison fix below shipped with a scope parameter that declined
+  every non-comparison head, on two stated grounds that were both wrong. *Declining* the
+  group is what dispatched: `find_witnesses` peels the group's existential itself and
+  recurses on the body, so the head reached the flat `ComputeNode` arm carrying only the
+  event variable — a one-argument `product(varfarin)` payload no correct backend could
+  answer — once per non-Skolem candidate. And the excluded side did not fail closed: on
+  an empty or Skolem-free domain the sweep had no candidate to trip
+  `resolve_args_for_dispatch`, so `product(10, 2, 5).` returned **zero rows with `Ok`**
+  while the verdict computed **TRUE**. Ground `greater(20, 15).` returned one row and
+  ground `product(10, 2, 5).` returned none — two halves of one hook disagreeing on a
+  query with no user variables. The scope parameter is gone; enumeration runs the same
+  recogniser and routing as the verdict path, so `product`/`sum`/`quotient` filter rows,
+  and a query-scoped latch refuses external dispatch at
+  `dispatch_to_backend`/`dispatch_batch_to_backend` — the single choke point every
+  route funnels through — with a stated budget of **zero calls**, on the direct,
+  obligation and permission routes alike. `UNKNOWN (backend-unavailable)` under
+  enumeration now means the engine declined to call out, not that the backend failed.
+  Two residuals are pinned rather than papered over: an overflowing arithmetic result
+  yields no witness without refusing, and a compute leaf under `~` still reports zero
+  rows because negation collapses the refusal reason into the NAF-dependent one — not
+  compute-specific, and tracked in `TODO.md`.
 - **A numeric comparison now filters witnesses, not just verdicts.**
   `try_evaluate_numeric_group` had exactly one caller — the `ExistsNode` arm of the
   entailment evaluator. `find_witnesses` has its own `ExistsNode` arm, which peeled the
@@ -24,11 +46,10 @@ here first.
   boolean and returned **zero rows** from `find` / `count_witnesses` / `aggregate`, with
   no error: a jointly inconsistent pair, and the real reason a dose threshold could not
   be used to select the doses. The find path now consults the same group evaluator under
-  a new `GroupScope::ComparisonsOnly`, so one shape recogniser serves both halves.
-  Arithmetic and externally-dispatched groups are deliberately excluded — a dispatching
-  head evaluated once per candidate would turn one query into a burst of backend calls —
-  and that side already fails CLOSED, refusing the enumeration as incomplete rather than
-  undercounting. Pinned by `verdict_and_find_agree_for_every_comparison`,
+  a new scope parameter, so one shape recogniser serves both halves. (The scope
+  parameter was removed again in the follow-up below, which extends the same fix to
+  arithmetic; the reasoning recorded for excluding it was wrong on both counts.)
+  Pinned by `verdict_and_find_agree_for_every_comparison`,
   `numeric_threshold_verdict_and_find_agree`, and siblings covering non-finite operands,
   the relational reading, row shape, and the excluded arithmetic case.
 - **`nibli-verify`'s fragment filters admitted numeric comparisons.** Comparisons are

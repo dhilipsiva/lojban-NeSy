@@ -1772,6 +1772,27 @@ pub(super) struct KnowledgeBaseInner {
     /// `aggregate` REFUSE to emit a definitive (under)count when the search was cut.
     /// Not configuration; not cleared by `reset()` (query_find owns its lifecycle).
     pub(super) find_horizon_hit: bool,
+    /// Transient (per `query_find`): witness enumeration is running, so external
+    /// compute MUST NOT be dispatched.
+    ///
+    /// Enumeration evaluates its body once per candidate, so a dispatching leaf would
+    /// issue one request per candidate over a transport with no request binding,
+    /// idempotency, or replay detection (GUARANTEES §External Compute Admission
+    /// Policy). The budget is therefore ZERO, and it is enforced here rather than at
+    /// each caller: `dispatch_to_backend` / `dispatch_batch_to_backend` are the single
+    /// choke point every route funnels through, so a new evaluation path cannot forget
+    /// to honour it.
+    ///
+    /// This is a SCOPE refusal, not an outage: the resulting
+    /// `Unknown(BackendUnavailable)` is a `witness_search_cut`, so find/count/aggregate
+    /// refuse as incomplete rather than undercount — but the backend was never
+    /// consulted and may be perfectly healthy. Anything decidable LOCALLY (a numeric
+    /// comparison, or built-in arithmetic over resolved operands) is decided before
+    /// reaching a dispatch and is unaffected.
+    ///
+    /// Same lifecycle as `find_horizon_hit`: `query_find_inner` sets it, the entailment
+    /// entry clears it, `reset()` does not touch it.
+    pub(super) find_enumeration: bool,
 }
 
 impl Clone for KnowledgeBaseInner {
@@ -1829,6 +1850,7 @@ impl Clone for KnowledgeBaseInner {
             materialization: self.materialization,
             positive_lookup: Cell::new(true),
             find_horizon_hit: false,
+            find_enumeration: false,
         }
     }
 }
@@ -1893,6 +1915,7 @@ impl KnowledgeBaseInner {
             materialization: true,
             positive_lookup: Cell::new(true),
             find_horizon_hit: false,
+            find_enumeration: false,
         }
     }
 

@@ -160,27 +160,6 @@ pub(super) fn witness_term_to_logical_term(gt: &GroundTerm) -> LogicalTerm {
 // read the head's own args and never see the numbers, so every surface
 // numeric query used to return FALSE.
 
-/// Which group heads [`try_evaluate_numeric_group`] is allowed to consume.
-///
-/// The entailment path takes `All`. The WITNESS-ENUMERATION path takes
-/// `ComparisonsOnly`, and that is a deliberate scope, not an oversight: a
-/// `ComputeNode` head can dispatch to the external compute backend, and find /
-/// count / aggregate evaluate their body once per candidate, so admitting compute
-/// heads there would turn one enumeration into a burst of network calls against a
-/// backend the stock transport gives no request binding or idempotency guarantee.
-/// The comparison heads are decided locally from `f64`s and cost nothing.
-///
-/// The scope is a parameter rather than a second flattener so both paths keep ONE
-/// shape recogniser — a duplicated one is how the two halves came to disagree in
-/// the first place.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum GroupScope {
-    /// Comparison heads and compute heads (built-in arithmetic + backend dispatch).
-    All,
-    /// Only `greater` / `less` / `num_equal` — never a dispatching head.
-    ComparisonsOnly,
-}
-
 /// The verdict of a numeric-group evaluation, tagged with the route taken
 /// (the tag feeds the traced evaluator's ComputeCheck step).
 pub(super) struct NumericGroupVerdict {
@@ -218,7 +197,6 @@ pub(super) fn try_evaluate_numeric_group(
     body_id: u32,
     subs: &HashMap<String, GroundTerm>,
     compute_memo: &mut QueryComputeMemo,
-    scope: GroupScope,
 ) -> Option<NumericGroupVerdict> {
     // Flatten the And-tree; bail on anything that is not And/Predicate/Compute.
     let mut conjuncts: Vec<u32> = Vec::new();
@@ -259,14 +237,6 @@ pub(super) fn try_evaluate_numeric_group(
         }
     }
     let (rel, head_is_compute) = head?;
-
-    // Scope gate — BEFORE the routing below, which dispatches externally for a
-    // compute head. A caller that asked for comparisons only must never reach the
-    // backend, and returning None here leaves the group to ordinary evaluation
-    // exactly as an unrecognised shape would.
-    if scope == GroupScope::ComparisonsOnly && !nibli_types::relations::is_numeric_comparison(rel) {
-        return None;
-    }
 
     // Every other conjunct must be a role predicate rel_xN(Var ev, arg).
     let role_prefix = format!("{rel}_x");
@@ -429,11 +399,24 @@ pub(super) fn resolve_args_for_dispatch(
 /// inserts or caches the reply in the logical KB. The stock TCP dispatcher is
 /// unauthenticated; a custom dispatcher owns any stronger admission policy — see
 /// the trust-boundary note on `KnowledgeBase::set_compute_dispatch`.
+/// Refusal message for a dispatch attempted during witness enumeration.
+///
+/// Enumeration runs its body once per candidate, so calling out from there costs one
+/// request per candidate over a transport with no request binding, idempotency, or
+/// replay detection. The budget is ZERO, and this is the single choke point every
+/// evaluation route funnels through, so no new route can forget it. See
+/// `KnowledgeBaseInner::find_enumeration`.
+const NO_DISPATCH_IN_ENUMERATION: &str =
+    "external compute is not dispatched during witness enumeration";
+
 pub(super) fn dispatch_to_backend(
     inner: &KnowledgeBaseInner,
     rel: &str,
     args: &[LogicalTerm],
 ) -> Result<bool, String> {
+    if inner.find_enumeration {
+        return Err(NO_DISPATCH_IN_ENUMERATION.to_string());
+    }
     match inner.compute_eval {
         Some(eval) => eval(rel, args),
         None => Err("Compute backend not registered".to_string()),
@@ -477,6 +460,12 @@ fn dispatch_batch_to_backend(
     inner: &KnowledgeBaseInner,
     requests: &[ComputeRequest],
 ) -> Vec<Result<bool, String>> {
+    if inner.find_enumeration {
+        return requests
+            .iter()
+            .map(|_| Err(NO_DISPATCH_IN_ENUMERATION.to_string()))
+            .collect();
+    }
     match inner.compute_batch_eval {
         Some(batch_eval) => batch_eval(requests),
         None => requests

@@ -921,15 +921,9 @@ fn check_formula_holds_core<S: TraceSink>(
             // Decomposed numeric/compute group: gather the surface operands
             // from role predicates, then evaluate locally or dispatch using the
             // same public-term contract as the flat ComputeNode arm.
-            if let Some(group) = try_evaluate_numeric_group(
-                &*inner,
-                buffer,
-                v,
-                *body,
-                subs,
-                compute_memo,
-                GroupScope::All,
-            ) {
+            if let Some(group) =
+                try_evaluate_numeric_group(&*inner, buffer, v, *body, subs, compute_memo)
+            {
                 let res = group.verdict.clone();
                 let idx = if S::RECORDING {
                     sink.push(ProofStep {
@@ -1718,33 +1712,32 @@ pub(super) fn find_witnesses(
     }
     match get_node(buffer, node_id)? {
         LogicNode::ExistsNode((v, body)) => {
-            // Decomposed numeric COMPARISON group — the same seam the verdict path
-            // takes at its own `ExistsNode` arm. Without this, enumeration peels the
-            // group's `∃_ev`, sweeps domain candidates, and degrades every conjunct to
-            // a store lookup that finds nothing (a comparison is never stored — the
-            // assertion guard refuses one). The query then answered TRUE as a boolean
-            // and returned ZERO rows here: a jointly inconsistent pair, and the reason
-            // `quantity($da,$de) & greater($de, 15).` could not be used to FIND the
-            // doses past a threshold even though it could be asked about them.
+            // Decomposed numeric/compute group — the SAME recogniser and the SAME
+            // routing the verdict path uses at its own `ExistsNode` arm. Sharing one
+            // evaluator is the whole point: the two halves disagreed precisely because
+            // enumeration had its own idea of what a group was.
             //
-            // `ComparisonsOnly` keeps enumeration LOCAL: a compute head may dispatch to
-            // the external backend, and find/count/aggregate evaluate their body once
-            // per candidate. That gap (find over `sum`/`quotient`/registered relations)
-            // stays open deliberately and is tracked in TODO.md.
+            // Without this, enumeration peels the group's `∃_ev` and sweeps domain
+            // candidates, degrading every conjunct to a store lookup that finds nothing
+            // (neither a computed comparison nor a compute result is ever stored). The
+            // query then answered TRUE as a boolean and reported ZERO rows here — and
+            // on an empty domain the sweep had no candidates at all, so not even the
+            // accidental refusal fired.
+            //
+            // Enumeration does NOT dispatch: `find_enumeration` makes any group whose
+            // routing would call out refuse at `dispatch_to_backend`, so the verdict
+            // comes back non-definitive, `witness_search_cut` treats it as a cut, and
+            // the caller reports an incomplete enumeration instead of an undercount.
+            // Anything decidable locally — a comparison, or arithmetic over resolved
+            // operands — is decided here and filters rows.
             //
             // Nothing else changes shape: the group binds no user-visible variable, so
             // a satisfied one yields the same empty binding set the satisfied-leaf arm
-            // below returns, and a group whose operands are NOT numeric
+            // below returns, and a group whose operands are non-numeric CONSTANTS
             // (`greater(Alis, Bob)`) still returns None and falls through to the store.
-            if let Some(group) = try_evaluate_numeric_group(
-                &*inner,
-                buffer,
-                v,
-                *body,
-                subs,
-                compute_memo,
-                GroupScope::ComparisonsOnly,
-            ) {
+            if let Some(group) =
+                try_evaluate_numeric_group(&*inner, buffer, v, *body, subs, compute_memo)
+            {
                 if group.verdict.is_true() {
                     return Ok(vec![vec![]]);
                 }

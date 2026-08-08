@@ -5409,6 +5409,52 @@ fn numeric_threshold_verdict_and_find_agree() {
     );
 }
 
+/// The arithmetic twin of `numeric_threshold_verdict_and_find_agree`, end to end.
+/// Built-in arithmetic decides locally, so it filters witness rows exactly as a
+/// comparison does — and a ground group with no user variables must not report zero
+/// rows against a TRUE verdict, which is what an empty domain used to produce.
+#[test]
+fn arithmetic_verdict_and_find_agree_end_to_end() {
+    let engine = engine_with_facts(&["quantity(Varfarin, 20).", "quantity(Fenitoin, 7)."]);
+
+    // Ground, no user variables, nothing asserted that matches: still one row.
+    assert_eq!(
+        engine.query_holds("product(10, 2, 5).").unwrap(),
+        EngineQueryResult::True
+    );
+    assert_eq!(
+        engine.count_witnesses_text("product(10, 2, 5).").unwrap(),
+        1
+    );
+    assert_eq!(
+        engine.count_witnesses_text("product(11, 2, 5).").unwrap(),
+        0
+    );
+
+    // As a filtering conjunct over a real join.
+    let q = "quantity($da, $de) & product(10, 2, 5).";
+    assert_eq!(engine.query_holds(q).unwrap(), EngineQueryResult::True);
+    assert_eq!(
+        engine.count_witnesses_text(q).unwrap(),
+        2,
+        "a satisfied arithmetic conjunct filters nothing out"
+    );
+    assert_eq!(
+        engine
+            .aggregate_text(q, "$de", EngineAggregateOp::Sum)
+            .unwrap(),
+        Some(27.0),
+        "aggregate reaches both rows"
+    );
+    assert_eq!(
+        engine
+            .count_witnesses_text("quantity($da, $de) & product(11, 2, 5).")
+            .unwrap(),
+        0,
+        "a false arithmetic conjunct drops every row"
+    );
+}
+
 /// Regression (query-level DoS): cyclic rules through the FULL pipeline must not hang
 /// the witness search. `ro lo gerku cu danlu` + `ro lo danlu cu gerku` is a
 /// relation-level cycle; before the `cycle_key` backward-chain guard,

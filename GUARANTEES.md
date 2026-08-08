@@ -172,15 +172,37 @@ them before allocating an id or changing the KB, including compute atoms in rule
 antecedents, negated guards, and conclusions; opaque abstraction bodies remain
 quoted content. The rule store has no fake “compute as ordinary fact” fallback.
 
-Query-only covers WITNESS ENUMERATION as well as the boolean verdict, but the two
-compute families reach it differently. A numeric **comparison** is evaluated during
-`find`/`count_witnesses`/`aggregate`, so it filters rows exactly as it decides a
-verdict. An **arithmetic or externally-dispatched** group is deliberately not: a
-dispatching head evaluated once per candidate would turn one query into a burst of
-backend calls, so enumeration leaves it to the shared cut classifier, which treats an
-undecided head as an incomplete search and REFUSES the count rather than
-undercounting. Both directions are fail-closed; only the comparison side is
-answered. Closing the arithmetic side is tracked in `TODO.md`.
+Query-only covers WITNESS ENUMERATION as well as the boolean verdict, and enumeration
+runs the SAME group recogniser and the same routing the verdict path does. What it does
+not do is call out.
+
+- **Decided locally → filters rows.** A numeric comparison, and built-in arithmetic
+  (`product`/`sum`/`quotient`) whose operands resolve to numbers, are decided in place,
+  so `find`/`count_witnesses`/`aggregate` return exactly the rows the verdict would
+  accept. A ground group with no user variables yields one empty binding set when it
+  holds and none when it does not — the same shape a comparison gives.
+- **Would dispatch → refuses, budget ZERO.** Any group whose routing would reach the
+  external backend — a registered relation, or a built-in name whose operands do not
+  resolve — is refused at `dispatch_to_backend`/`dispatch_batch_to_backend`, the single
+  choke point every evaluation route funnels through. Enumeration evaluates its body
+  once per candidate, so dispatching there would cost one request per candidate over a
+  transport with no request binding, idempotency, or replay detection (§External Compute
+  Admission Policy). The undecided leaf is a search cut, so the caller reports an
+  incomplete enumeration rather than an undercount.
+
+The refusal is **scope-based, not outage-based**: `UNKNOWN (backend-unavailable)` under
+enumeration means the engine declined to consult the backend, not that the backend
+failed — it was never contacted. The verdict path is deliberately different, and MAY
+forward a free or non-numeric operand to the backend.
+
+Two disclosed residuals. An arithmetic result that overflows f64 is `Unknown(NonFinite)`,
+which is deliberately not a search cut, so enumeration reports no witness without
+refusing — a claim about f64 range, not about the data. And a compute leaf under `~`
+reports zero rows instead of refusing: negation collapses every non-definitive inner
+verdict to the NAF-dependent reason, which enumeration defensibly excludes, so the fact
+that the leaf was refused rather than merely unprovable is lost. That is not
+compute-specific — it holds for any undecided leaf under `~` — and is tracked in
+`TODO.md`. The dispatch budget still holds there: zero calls either way.
 
 Every top-level query starts with no compute results from an earlier query.
 Built-ins recompute locally; registered external predicates redispatch to the

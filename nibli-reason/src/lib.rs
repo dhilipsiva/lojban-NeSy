@@ -645,6 +645,12 @@ impl KnowledgeBase {
 
     /// Run one iterative-deepening pass against the current store/materialized cache.
     fn run_entailment_iterative(&self, logic: &LogicBuffer) -> Result<QueryResult, String> {
+        // Entailment MAY dispatch; only enumeration refuses (see `find_enumeration`).
+        // Cleared here rather than on every `query_find_inner` exit because that
+        // function returns from several places, and a latch left set would silently
+        // disable the backend for the next ordinary query — the one failure this flag
+        // must not cause.
+        self.inner.borrow_mut().find_enumeration = false;
         // Tabling: clear once, persist across depth iterations.
         let configured_max = {
             let inner = self.inner.borrow();
@@ -706,6 +712,12 @@ impl KnowledgeBase {
         clear_and_enable_pred_cache(&inner);
         inner.ensure_domain_members_cached();
         inner.find_horizon_hit = false;
+        // Enumeration runs its body once per candidate, so external compute is not
+        // dispatched from here at all — see `KnowledgeBaseInner::find_enumeration`.
+        // Anything locally decidable still decides; anything that would call out
+        // refuses, and the refusal is a cut, so the caller reports an incomplete
+        // enumeration instead of an undercount.
+        inner.find_enumeration = true;
         let mut result_sets: Option<Vec<Vec<(String, GroundTerm)>>> = None;
         let mut compute_memo = QueryComputeMemo::default();
         for &root_id in &logic.roots {
@@ -922,6 +934,8 @@ impl KnowledgeBase {
         // backward chaining at that same depth and failed to reach it, turning a TRUE into
         // `ResourceExceeded(Depth)`. Restored on every exit below, error paths included.
         self.inner.borrow().positive_lookup.set(false);
+        // Entailment MAY dispatch — see the twin in `run_entailment_iterative`.
+        self.inner.borrow_mut().find_enumeration = false;
         // Tabling: clear once, persist across phases.
         let configured_max = {
             let inner = self.inner.borrow();

@@ -1110,30 +1110,339 @@ fn find_row_shape_is_unchanged_by_a_comparison_conjunct() {
     );
 }
 
-/// The find hook is scoped to COMPARISON heads on purpose: a `ComputeNode` head can
-/// dispatch to the external backend, and enumeration evaluates its body once per
-/// candidate, so admitting them would turn one query into a burst of network calls.
-///
-/// That gap is safe to leave open because a compute group in enumeration already
-/// fails CLOSED: its head yields `Unknown(BackendUnavailable)`, which IS a
-/// `witness_search_cut`, so find/count/aggregate REFUSE rather than undercount. That
-/// asymmetry is exactly why comparisons were the dangerous case — a comparison
-/// degrades to a store lookup returning definitive FALSE, which reads as a genuine
-/// "no such witness" and silently produced zero rows against a TRUE verdict.
+// ─── Compute groups under witness enumeration ───────────────────────────────
+//
+// The comparison hook shipped with a scope parameter that declined every non-
+// comparison head, on the stated theory that a compute head "can dispatch to the
+// external backend, and enumeration evaluates its body once per candidate", and that
+// the excluded side "already fails CLOSED". BOTH halves were wrong.
+//
+// DECLINING the group is what dispatches: `find_witnesses` peels the group's `∃_ev`
+// itself and recurses on the BODY, so the head reaches the FLAT `ComputeNode` arm
+// carrying `[Variable(ev)]` — one argument, no operands — and is sent to the backend
+// once per non-Skolem candidate. CONSUMING it is one local decision, or one call with
+// the real operands. And the refusal was an accident of data, not a rule: it happened
+// only because `GroundTerm`'s ordering put an event Skolem early enough to trip
+// `resolve_args_for_dispatch`. An empty or Skolem-free domain got no refusal at all —
+// it got zero rows and `Ok`, against a TRUE verdict.
+//
+// These pin the corrected contract: every group the recogniser can decide LOCALLY
+// filters rows exactly as a comparison does, and every group whose routing would
+// dispatch refuses explicitly, with a budget of zero calls, on every route.
+
+/// The minimal repro, needing no backend and no facts: on a fresh KB the domain is
+/// empty, so declining the group left `find` with nothing to enumerate and it returned
+/// zero rows with `Ok` — while the verdict path computed TRUE. The comparison twin on
+/// the same shape returns one row, so the two halves of one hook disagreed on a query
+/// with no user variables at all.
 #[test]
-fn a_compute_group_is_not_consumed_by_the_find_hook_and_refuses_instead() {
+fn find_over_a_ground_arithmetic_group_agrees_with_the_verdict() {
     let kb = new_kb();
-    assert_buf(&kb, compile_surface("quantity(Varfarin, 20)."));
     assert!(
         query(&kb, compile_surface("product(10, 2, 5).")),
-        "control: the verdict path still evaluates arithmetic"
+        "control: the verdict path computes 10 = 2 x 5 locally"
     );
+    assert_eq!(
+        query_find(&kb, compile_surface("greater(20, 15).")).len(),
+        1,
+        "control: a satisfied ground COMPARISON yields one empty binding set"
+    );
+    assert_eq!(
+        query_find(&kb, compile_surface("product(10, 2, 5).")).len(),
+        1,
+        "a satisfied ground ARITHMETIC group must yield the same one empty binding set"
+    );
+    assert_eq!(
+        query_find(&kb, compile_surface("product(11, 2, 5).")).len(),
+        0,
+        "and a false one must yield none"
+    );
+}
+
+static FIND_DISPATCH_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FIND_DISPATCH_MAX_ARITY: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn recording_find_backend(_rel: &str, args: &[LogicalTerm]) -> Result<bool, String> {
+    FIND_DISPATCH_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    FIND_DISPATCH_MAX_ARITY.fetch_max(args.len(), std::sync::atomic::Ordering::SeqCst);
+    Ok(false)
+}
+
+fn recording_find_batch(reqs: &[ComputeRequest]) -> Vec<Result<bool, String>> {
+    FIND_DISPATCH_CALLS.fetch_add(reqs.len(), std::sync::atomic::Ordering::SeqCst);
+    reqs.iter().map(|_| Ok(false)).collect()
+}
+
+/// Witness enumeration must never reach the compute backend — the stated budget is
+/// ZERO calls, enforced by an explicit rule rather than by whatever happens to sort
+/// first in the domain.
+///
+/// `GroundTerm`'s ordering puts `Constant` before `Skolem`, so on any KB with a named
+/// entity the sweep dispatched for the constants FIRST and only later hit the event
+/// Skolem that `resolve_args_for_dispatch` refuses. Those early calls carried a
+/// one-argument `exponential(adam)` payload — the head's only argument is the event
+/// variable — which no correct backend could answer. The recorded arity is the
+/// evidence for that, so assert it alongside the count.
+#[test]
+fn find_never_dispatches_to_the_compute_backend() {
+    FIND_DISPATCH_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    FIND_DISPATCH_MAX_ARITY.store(0, std::sync::atomic::Ordering::SeqCst);
+    let kb = new_kb();
+    kb.set_compute_dispatch(recording_find_backend, recording_find_batch);
+    assert_buf(&kb, compile_surface("dog(Adam)."));
+
+    let _ = kb.query_find_inner(compile_surface_with_exponential(
+        "dog($x) & exponential($x, 2, 3).",
+    ));
+    assert_eq!(
+        FIND_DISPATCH_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "witness enumeration must not reach the backend at all (max arity seen: {})",
+        FIND_DISPATCH_MAX_ARITY.load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+/// A group whose routing WOULD dispatch refuses on every POSITIVE route into
+/// enumeration, not just as a direct conjunct — the deontic prefixes reach dispatch
+/// through the shared leaf evaluator, which the old scope parameter never covered
+/// because it sat on `find_witnesses`' own `ExistsNode` arm.
+///
+/// Zero dispatches is asserted on every route including the negated one: the latch
+/// lives at the dispatch choke point, so nothing calls out regardless of how the leaf
+/// is reached. What differs is only how the refusal is REPORTED — see the negated twin
+/// below.
+#[test]
+fn find_refuses_a_compute_group_on_every_positive_route() {
+    // Ground operands throughout: a variable shared across a `~`/modal boundary is a
+    // co-reference error in KR, and the route is what is under test, not the binding.
+    for (route, text) in [
+        ("direct conjunct", "dog($x) & exponential($x, 2, 3)."),
+        ("obligation", "dog($x) & must exponential(8, 2, 3)."),
+        ("permission", "dog($x) & may exponential(8, 2, 3)."),
+    ] {
+        FIND_DISPATCH_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+        let kb = new_kb();
+        kb.set_compute_dispatch(recording_find_backend, recording_find_batch);
+        assert_buf(&kb, compile_surface("dog(Adam)."));
+        let err = kb
+            .query_find_inner(compile_surface_with_exponential(text))
+            .unwrap_err();
+        assert!(
+            err.contains("witness enumeration incomplete"),
+            "{route}: must refuse as incomplete, got: {err}"
+        );
+        assert_eq!(
+            FIND_DISPATCH_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{route}: refusing must cost zero dispatches"
+        );
+    }
+}
+
+/// KNOWN GAP, pinned so it cannot drift silently: a compute leaf under `~` yields
+/// zero rows instead of refusing, even though the leaf was never decided.
+///
+/// The cause is not compute-specific and predates this work. `negate_result` collapses
+/// EVERY non-definitive inner verdict to `Unknown(NafDependent)` — deliberately, since
+/// that is the four-valued contract's promised reason — and `witness_search_cut`
+/// deliberately EXCLUDES `NafDependent` as "a defensibly-excluded NAF-dependent
+/// existential". Between them, the fact that the inner leaf was refused rather than
+/// merely unprovable is lost, so enumeration reports a definitive zero. The same holds
+/// for any undecided leaf under `~`, not just a compute one.
+///
+/// Not fixed here: separating the two readings changes NAF semantics for every negated
+/// query, which is a wider decision than this change. Tracked in TODO.md.
+///
+/// The dispatch budget still holds — zero calls — so the gap is in the REPORTING, not
+/// in the refusal.
+#[test]
+fn a_negated_compute_leaf_under_find_reports_zero_rows_rather_than_refusing() {
+    FIND_DISPATCH_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let kb = new_kb();
+    kb.set_compute_dispatch(recording_find_backend, recording_find_batch);
+    assert_buf(&kb, compile_surface("dog(Adam)."));
+    let rows = kb
+        .query_find_inner(compile_surface_with_exponential(
+            "dog($x) & ~exponential(8, 2, 3).",
+        ))
+        .expect("today the negated route does not refuse");
+    assert_eq!(rows.len(), 0, "and it reports zero rows");
+    assert_eq!(
+        FIND_DISPATCH_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the budget still holds: the gap is in reporting, not in dispatch"
+    );
+}
+
+/// Arithmetic now filters witness rows exactly as a comparison does, and agrees with
+/// the verdict on both polarities across all three relations.
+#[test]
+fn verdict_and_find_agree_for_every_arithmetic_relation() {
+    for (rel, holds, fails) in [
+        ("product", "product(10, 2, 5).", "product(11, 2, 5)."),
+        ("sum", "sum(5, 2, 3).", "sum(6, 2, 3)."),
+        ("quotient", "quotient(3, 6, 2).", "quotient(4, 6, 2)."),
+    ] {
+        let kb = new_kb();
+        assert!(query(&kb, compile_surface(holds)), "{rel}: verdict TRUE");
+        assert_eq!(
+            query_find(&kb, compile_surface(holds)).len(),
+            1,
+            "{rel}: find must agree with the TRUE verdict"
+        );
+        assert_eq!(
+            kb.count_witnesses(compile_surface(holds)).unwrap(),
+            1,
+            "{rel}: count must agree with find"
+        );
+
+        assert!(
+            query_false(&kb, compile_surface(fails)),
+            "{rel}: verdict FALSE"
+        );
+        assert_eq!(
+            query_find(&kb, compile_surface(fails)).len(),
+            0,
+            "{rel}: find must agree with the FALSE verdict"
+        );
+    }
+}
+
+/// An arithmetic conjunct narrows the rows without changing their SHAPE — the group
+/// binds nothing user-visible, so no `_ev` leaks into the reported bindings. Twin of
+/// `find_row_shape_is_unchanged_by_a_comparison_conjunct`.
+#[test]
+fn find_row_shape_is_unchanged_by_an_arithmetic_conjunct() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("quantity(Varfarin, 20)."));
+    let plain = query_find(&kb, compile_surface("quantity($x, $n)."));
+    let kept = query_find(
+        &kb,
+        compile_surface("quantity($x, $n) & product(10, 2, 5)."),
+    );
+    let dropped = query_find(
+        &kb,
+        compile_surface("quantity($x, $n) & product(11, 2, 5)."),
+    );
+    assert_eq!(plain.len(), 1, "control: one stored quantity");
+    assert_eq!(kept.len(), 1, "a true arithmetic conjunct keeps the row");
+    assert_eq!(dropped.len(), 0, "a false one drops it");
+    let names = |rows: &Vec<Vec<WitnessBinding>>| {
+        let mut v: Vec<String> = rows[0].iter().map(|b| b.variable.clone()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        names(&plain),
+        names(&kept),
+        "an arithmetic conjunct must not add a binding to the reported row"
+    );
+}
+
+/// An arithmetic RESULT that overflows f64 is `Unknown(NonFinite)`, which
+/// `witness_search_cut` deliberately excludes — so find reports zero rows without
+/// refusing, and the verdict is non-definitive.
+///
+/// Materially different from the comparison twin
+/// (`a_non_finite_operand_yields_no_witness_not_an_incomplete_refusal`): there the
+/// OPERANDS are non-finite, here they are perfectly finite and only the product
+/// overflows. "No witness" is a claim about f64 range, not about the data.
+#[test]
+fn an_overflowing_arithmetic_result_under_find_is_no_witness_not_a_refusal() {
+    let kb = new_kb();
+    let buf = make_decomposed_compute_query("product", f64::MAX, 1e308, 1e308);
+    assert!(
+        !query(&kb, buf.clone()) && !query_false(&kb, buf.clone()),
+        "an overflowing result is neither TRUE nor definitively FALSE"
+    );
+    assert_eq!(
+        kb.query_find_inner(buf)
+            .expect("an overflowing result must not refuse the enumeration")
+            .len(),
+        0,
+        "it yields no witness"
+    );
+}
+
+/// The fix must not rest on `event_decompose` emitting the head leftmost. The group
+/// recogniser flattens the And-tree, so a role-first buffer — reachable through raw
+/// `LogicBuffer` injection and persisted-buffer replay — must decide identically.
+#[test]
+fn a_role_first_arithmetic_group_is_consumed_too() {
+    let kb = new_kb();
+    let mut nodes = Vec::new();
+    let ev = || LogicalTerm::Variable("_ev0".to_string());
+    // Roles FIRST, head last — the mirror of `make_decomposed_compute_query`.
+    let mut acc = pred(
+        &mut nodes,
+        "product_x1",
+        vec![ev(), LogicalTerm::Number(10.0)],
+    );
+    for (i, v) in [2.0_f64, 5.0].iter().enumerate() {
+        let role = pred(
+            &mut nodes,
+            &format!("product_x{}", i + 2),
+            vec![ev(), LogicalTerm::Number(*v)],
+        );
+        acc = and(&mut nodes, acc, role);
+    }
+    let head = compute(&mut nodes, "product", vec![ev()]);
+    let root_body = and(&mut nodes, acc, head);
+    let root = exists(&mut nodes, "_ev0", root_body);
+    let buf = LogicBuffer {
+        nodes,
+        roots: vec![root],
+    };
+    assert!(query(&kb, buf.clone()), "role-first still verdicts TRUE");
+    assert_eq!(
+        query_find(&kb, buf).len(),
+        1,
+        "and role-first still yields the same one row"
+    );
+}
+
+/// The two compute families answer a NON-NUMERIC operand differently, and the
+/// difference is principled rather than an oversight — pinned here because it reads
+/// like an inconsistency and will otherwise be re-litigated.
+///
+/// With no numbers in the domain, `$n`/`$t` still BIND (to a domain member); they just
+/// bind to something that is not a number. From there:
+///
+/// * a COMPARISON head is an ordinary `Predicate`, so the group falls through to the
+///   store — the relational reading, the one that makes `greater(Alis, Bob)` work. No
+///   such fact is stored, so find reports zero rows AND the verdict is FALSE. They
+///   agree, and both are right: nothing in the KB satisfies the query.
+/// * an ARITHMETIC head is a `ComputeNode`, so an unresolvable operand routes to
+///   dispatch. Enumeration refuses to dispatch, leaving the leaf undecided, so find
+///   reports an incomplete enumeration rather than a definitive zero.
+///
+/// Neither is a silent wrong answer: one is a definitive no the verdict path shares,
+/// the other an explicit refusal. What must never happen is a definitive zero from an
+/// UNDECIDED leaf, and neither family does that.
+#[test]
+fn a_non_numeric_operand_answers_by_family_and_never_silently_undercounts() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Adam)."));
+
+    // Comparison: definitive no, and the verdict path says the same thing.
+    assert!(
+        query_false(&kb, compile_surface("greater($n, 15).")),
+        "with no numbers in the domain the comparison verdict is a definitive FALSE"
+    );
+    assert_eq!(
+        query_find(&kb, compile_surface("greater($n, 15) & dog($x).")).len(),
+        0,
+        "find agrees with that FALSE — zero rows, not a refusal"
+    );
+
+    // Arithmetic: undecided, so an explicit refusal rather than a definitive zero.
     let err = kb
-        .query_find_inner(compile_surface("quantity($x, $n) & product(10, 2, 5)."))
-        .expect_err("an arithmetic group in enumeration must refuse, not undercount");
+        .query_find_inner(compile_surface("sum($t, 2, 3) & dog($x)."))
+        .unwrap_err();
     assert!(
         err.contains("witness enumeration incomplete"),
-        "the refusal must be the incomplete-enumeration one: {err}"
+        "an undecided compute leaf must refuse, not report zero rows: {err}"
     );
 }
 
