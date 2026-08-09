@@ -235,6 +235,91 @@ pub fn contains_asserted_compute_node(buffer: &LogicBuffer) -> bool {
     contains_reachable_assertion_node(buffer, |node| matches!(node, LogicNode::ComputeNode(_)))
 }
 
+/// The reserved reference-external-compute name occurring in an ASSERTED
+/// position reachable from `roots`, if any.
+///
+/// Matches the anchor/flat spelling AND the decomposed role spellings
+/// (`exponential_x1` …) by collapsing through `materialize::surface_relation`,
+/// on both `Predicate` and `ComputeNode` nodes — so the refusal is identical
+/// whether or not the session has registered the name (a registered anchor is
+/// already a `ComputeNode`). A user relation literally named `exponential_x1`
+/// collapses onto the reserved anchor and is refused too — reserved-prefix
+/// squatting, the same conservatism `split_role`'s doc accepts. Unreachable
+/// arena entries and opaque abstraction bodies are ignored under the same
+/// contract as [`contains_asserted_count_node`].
+pub fn asserted_external_compute_name(buffer: &LogicBuffer) -> Option<&'static str> {
+    nibli_types::relations::REFERENCE_EXTERNAL_COMPUTE
+        .iter()
+        .copied()
+        .find(|name| {
+            contains_reachable_assertion_node(buffer, |node| match node {
+                LogicNode::Predicate((rel, _)) | LogicNode::ComputeNode((rel, _)) => {
+                    crate::materialize::surface_relation(rel) == *name
+                }
+                _ => false,
+            })
+        })
+}
+
+/// Reject the reference external-compute names (`exponential`, `logarithm`) in
+/// every asserted position, REGISTERED OR NOT (decided 2026-08-09).
+///
+/// A relation becomes a `ComputeNode` at COMPILE time against the session's
+/// live registry, so before this guard, registration ORDER was load-bearing:
+/// `exponential(2, 3, 8).` asserted before `register_compute_predicate`
+/// carried no compute node, stored as an ordinary fact, and answered `TRUE` —
+/// then the moment any session registered the name, the query side dispatched
+/// the backend instead and the stored fact became unreachable forever (still
+/// listed, still retractable, never consulted). That is the assert/query
+/// divergence class the comparison guard below closes, minus the guard.
+///
+/// Unlike the comparisons, the test here is the NAME, not the operands: every
+/// committed place of these two relations is numeric (result/base/power;
+/// result/number/base), so there is no relational reading to protect — and a
+/// registered query forwards even symbolic operands to the backend, so no
+/// operand shape keeps the store consulted. The registry's OPEN half (any
+/// other name may still be registered) is closed by the registration-time
+/// guard instead: `CoreSession::register_compute_predicate` refuses while
+/// live stored statements reference the name.
+///
+/// **Re-open trigger** (GUARANTEES §Disclosed Sharp Edges): a corpus or import
+/// source that needs either name as ordinary relational vocabulary, or a
+/// configurable reference set — either turns this static list into policy and
+/// would need the operand-style test the comparison guard uses.
+pub fn validate_no_external_compute_names(buffer: &LogicBuffer) -> Result<(), String> {
+    let Some(name) = asserted_external_compute_name(buffer) else {
+        return Ok(());
+    };
+    Err(format!(
+        "`{name}` is reserved for EXTERNAL COMPUTE and is query-only: a query \
+         dispatches it to the registered compute backend (`:compute {name}` plus \
+         a backend wiring such as `enable_compute_backend`) and the computed \
+         verdict wins, so a stored `{name}` fact or rule literal would never be \
+         consulted — unreachable the moment the name is registered anywhere. \
+         Assert ordinary facts, then evaluate `{name}(…)` through a query. \
+         (Quoted content such as `fact {{ {name}(8, 2, 3) }}` remains assertable.)"
+    ))
+}
+
+/// Whether this stored buffer's assertion-reachable content references
+/// `relation` (role spellings collapsed onto the anchor ON BOTH SIDES — a
+/// role-spelled target like `eats_x1` scans as its anchor `eats`, or a
+/// registration under the role spelling would find no blockers while marking
+/// exactly the role conjuncts every stored `eats` fact carries; `ComputeNode`
+/// spellings included). Opaque quoted content and sibling-root arena entries
+/// do not count — a quoted mention must not block compute registration,
+/// exactly as it does not block assertion. This is the registration-guard
+/// primitive behind `KnowledgeBase::stored_statement_ids_referencing`.
+pub(super) fn buffer_references_relation(buffer: &LogicBuffer, relation: &str) -> bool {
+    let target = crate::materialize::surface_relation(relation);
+    contains_reachable_assertion_node(buffer, |node| match node {
+        LogicNode::Predicate((rel, _)) | LogicNode::ComputeNode((rel, _)) => {
+            crate::materialize::surface_relation(rel) == target
+        }
+        _ => false,
+    })
+}
+
 /// Walk the assertion-visible subgraph of a raw [`LogicBuffer`].
 ///
 /// `LogicBuffer::split_roots()` retains a shared arena, and abstraction bodies
@@ -285,8 +370,12 @@ fn contains_reachable_assertion_node(
 }
 
 /// Pure structural checks that must run before any assertion-side mutation.
+/// The external-compute NAME guard runs before the generic `ComputeNode` guard
+/// so the same text yields the same (most specific) refusal regardless of the
+/// session's registration state.
 pub(super) fn validate_assertion_buffer(buffer: &LogicBuffer) -> Result<(), String> {
     validate_single_flavor_paths(buffer)?;
+    validate_no_external_compute_names(buffer)?;
     validate_no_count_assertions(buffer)?;
     validate_no_compute_assertions(buffer)?;
     validate_no_operational_comparisons(buffer)

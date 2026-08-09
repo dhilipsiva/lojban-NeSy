@@ -138,26 +138,14 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 ## Reasoning / evaluation
 
-- **An external compute relation asserted BEFORE it is registered becomes an unreachable
-  stored fact.** A relation is marked `ComputeNode` by `transform_compute_nodes` at COMPILE
-  time, against the session's registry (`nibli-session/src/lib.rs`:63-66, 124-125). So
-  `exponential(2, 3, 8).` asserted before `register_compute_predicate("exponential")`
-  carries no compute node, `validate_no_compute_assertions` has nothing to object to, and
-  it stores as an ordinary fact. Verified on 2026-08-08 through `NibliEngine`: the
-  assertion succeeds (fact id minted), the query answers `True` from the store, and after
-  registration the SAME query answers `Unknown(BackendUnavailable)` — the stored fact is
-  never consulted again, cannot be reached, and is still listed in `:facts` and still
-  retractable. This is the assert/query divergence class the numeric-comparison guard
-  closes, minus the guard: there is no operand-based test to apply, because the divergence
-  is caused by REGISTRATION ORDER rather than by the atom. It is fail-CLOSED (Unknown, not
-  a wrong TRUE), which is why it is an entry rather than a defect, but a KB whose facts
-  silently stop being consulted halfway through a session is not a contract anyone stated.
-  Options: refuse a ground assertion of any name in `REFERENCE_EXTERNAL_COMPUTE`
-  regardless of registration; refuse REGISTRATION when a stored fact for that relation
-  already exists; or accept and disclose it. **Exit:** the chosen rule is pinned in both
-  orders (assert-then-register and register-then-assert) at the engine level, `:compute`
-  in nibli-host reports whatever it invalidates, and GUARANTEES §Compute Result Lifecycle
-  states the contract instead of leaving registration order load-bearing and undocumented.
+- **`register_constraint` takes raw `StoredFact` conjuncts and bypasses buffer preflight.**
+  Noted while closing the external-compute registration-order entry (2026-08-09): the
+  integrity-constraint API (`nibli-reason/src/lib.rs`, `register_constraint`) accepts
+  conjuncts directly, so a constraint naming `exponential` — or any query-only shape the
+  assertion guards refuse — is accepted. It is VACUOUS rather than unsound (its conjuncts
+  can never all be stored, since ingress refuses the facts), so this is hygiene, not a
+  divergence. **Exit:** either the constraint ingress shares the name/comparison guards,
+  or its doc states that a constraint over query-only shapes is inert by construction.
 
 - **`collect_negated_relations` misses the opposite-polarity visit of a shared subtree.**
   The walker (`nibli-reason/src/materialize.rs`:1457-1470) threads `under_not` as a

@@ -11,7 +11,7 @@
 ///
 /// Data crossing the host↔component boundary uses flat index-based arrays
 /// (`u32` indices into parallel lists) — no heap pointers cross the WASM boundary.
-package nibli:engine@0.10.0;
+package nibli:engine@0.11.0;
 
 /// Structured error types shared across all Nibli components.
 interface error-types {
@@ -420,7 +420,8 @@ interface engine {
         /// itself (recompile-free replay via `assert-buffer-with-id`).
         /// A count-node or executable compute-node in asserted position
         /// (outside opaque quoted content) is rejected before a fact id is
-        /// allocated; this API does not install cardinality constraints or
+        /// allocated — as are the reference external compute names even when
+        /// unregistered; this API does not install cardinality constraints or
         /// computed premises.
         assert-text: func(input: string) -> result<list<tuple<fact-id, logic-buffer>>, nibli-error>;
         /// Query whether KR text is entailed.
@@ -437,10 +438,26 @@ interface engine {
         /// Reset the session's KB to fresh state.
         reset-kb: func() -> result<_, nibli-error>;
         /// Register a predicate name for external computation dispatch.
-        register-compute-predicate: func(name: string);
+        /// Refused (`reasoning` error) while any LIVE stored fact or rule
+        /// references `name` (role spellings collapse onto their anchor on
+        /// both sides of the scan); the message names the blocking fact ids —
+        /// retract them first, then re-register. Role-shaped names
+        /// (`eats-x1` — register the anchor) and the engine-special relations
+        /// (identity, the numeric comparisons) are refused outright. The
+        /// reference external names (`exponential`, `logarithm`) are
+        /// additionally query-only at assertion ingress whether or not they
+        /// are registered, so registration order can never strand a stored
+        /// fact.
+        register-compute-predicate: func(name: string) -> result<_, nibli-error>;
+        /// The session's compute-predicate names, sorted (the built-in
+        /// arithmetic names are pre-registered and included). Backs the bare
+        /// `:compute` report.
+        compute-predicates: func() -> list<string>;
         /// Assert a ground fact directly into the KB (bypasses text parsing).
         /// A relation already registered for compute is marked and rejected as
-        /// query-only rather than stored as an ordinary shadow fact.
+        /// query-only rather than stored as an ordinary shadow fact; the
+        /// reference external compute names are rejected the same way even
+        /// when unregistered.
         assert-fact: func(relation: string, args: list<logical-term>) -> result<fact-id, nibli-error>;
         /// Assert a ground fact directly with a CALLER-CHOSEN fact id (for
         /// persistent restart-replay; see `assert-buffer-with-id`).
@@ -451,6 +468,9 @@ interface engine {
         /// display label (the original source text). A count-node or executable
         /// compute-node in asserted position fails closed, including during
         /// legacy-row replay; quoted opaque-abstraction content remains inert.
+        /// The buffer is re-marked against the session's LIVE compute registry
+        /// first, so replaying a row out of order relative to a registration
+        /// fails closed instead of storing a plain fact for a registered name.
         assert-buffer-with-id: func(buffer: logic-buffer, label: string, id: fact-id) -> result<_, nibli-error>;
         /// Retract a previously asserted fact by its ID.
         retract-fact: func(id: fact-id) -> result<_, nibli-error>;
@@ -492,7 +512,7 @@ interface engine {
 
 /// Built-in authorization surface (logical auth v0.1).
 ///
-/// Rides package `nibli:engine@0.10.0` for shipping tooling simplicity (single
+/// Rides package `nibli:engine@0.11.0` for shipping tooling simplicity (single
 /// WIT package / world). A future split to `nibli:auth@0.1.0` may re-home this
 /// interface without changing method shapes. Wraps the same policy as the
 /// native `nibli-auth` crate (`authorized` KR head, not corpus `can`).

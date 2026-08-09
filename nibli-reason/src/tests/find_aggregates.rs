@@ -101,14 +101,16 @@ fn test_count_witnesses_multiple() {
 
 #[test]
 fn test_aggregate_sum() {
-    // Assert numeric facts: tenfa(2, zo'e), tenfa(3, zo'e), tenfa(5, zo'e)
-    // Sum over x in ∃x. tenfa(x, zo'e) → 2+3+5 = 10
+    // Assert numeric facts: quantity(2, zo'e), quantity(3, zo'e), quantity(5, zo'e)
+    // Sum over x in ∃x. quantity(x, zo'e) → 2+3+5 = 10. (The fixture relation
+    // was `exponential` — an arbitrary stand-in predating the reserved
+    // external-compute names, whose assertion ingress now refuses it.)
     let kb = new_kb();
     for val in [2.0, 3.0, 5.0] {
         let mut nodes = Vec::new();
         let root = pred(
             &mut nodes,
-            "exponential",
+            "quantity",
             vec![LogicalTerm::Number(val), LogicalTerm::Unspecified],
         );
         assert_buf(
@@ -119,11 +121,11 @@ fn test_aggregate_sum() {
             },
         );
     }
-    // Build ∃x. tenfa(x, zo'e)
+    // Build ∃x. quantity(x, zo'e)
     let mut nodes = Vec::new();
     let body = pred(
         &mut nodes,
-        "exponential",
+        "quantity",
         vec![
             LogicalTerm::Variable("x".to_string()),
             LogicalTerm::Unspecified,

@@ -44,7 +44,9 @@ deterministic gate reports it as unsupported: NEVER omit, weaken, or fabricate a
 An exact count inside opaque \"fact { ... }\" or \"event { ... }\" content is quoted, not an outer-KB assertion.
 The arithmetic predicates \"product\", \"sum\", and \"quotient\" are also query-only compute \
 formulas. Do not emit them as KB facts, rule guards, or rule conclusions; executable compute \
-in asserted output is rejected before it can become a premise. Compute text inside an opaque \
+in asserted output is rejected before it can become a premise. The external compute names \
+\"exponential\" and \"logarithm\" are query-only on the same terms — even before any backend \
+registration; never emit them as KB facts or rule atoms either. Compute text inside an opaque \
 fact/event abstraction remains quoted content.
 The comparisons \"greater\", \"less\", and \"num_equal\" are query-only WHENEVER an operand is a \
 number or a variable: a query computes them arithmetically, so an asserted one would never be \
@@ -239,6 +241,10 @@ mod tests {
         assert!(
             prompt.contains("Never combine a tense and a deontic"),
             "system prompt does not teach the fail-closed prefix contract"
+        );
+        assert!(
+            prompt.contains("\"exponential\" and \"logarithm\" are query-only"),
+            "system prompt does not teach the reserved external compute names"
         );
         // Known corpus lines are present, gismu-free.
         assert!(

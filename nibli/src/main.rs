@@ -63,7 +63,7 @@ fn main() {
     let mut linter = Linter::new();
 
     println!(
-        "Commands: :quit :reset :load <file> :facts :retract <id> :debug <text> :compute <name> :assert <rel> <args..> :help"
+        "Commands: :quit :reset :load <file> :facts :retract <id> :debug <text> :compute [name] :assert <rel> <args..> :help"
     );
     println!(
         "Prefix '?' for queries with proof trace, '??' for find, plain text for assertions.\n"
@@ -83,6 +83,16 @@ fn main() {
                         engine.reset();
                         linter.reset();
                         println!("[Reset] Knowledge base cleared.");
+                        continue;
+                    }
+                    ":compute" => {
+                        let names = engine.compute_predicates();
+                        println!("[Compute] Registered: {}", names.join(", "));
+                        println!(
+                            "[Compute] product, sum, quotient are built-in (local arithmetic); \
+                             other names need external dispatch, which this debug REPL does \
+                             not wire — their queries answer UNKNOWN (backend-unavailable)"
+                        );
                         continue;
                     }
                     ":facts" => {
@@ -147,7 +157,10 @@ fn main() {
                         println!("  ?? <text>           Find witnesses (answer variables)");
                         println!("  :debug <text>       Show compiled logic tree");
                         println!("  :load <filepath>    Load a .nibli file (assert each line)");
-                        println!("  :compute <name>     Register predicate for compute dispatch");
+                        println!(
+                            "  :compute [name]     Show registered compute predicates, or \
+                             register one for dispatch"
+                        );
                         println!("  :assert <rel> <args..> Assert a ground fact directly");
                         println!("  :retract <id>       Retract a fact by ID (rebuilds KB)");
                         println!("  :facts              List all active facts in the KB");
@@ -208,8 +221,12 @@ fn main() {
                         println!("[Host] Usage: :compute <predicate-name>");
                         continue;
                     }
-                    engine.register_compute_predicate(name.to_string());
-                    println!("[Compute] Registered '{}' for compute dispatch", name);
+                    match engine.register_compute_predicate(name.to_string()) {
+                        Ok(()) => {
+                            println!("[Compute] Registered '{}' for compute dispatch", name)
+                        }
+                        Err(e) => println!("{}", e),
+                    }
                 } else if let Some(assert_args) = input.strip_prefix(":assert ") {
                     let text = assert_args.trim();
                     if text.is_empty() {

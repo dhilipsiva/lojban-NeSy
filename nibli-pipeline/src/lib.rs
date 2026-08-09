@@ -502,11 +502,10 @@ impl GuestSession for Session {
         label: String,
         id: u64,
     ) -> Result<(), pipeline_err::NibliError> {
-        self.core
-            .borrow()
-            .kb()
-            .assert_fact_with_id(buffer, label, id)
-            .map_err(pipeline_err::NibliError::Reasoning)
+        // The session re-marks the buffer against the live compute registry,
+        // so an out-of-order host replay cannot store a plain fact for a
+        // registered name (it fails closed at preflight instead).
+        self.core.borrow().assert_buffer_with_id(buffer, label, id)
     }
 
     fn query_text(&self, input: String) -> Result<logic::QueryResult, pipeline_err::NibliError> {
@@ -542,8 +541,22 @@ impl GuestSession for Session {
         self.core.borrow().reset()
     }
 
-    fn register_compute_predicate(&self, name: String) {
-        self.core.borrow_mut().register_compute_predicate(name);
+    fn register_compute_predicate(&self, name: String) -> Result<(), pipeline_err::NibliError> {
+        self.core.borrow_mut().register_compute_predicate(name)
+    }
+
+    fn compute_predicates(&self) -> Vec<String> {
+        // Sorted HERE so the WIT-level list is deterministic (the session set
+        // is a HashSet).
+        let mut names: Vec<String> = self
+            .core
+            .borrow()
+            .compute_predicates()
+            .iter()
+            .cloned()
+            .collect();
+        names.sort();
+        names
     }
 
     fn assert_fact(

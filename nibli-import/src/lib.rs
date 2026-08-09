@@ -1,7 +1,10 @@
 //! Knowledge base import/export for standard formats.
 //!
 //! Provides RDF Turtle import, OWL class hierarchy import, and fact export.
-//! Uses `nibli-engine` to inject facts via `assert_fact_direct`.
+//! Uses `nibli-engine` to inject facts via `assert_fact_direct`, so the
+//! engine's assertion-ingress guards apply: the reference external compute
+//! names (`exponential`, `logarithm`) are refused at ingress like any other
+//! query-only shape rather than stored as unreachable facts.
 
 pub mod export;
 pub mod owl;
@@ -100,6 +103,19 @@ ex:adam ex:likes ex:bob .
 "#;
         let count = import_triples_raw(&engine, turtle).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn a_reference_compute_predicate_import_is_refused_not_stored_unreachable() {
+        // An RDF predicate whose local name is a reserved external-compute
+        // name would import as an ordinary fact no compute query ever
+        // consults; ingress refuses it fail-closed instead.
+        let engine = NibliEngine::new();
+        let turtle = r#"<http://example.org/eight> <http://example.org/exponential> <http://example.org/two> ."#;
+        let error = import_triples_raw(&engine, turtle)
+            .expect_err("a reserved compute name must not import as an ordinary fact");
+        assert!(error.contains("query-only"), "{error}");
+        assert!(engine.list_facts().unwrap().is_empty());
     }
 
     #[test]

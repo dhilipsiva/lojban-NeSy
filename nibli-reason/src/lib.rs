@@ -81,9 +81,19 @@ pub fn transform_compute_nodes(buf: &mut LogicBuffer, compute_preds: &HashSet<St
 pub mod kb;
 pub(crate) use kb::*;
 pub use kb::{
-    KnowledgeBase, contains_asserted_compute_node, contains_asserted_count_node,
+    KnowledgeBase, asserted_external_compute_name, contains_asserted_compute_node,
+    contains_asserted_count_node, validate_no_external_compute_names,
     validate_no_operational_comparisons,
 };
+
+/// The surface relation a role spelling collapses onto (`eats_x1` → `eats`);
+/// a non-role name answers itself. The registration guard uses this to refuse
+/// role-shaped compute names outright — registering one would mark exactly
+/// the role conjuncts every stored anchor fact carries, stranding them behind
+/// a name the reference scan never matched.
+pub fn role_collapsed_relation(name: &str) -> &str {
+    materialize::surface_relation(name)
+}
 
 /// One predicate's row in [`KnowledgeBase::stratification_report`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1542,6 +1552,41 @@ impl KnowledgeBase {
     /// List all active (non-retracted) facts with their IDs and labels.
     pub fn list_facts(&self) -> Result<Vec<FactSummary>, NibliError> {
         self.list_facts_inner().map_err(NibliError::Reasoning)
+    }
+
+    /// Ids of LIVE (non-retracted) stored statements — facts AND rules ride the
+    /// same registry — whose assertion-reachable content references `relation`.
+    /// Role spellings (`foo_x1`) collapse onto the anchor; opaque quoted content
+    /// and unreachable sibling-root arena entries do not count. Ascending order.
+    ///
+    /// This is the registration-guard primitive: a compute name may only be
+    /// registered while this is empty (`CoreSession::register_compute_predicate`),
+    /// because registration flips how future compiled queries SPELL the relation
+    /// (`Predicate` → `ComputeNode`) and a stored extension would become
+    /// unreachable-but-listed the moment the query side starts dispatching.
+    pub fn stored_statement_ids_referencing(&self, relation: &str) -> Vec<u64> {
+        let inner = self.inner.borrow();
+        let mut ids: Vec<u64> = inner
+            .fact_registry
+            .values()
+            .filter(|r| !r.retracted)
+            .filter(|r| kb::buffer_references_relation(&r.buffer, relation))
+            .map(|r| r.id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Drop the stratum-ordered saturation. For mutations OUTSIDE KB content:
+    /// compute-name registration changes how future compiled queries SPELL a
+    /// relation (`Predicate` → `ComputeNode`), so the content-mutation
+    /// invalidations never fire and `materialization_report` would keep listing
+    /// the name as a complete stored extension — a stale report, not a wrong
+    /// verdict (the saturator refuses `ComputeNode` conjuncts), but stale
+    /// reports are how re-derivations come to disagree.
+    pub fn invalidate_materialization(&self) {
+        let inner = self.inner.borrow();
+        reasoning::invalidate_materialization(&inner);
     }
 
     /// Mark all rules concluding the given predicate as forward-chaining enabled.

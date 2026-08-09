@@ -1,0 +1,96 @@
+# ── External-compute boundary pins ────────────────────────────────────────────
+#
+# KIND: MECHANISM pin — fixture inline by design, see pins/rights-floor.nibli.
+#
+# Run by `just verify-pins` (nibli-pin, native).
+#
+# WHAT THIS GUARDS. A relation becomes a ComputeNode at COMPILE time, against the
+# session's live registry — so registration ORDER used to be load-bearing:
+#
+#   exponential(2, 3, 8).   asserted BEFORE `:compute exponential` — stored as an
+#                           ordinary fact no compute query would ever consult
+#                           again; listed, retractable, unreachable forever.
+#
+# The closure is BOTH-ENDED (decided 2026-08-09). The REFERENCE external names
+# (`exponential`, `logarithm` — nibli-types REFERENCE_EXTERNAL_COMPUTE) are
+# query-only at assertion ingress in every position, registered or not: unlike
+# greater/less/num_equal there is NO relational reading to protect — every
+# committed place is numeric (result/base/power; result/number/base) — so for
+# these two names the NAME is the operand test and nothing is collateral. And
+# registration itself is fallible: `register_compute_predicate` (any name, the
+# registry is open) is refused while live stored facts or rules reference the
+# name, the blocking fact ids in the message — retract first.
+#
+# DECIDED, NOT DEFERRED (2026-08-09). Accept-and-disclose was declined: a KB
+# whose facts silently stop being consulted halfway through a session is the
+# assert/query divergence class the comparison guard closes, minus the guard.
+# Re-open trigger: a corpus or import source that needs either name as ordinary
+# relational vocabulary, or a configurable reference set — either turns the
+# static name list into policy and would need an operand-style test instead.
+# GUARANTEES §Compute Result Lifecycle and §Disclosed Sharp Edges carry the
+# contract.
+#
+# WHAT THIS FILE CANNOT PIN. The pin language has no registration directive and
+# its engine is immutable, so REGISTRATION ORDER — refusal over live references,
+# success after retraction, both orders — is pinned in Rust
+# (`assert_then_register_is_refused_until_the_statements_are_retracted` and
+# `an_external_compute_name_is_query_only_even_before_registration`,
+# nibli-engine) and across the WIT boundary by the
+# `smoke-host-compute-registration-order` gate. Do not read this file as
+# covering it.
+
+# ── THE REFERENCE NAMES ARE REFUSED IN EVERY ASSERTED POSITION, UNREGISTERED ──
+# The pin engine registers nothing, so every refusal below is the STATIC name
+# guard — the exact pre-fix hole. All five carry the same needle, so a typo (a
+# Syntax error) cannot satisfy them.
+
+# A ground fact. Pre-fix this stored and answered TRUE — until any session
+# registered the name, after which it was unreachable but still listed.
+:refuse reasoning /reserved for EXTERNAL COMPUTE/
+exponential(8, 2, 3).
+
+# The other reference name, same contract.
+:refuse reasoning /reserved for EXTERNAL COMPUTE/
+logarithm(3, 8, 2).
+
+# A positive rule guard.
+:refuse reasoning /reserved for EXTERNAL COMPUTE/
+all $x: all $n: person($x) & quantity($x, $n) & exponential($n, 2, 3) -> fit($x).
+
+# A NEGATED rule guard — the overfiring one: an empty stored extension under `~`
+# succeeds for every binding.
+:refuse reasoning /reserved for EXTERNAL COMPUTE/
+all $x: all $n: person($x) & quantity($x, $n) & ~exponential($n, 2, 3) -> rotten($x).
+
+# A rule HEAD.
+:refuse reasoning /reserved for EXTERNAL COMPUTE/
+all $x: all $n: quantity($x, $n) -> exponential($n, 2, 3).
+
+# ── ORDINARY VOCABULARY IS NOT COLLATERAL DAMAGE ──────────────────────────────
+# The ban is two exact names (role spellings collapse onto them), not a pattern.
+
+:accept
+person(Adam).
+
+? person(Adam).
+# => TRUE
+
+# ── THE UNREGISTERED QUERY READING ────────────────────────────────────────────
+# Assertion is closed by NAME; the QUERY side still follows the registry. In
+# this never-registered engine the stored extension is necessarily empty, so
+# the closed-world answer is FALSE — decided, not an error. (A REGISTERED
+# session dispatches the backend instead; that half lives in the Rust pins.)
+
+? exponential(8, 2, 3).
+# => FALSE
+
+# ── OPAQUE QUOTED CONTENT STAYS INERT ─────────────────────────────────────────
+# A belief ABOUT a computation is not a stored computation.
+
+:accept
+believe(me, fact { exponential(8, 2, 3) }).
+
+? believe(me, fact { exponential(8, 2, 3) }).
+# => TRUE
+
+:expect-pins 10

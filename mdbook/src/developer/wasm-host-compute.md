@@ -86,7 +86,8 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   `nibli_types::eval_arithmetic`); a call whose arguments don't resolve to
   numbers falls through to the backend — which is why the reference server
   implements all three too. Everything else registered via `:compute <name>`
-  forwards.
+  forwards. Registration is refused while live stored facts or rules
+  reference the name (retract first); bare `:compute` reports the registry.
 - **Tolerant equality (disclosed):** arithmetic equality is `isclose` with
   `rel_tol 1e-9, abs_tol 0` — `0.3 = 0.1 + 0.2` is TRUE. The comparison
   predicate `num_equal` is exact `==`. Non-finite operands yield
@@ -124,8 +125,9 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   not appear in `:facts`, cannot be retracted, never change the quantifier
   domain, are not persisted or journaled, and trigger no forward chaining.
   Compute atoms are query-only: executable `ComputeNode`s in assertions or any
-  rule position fail before id allocation; opaque abstraction bodies remain
-  quoted. Each top-level query recomputes or redispatches. Repeated identical
+  rule position fail before id allocation — as are the reference external names
+  (`exponential`/`logarithm`) even when unregistered, so registration order
+  cannot strand a stored fact; opaque abstraction bodies remain quoted. Each top-level query recomputes or redispatches. Repeated identical
   external checks may share a transient within-query memo to keep the verdict
   and trace consistent; the memo never survives into another query. Compiled
   KR and raw flat `ComputeNode` buffers follow the same rule.

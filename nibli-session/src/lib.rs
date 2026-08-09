@@ -26,9 +26,10 @@
 //!
 //! nibli-formalize's gates intentionally do NOT use this crate: they keep the
 //! AST for the render round-trip gate, then mark the default compute predicates
-//! locally so its KB-authoring boundary can reject query-only `ComputeNode`s;
-//! they also carry their own `GateError` taxonomy (see
-//! nibli-formalize/src/gates.rs).
+//! locally so its KB-authoring boundary can reject query-only `ComputeNode`s
+//! (the reference external names are refused by the engine's shared name guard
+//! whether or not any session registered them); they also carry their own
+//! `GateError` taxonomy (see nibli-formalize/src/gates.rs).
 
 use std::collections::HashSet;
 
@@ -121,8 +122,84 @@ impl CoreSession {
     }
 
     /// Register a predicate name for external compute dispatch.
-    pub fn register_compute_predicate(&mut self, name: String) {
+    ///
+    /// Fallible (decided 2026-08-09): registration flips how future compiled
+    /// statements SPELL the name (`Predicate` → `ComputeNode`), so it is
+    /// refused while LIVE stored statements (facts or rules, NAF bodies
+    /// included) reference it — otherwise those rows become
+    /// unreachable-but-listed the moment the query side starts dispatching
+    /// (the assert-then-register divergence). Also refused: role spellings
+    /// (`eats_x1` — register the anchor) and the engine-special relations
+    /// (identity, numeric comparisons), whose built-in query semantics
+    /// ComputeNode marking would silently replace. Idempotent for names
+    /// already registered (the built-in arithmetic set lands here); no
+    /// partial state on `Err`. The reference external names (`exponential`,
+    /// `logarithm`) can never acquire live references — assertion ingress
+    /// refuses them statically — so their registration is vacuously never
+    /// blocked.
+    pub fn register_compute_predicate(&mut self, name: String) -> Result<(), NibliError> {
+        // A role spelling would strand its anchor: `transform_compute_nodes`
+        // matches EXACT names, so registering `eats_x1` marks exactly the role
+        // conjunct every stored/future `eats` statement carries, while the
+        // anchor-collapsed reference scan below would have found no blockers.
+        let collapsed = nibli_reason::role_collapsed_relation(&name);
+        if collapsed != name {
+            return Err(NibliError::Reasoning(format!(
+                "cannot register `{name}` for external compute: role spellings collapse \
+                 onto their anchor relation — register `{collapsed}` instead."
+            )));
+        }
+        // Engine-special relations have built-in query semantics (identity
+        // feeds union-find; comparisons evaluate exactly and keep a relational
+        // reading) that ComputeNode marking would silently replace.
+        if nibli_types::relations::is_identity(&name)
+            || nibli_types::relations::is_numeric_comparison(&name)
+        {
+            return Err(NibliError::Reasoning(format!(
+                "cannot register `{name}` for external compute: it is an engine-special \
+                 relation whose query semantics are built in — marking it as compute \
+                 would silently replace them."
+            )));
+        }
+        // The scan runs even for an already-registered name, so the invariant
+        // "a registered name has no live references" is enforced rather than
+        // assumed: a raw sub-session ingress (`KnowledgeBase::assert_fact` on a
+        // hand-built unmarked buffer) that violated it surfaces on the next
+        // registration instead of returning Ok forever.
+        let blocking = self.kb.stored_statement_ids_referencing(&name);
+        if !blocking.is_empty() {
+            const SHOWN: usize = 8;
+            let shown: Vec<String> = blocking
+                .iter()
+                .take(SHOWN)
+                .map(|id| format!("#{id}"))
+                .collect();
+            let more = blocking.len().saturating_sub(SHOWN);
+            let tail = if more > 0 {
+                format!(", … and {more} more")
+            } else {
+                String::new()
+            };
+            return Err(NibliError::Reasoning(format!(
+                "cannot register `{name}` for external compute: {n} live stored \
+                 statement(s) reference it ({ids}{tail}). A registered name is \
+                 computed by the backend at query time, so its stored extension \
+                 would become unreachable — retract the listed statements (or \
+                 reset) first, then register, then re-ask them as queries.",
+                n = blocking.len(),
+                ids = shown.join(", "),
+            )));
+        }
+        if self.compute_predicates.contains(&name) {
+            return Ok(()); // Idempotent re-registration (the builtins land here).
+        }
         self.compute_predicates.insert(name);
+        // Registration is not a KB content mutation, so the content-path
+        // invalidations never fire; drop the saturation so
+        // `materialization_report` cannot keep presenting the name as a
+        // complete stored extension.
+        self.kb.invalidate_materialization();
+        Ok(())
     }
 
     /// Register this session's external compute dispatch (per-instance; see
@@ -209,8 +286,10 @@ impl CoreSession {
     /// assertion produces, so the injected fact is matched by surface text
     /// queries (not just raw-FOL / same-shape direct queries). A registered
     /// compute relation is marked before assertion and therefore rejected as
-    /// query-only. Identity stays flat; arity follows the injected-arity policy
-    /// (fail-closed) — see `nibli_semantics::compile_injected_fact`.
+    /// query-only; the reference external names (`exponential`, `logarithm`)
+    /// are rejected even when unregistered. Identity stays flat; arity follows
+    /// the injected-arity policy (fail-closed) — see
+    /// `nibli_semantics::compile_injected_fact`.
     pub fn assert_fact_direct(
         &self,
         relation: &str,
@@ -236,7 +315,9 @@ impl CoreSession {
     /// Compile one direct/injected fact through the same compute-marking policy
     /// as text assertions. A relation registered for compute becomes a
     /// `ComputeNode`, allowing assertion ingress to reject it as query-only
-    /// instead of silently storing an ordinary fact that compute queries ignore.
+    /// instead of silently storing an ordinary fact that compute queries ignore;
+    /// the reference external names are refused by the static name guard even
+    /// when unregistered, so registration order cannot re-open that hole.
     pub fn compile_injected_fact(
         &self,
         relation: &str,
@@ -245,6 +326,26 @@ impl CoreSession {
         let mut buf = nibli_semantics::compile_injected_fact(relation, args)?;
         nibli_reason::transform_compute_nodes(&mut buf, &self.compute_predicates);
         Ok(buf)
+    }
+
+    /// Assert an already-compiled buffer under a caller-chosen id — the
+    /// recompile-free replay primitive. The buffer is RE-MARKED against the
+    /// live compute registry first, so a row replayed out of order relative
+    /// to a registration cannot store a plain fact for a name whose queries
+    /// dispatch — it fails closed at preflight instead. In-order replay is
+    /// unaffected: at that point in the replay the registry does not yet hold
+    /// the name, and no session ever accepted a plain fact for a
+    /// then-registered one.
+    pub fn assert_buffer_with_id(
+        &self,
+        mut buffer: LogicBuffer,
+        label: String,
+        id: u64,
+    ) -> Result<(), NibliError> {
+        nibli_reason::transform_compute_nodes(&mut buffer, &self.compute_predicates);
+        self.kb
+            .assert_fact_with_id(buffer, label, id)
+            .map_err(NibliError::Reasoning)
     }
 
     /// Compile a KR query and run the entailment check.
@@ -474,6 +575,199 @@ mod tests {
             session.kb().next_fact_id().unwrap(),
             0,
             "the rejected call must not consume an id"
+        );
+    }
+
+    // ─── Fallible compute registration (assert-then-register closure) ───────
+
+    #[test]
+    fn registering_a_referenced_name_is_refused_with_the_blocking_ids() {
+        let mut session = CoreSession::new();
+        let facts = session.assert_text("eats(Bela, Cheese).").unwrap();
+        let fact_id = facts[0].0;
+        let rule_id = session
+            .assert_text("all $x: eats($x, Cheese) -> animal($x).")
+            .unwrap()[0]
+            .0;
+        let error = session
+            .register_compute_predicate("eats".to_string())
+            .expect_err("live references must block registration");
+        let message = error.to_string();
+        assert!(message.contains("cannot register"), "{message}");
+        for id in [fact_id, rule_id] {
+            assert!(
+                message.contains(&format!("#{id}")),
+                "the refusal must name blocking id #{id}: {message}"
+            );
+        }
+        assert!(
+            !session.compute_predicates().contains("eats"),
+            "a refused registration must leave no partial state"
+        );
+        session
+            .assert_text("eats(Dana, Cheese).")
+            .expect("the name must stay ordinary after a refused registration");
+    }
+
+    #[test]
+    fn register_is_idempotent_and_builtins_are_ok() {
+        let mut session = CoreSession::new();
+        session
+            .register_compute_predicate("product".to_string())
+            .expect("re-registering a builtin is idempotent");
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect("a fresh unreferenced name registers");
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect("re-registering the same name is idempotent");
+        let error = session
+            .assert_text("eats(Bela, Cheese).")
+            .expect_err("register-then-assert stays closed by the ComputeNode guard");
+        assert!(error.to_string().contains("query-only"), "{error}");
+    }
+
+    #[test]
+    fn retract_then_register_succeeds_and_queries_route_to_dispatch() {
+        let mut session = CoreSession::new();
+        let fact_id = session.assert_text("eats(Bela, Cheese).").unwrap()[0].0;
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect_err("the live fact must block registration");
+        session.retract_fact(fact_id).unwrap();
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect("after retraction the registration must succeed");
+        session
+            .assert_text("eats(Bela, Cheese).")
+            .expect_err("post-registration asserts are query-only");
+        assert_eq!(
+            session.query_text("eats(Bela, Cheese).").unwrap(),
+            nibli_types::logic::QueryResult::Unknown(
+                nibli_types::logic::UnknownReason::BackendUnavailable
+            ),
+            "the registered query must dispatch, never consult the retracted store"
+        );
+    }
+
+    #[test]
+    fn reset_then_register_succeeds() {
+        let mut session = CoreSession::new();
+        session.assert_text("eats(Bela, Cheese).").unwrap();
+        session.reset().unwrap();
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect("reset clears the fact registry, so nothing blocks");
+        assert!(
+            session.compute_predicates().contains("product"),
+            "the builtin seed survives reset (config, not content)"
+        );
+    }
+
+    #[test]
+    fn a_quoted_mention_does_not_block_registration() {
+        let mut session = CoreSession::new();
+        session
+            .assert_text("believe(me, fact { eats(Bela, Cheese) }).")
+            .unwrap();
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect("opaque quoted content is not a live reference");
+    }
+
+    #[test]
+    fn role_spelled_and_engine_special_names_are_refused_at_registration() {
+        let mut session = CoreSession::new();
+        let err = session
+            .register_compute_predicate("eats_x1".to_string())
+            .expect_err("a role spelling would strand its anchor's stored facts");
+        assert!(err.to_string().contains("role spellings collapse"), "{err}");
+        for name in ["equals", "greater", "less", "num_equal"] {
+            let err = session
+                .register_compute_predicate(name.to_string())
+                .expect_err("an engine-special relation must not be markable as compute");
+            assert!(err.to_string().contains("engine-special"), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_raw_injected_reference_surfaces_on_the_next_registration() {
+        let mut session = CoreSession::new();
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect("a fresh unreferenced name registers");
+        // Below the session seam: a hand-built UNMARKED buffer for the
+        // registered name passes preflight (it is neither a ComputeNode nor a
+        // reference name). The scan runs even on re-registration, so the
+        // violated invariant surfaces instead of returning Ok forever.
+        let raw = LogicBuffer {
+            nodes: vec![LogicNode::Predicate((
+                "eats".to_string(),
+                vec![
+                    LogicalTerm::Constant("Bela".to_string()),
+                    LogicalTerm::Constant("Cheese".to_string()),
+                ],
+            ))],
+            roots: vec![0],
+        };
+        session
+            .kb()
+            .assert_fact(raw, "raw sub-session ingress".to_string())
+            .expect("raw KB ingress bypasses session marking by design");
+        let err = session
+            .register_compute_predicate("eats".to_string())
+            .expect_err("the self-enforcing scan must surface the raw-injected reference");
+        assert!(err.to_string().contains("cannot register"), "{err}");
+    }
+
+    #[test]
+    fn buffer_replay_ingress_re_marks_against_the_live_registry() {
+        let mut session = CoreSession::new();
+        let plain = LogicBuffer {
+            nodes: vec![LogicNode::Predicate((
+                "eats".to_string(),
+                vec![LogicalTerm::Constant("Bela".to_string())],
+            ))],
+            roots: vec![0],
+        };
+        session
+            .assert_buffer_with_id(plain.clone(), "pre-registration row".to_string(), 0)
+            .expect("an unregistered name replays as an ordinary fact");
+        session.retract_fact(0).unwrap();
+        session
+            .register_compute_predicate("eats".to_string())
+            .expect("no live references after retraction");
+        let err = session
+            .assert_buffer_with_id(plain, "out-of-order replay".to_string(), 1)
+            .expect_err(
+                "a replay after registration must fail closed, not store an unreachable fact",
+            );
+        assert!(err.to_string().contains("query-only"), "{err}");
+    }
+
+    #[test]
+    fn the_id_list_in_the_refusal_is_bounded() {
+        let mut session = CoreSession::new();
+        let names = [
+            "Ana", "Bela", "Cira", "Dana", "Elis", "Fara", "Gina", "Hana", "Ines", "Jana",
+        ];
+        for name in names {
+            session
+                .assert_text(&format!("eats({name}, Cheese)."))
+                .unwrap();
+        }
+        let message = session
+            .register_compute_predicate("eats".to_string())
+            .expect_err("ten live references must block registration")
+            .to_string();
+        assert_eq!(
+            message.matches('#').count(),
+            8,
+            "exactly eight ids shown: {message}"
+        );
+        assert!(
+            message.contains("and 2 more"),
+            "the remainder must be counted: {message}"
         );
     }
 }

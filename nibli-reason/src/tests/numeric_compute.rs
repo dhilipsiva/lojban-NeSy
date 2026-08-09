@@ -1513,3 +1513,288 @@ fn a_refused_comparison_does_not_burn_a_fact_id() {
         "a rejected comparison must not consume a fact id"
     );
 }
+
+// ─── Reference external-compute names are query-only, registered or not ─────
+//
+// A relation becomes a ComputeNode at COMPILE time against the session's live
+// registry, so before `validate_no_external_compute_names` an UNREGISTERED
+// `exponential(8, 2, 3).` stored as an ordinary fact — reachable until the
+// moment any session registered the name, unreachable-but-listed after. The
+// name guard makes the same text refuse identically in every registration
+// state; the registration-order half for arbitrary names lives in
+// `CoreSession::register_compute_predicate` (session/engine tests).
+
+/// Both reference names, in every asserted position, refused UNREGISTERED —
+/// the exact hole the guard closes (`compile_surface` marks only builtins).
+#[test]
+fn a_reference_external_compute_name_is_refused_in_every_position() {
+    for name in nibli_types::relations::REFERENCE_EXTERNAL_COMPUTE {
+        for (position, text) in [
+            ("ground fact", format!("{name}(8, 2, 3).")),
+            (
+                "positive antecedent",
+                format!(
+                    "all $x: all $n: person($x) & quantity($x, $n) & {name}($n, 2, 3) -> fit($x)."
+                ),
+            ),
+            (
+                "negated antecedent",
+                format!(
+                    "all $x: all $n: person($x) & quantity($x, $n) & ~{name}($n, 2, 3) -> rotten($x)."
+                ),
+            ),
+            (
+                "rule head",
+                format!("all $x: all $n: quantity($x, $n) -> {name}($n, 2, 3)."),
+            ),
+        ] {
+            let kb = new_kb();
+            let error = kb
+                .assert_fact_inner(compile_surface(&text), position.to_string())
+                .unwrap_err();
+            assert!(
+                error.contains("reserved for EXTERNAL COMPUTE"),
+                "{name} in {position} must be refused by the name guard: {error}"
+            );
+            assert!(
+                kb.list_facts_inner().unwrap().is_empty(),
+                "{name} in {position} rejection must leave no registry record"
+            );
+        }
+    }
+}
+
+/// A REGISTERED session gets the SAME name-guard message, not the generic
+/// ComputeNode one — the name guard runs first in `validate_assertion_buffer`,
+/// so the refusal is deterministic across registration states.
+#[test]
+fn a_registered_external_compute_assertion_gets_the_reserved_name_error() {
+    let kb = new_kb();
+    let error = kb
+        .assert_fact_inner(
+            compile_surface_with_exponential("exponential(8, 2, 3)."),
+            "registered".to_string(),
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("reserved for EXTERNAL COMPUTE"),
+        "the registered spelling must get the specific name-guard message: {error}"
+    );
+}
+
+/// The spellings that never pass through the KR surface: flat 3-arg (direct
+/// injection / persisted replay), role-only (anchor-less hand-built), and the
+/// already-marked ComputeNode form. All collapse onto the reserved anchor.
+#[test]
+fn a_flat_or_role_spelled_external_compute_fact_is_refused_too() {
+    let cases: [(&str, LogicBuffer); 3] = [
+        ("flat 3-arg", {
+            let mut nodes = Vec::new();
+            let root = pred(
+                &mut nodes,
+                "exponential",
+                vec![
+                    LogicalTerm::Number(8.0),
+                    LogicalTerm::Number(2.0),
+                    LogicalTerm::Number(3.0),
+                ],
+            );
+            LogicBuffer {
+                nodes,
+                roots: vec![root],
+            }
+        }),
+        ("role-only, no anchor", {
+            let mut nodes = Vec::new();
+            let root = pred(
+                &mut nodes,
+                "exponential_x1",
+                vec![
+                    LogicalTerm::Constant("ev1".to_string()),
+                    LogicalTerm::Number(8.0),
+                ],
+            );
+            LogicBuffer {
+                nodes,
+                roots: vec![root],
+            }
+        }),
+        ("flat ComputeNode", {
+            let mut nodes = Vec::new();
+            let root = compute(
+                &mut nodes,
+                "logarithm",
+                vec![
+                    LogicalTerm::Number(3.0),
+                    LogicalTerm::Number(8.0),
+                    LogicalTerm::Number(2.0),
+                ],
+            );
+            LogicBuffer {
+                nodes,
+                roots: vec![root],
+            }
+        }),
+    ];
+    for (spelling, buffer) in cases {
+        let kb = new_kb();
+        let error = kb
+            .assert_fact_inner(buffer, spelling.to_string())
+            .unwrap_err();
+        assert!(
+            error.contains("reserved for EXTERNAL COMPUTE"),
+            "the {spelling} spelling must be refused: {error}"
+        );
+    }
+}
+
+/// Opaque quoted content stays assertable: a belief ABOUT a computation is not
+/// a stored computation.
+#[test]
+fn quoted_external_compute_content_stays_assertable() {
+    let kb = new_kb();
+    let buffer = compile_surface("believe(me, fact { exponential(8, 2, 3) }).");
+    assert_eq!(
+        crate::asserted_external_compute_name(&buffer),
+        None,
+        "a quoted mention is not an asserted occurrence"
+    );
+    assert_buf(&kb, buffer);
+    assert!(
+        query(
+            &kb,
+            compile_surface("believe(me, fact { exponential(8, 2, 3) }).")
+        ),
+        "the stored belief must answer from the store"
+    );
+}
+
+/// The guard runs in `preflight_assertion_buffer`, before id allocation.
+#[test]
+fn a_refused_external_compute_name_does_not_burn_a_fact_id() {
+    let kb = new_kb();
+    let first = assert_id(&kb, compile_surface("dog(Adam)."), "dog");
+    assert!(
+        kb.assert_fact_inner(
+            compile_surface("exponential(8, 2, 3)."),
+            "compute".to_string()
+        )
+        .is_err(),
+        "the ground external-compute fact must be refused"
+    );
+    let second = assert_id(&kb, compile_surface("cat(Bela)."), "cat");
+    assert_eq!(
+        second,
+        first + 1,
+        "a rejected external-compute assertion must not consume a fact id"
+    );
+}
+
+/// The guard is assertion-ingress only. An UNREGISTERED query still answers
+/// from the (necessarily empty) store — closed-world FALSE — while the
+/// REGISTERED spelling dispatches and surfaces backend-unavailable. The pair
+/// pins that query meaning follows the registry while assertion meaning no
+/// longer does.
+#[test]
+fn an_unregistered_external_compute_query_stays_closed_world_false() {
+    let kb = new_kb();
+    assert!(
+        query_false(&kb, compile_surface("exponential(8, 2, 3).")),
+        "unregistered: an empty stored extension is definitively FALSE"
+    );
+    assert_eq!(
+        query_result(
+            &kb,
+            compile_surface_with_exponential("exponential(8, 2, 3).")
+        ),
+        QueryResult::Unknown(UnknownReason::BackendUnavailable),
+        "registered: the same text dispatches instead of consulting the store"
+    );
+}
+
+// ─── The registration-guard scan primitive ──────────────────────────────────
+
+/// Facts, rule antecedents, and NAF rule bodies all count as live references;
+/// role spellings collapse onto the anchor; ids come back ascending; a
+/// retraction removes its id from the view.
+#[test]
+fn stored_statement_ids_referencing_sees_facts_rules_and_naf_bodies() {
+    let kb = new_kb();
+    let dog = assert_id(&kb, compile_surface("dog(Adam)."), "dog");
+    let eats = assert_id(&kb, compile_surface("eats(Bela, Cheese)."), "eats");
+    let rule = assert_id(
+        &kb,
+        compile_surface("all $x: eats($x, Cheese) -> animal($x)."),
+        "rule",
+    );
+    let naf_rule = assert_id(
+        &kb,
+        compile_surface("all $x: dog($x) & ~eats($x, Cheese) -> cat($x)."),
+        "naf-rule",
+    );
+    assert_eq!(
+        kb.stored_statement_ids_referencing("eats"),
+        vec![eats, rule, naf_rule],
+        "fact, positive rule literal, and NAF body must all reference `eats`, ascending"
+    );
+    assert_eq!(
+        kb.stored_statement_ids_referencing("dog"),
+        vec![dog, naf_rule],
+        "the anchor and the rule reading it must both reference `dog`"
+    );
+    assert_eq!(
+        kb.stored_statement_ids_referencing("eats_x1"),
+        kb.stored_statement_ids_referencing("eats"),
+        "a role-spelled target must scan as its anchor — both sides collapse, or \
+         registering `eats_x1` would find no blockers while marking exactly the \
+         role conjuncts every stored `eats` fact carries"
+    );
+    kb.retract_fact(eats).unwrap();
+    assert_eq!(
+        kb.stored_statement_ids_referencing("eats"),
+        vec![rule, naf_rule],
+        "a retracted statement is not a live reference"
+    );
+}
+
+/// Quoted content and unreachable sibling-arena entries are not live
+/// references — the same opacity/reachability contract the assertion guards
+/// hold.
+#[test]
+fn stored_statement_ids_referencing_skips_opaque_and_sibling_roots() {
+    let kb = new_kb();
+    assert_buf(
+        &kb,
+        compile_surface("believe(me, fact { eats(Bela, Cheese) })."),
+    );
+    assert!(
+        kb.stored_statement_ids_referencing("eats").is_empty(),
+        "a quoted mention must not block registration"
+    );
+    // A shared arena whose `eats` node is reachable only from an un-asserted
+    // sibling root: stored content is the ROOTS, not the arena.
+    let mut nodes = Vec::new();
+    let dog_root = pred(
+        &mut nodes,
+        "dog",
+        vec![LogicalTerm::Constant("Adam".to_string())],
+    );
+    let _orphan = pred(
+        &mut nodes,
+        "eats",
+        vec![
+            LogicalTerm::Constant("Adam".to_string()),
+            LogicalTerm::Constant("Cheese".to_string()),
+        ],
+    );
+    let sibling = LogicBuffer {
+        nodes,
+        roots: vec![dog_root],
+    };
+    let id = assert_id(&kb, sibling, "sibling-arena");
+    assert!(
+        kb.stored_statement_ids_referencing("eats").is_empty(),
+        "an unreachable arena entry must not block registration"
+    );
+    assert_eq!(kb.stored_statement_ids_referencing("dog"), vec![id]);
+}

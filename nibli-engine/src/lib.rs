@@ -228,9 +228,12 @@ impl NibliEngine {
         for fact in &facts {
             let buf: logic::LogicBuffer = postcard::from_bytes(&fact.payload)
                 .map_err(|e| format!("Deserialize error: {e}"))?;
+            // Re-marks against the live registry (builtins only at open —
+            // registrations are session state, not persisted), so a stored
+            // plain row for a compute name fails closed instead of replaying
+            // as an unreachable ordinary fact.
             self.core
-                .kb()
-                .assert_fact_with_id(buf, fact.label.clone(), fact.id)
+                .assert_buffer_with_id(buf, fact.label.clone(), fact.id)
                 .map_err(|e| format!("Replay error (fact {}): {e}", fact.id))?;
         }
         Ok(())
@@ -238,16 +241,29 @@ impl NibliEngine {
 
     /// Validate KR text without asserting — returns Ok if it parses and compiles.
     /// This is intentionally compile-only: CountNode and ComputeNode are valid
-    /// query IR even though `assert_text` will reject them as query-only.
+    /// query IR even though `assert_text` will reject them as query-only (and
+    /// the reference external compute names are rejected there registered or
+    /// not).
     pub fn validate(&self, text: &str) -> Result<(), String> {
         self.compile_text(text)
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
 
-    /// Register a predicate name for external compute dispatch.
-    pub fn register_compute_predicate(&mut self, name: String) {
-        self.core.register_compute_predicate(name);
+    /// Register a predicate name for external compute dispatch. Refused while
+    /// live stored statements reference the name — see
+    /// `CoreSession::register_compute_predicate`.
+    pub fn register_compute_predicate(&mut self, name: String) -> Result<(), EngineError> {
+        self.core.register_compute_predicate(name)
+    }
+
+    /// The session's compute-predicate names, sorted (the built-in arithmetic
+    /// names are pre-registered and included). Backs the bare `:compute`
+    /// report.
+    pub fn compute_predicates(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.core.compute_predicates().iter().cloned().collect();
+        names.sort();
+        names
     }
 
     fn compile_text(&self, input: &str) -> Result<logic::LogicBuffer, EngineError> {

@@ -6,7 +6,8 @@
 //! pinned fixpoint contract, `nibli-kr/src/render.rs`; AstBuffer equality is
 //! deliberately NOT the contract there). The KB-authoring entry point then
 //! rejects CountNodes and executable default ComputeNodes in asserted position
-//! (opaque quoted content is inert).
+//! — and the reference external compute names (`exponential`, `logarithm`)
+//! regardless of registration (opaque quoted content is inert).
 //! The round-trip gate is pure Rust,
 //! so it runs on native AND wasm. (The legacy Lojban chain — gerna + the
 //! wasm-only camxes gate — retired with the Lojban front-end.)
@@ -115,6 +116,18 @@ fn nibli_kr_round_trip(
 pub fn validate(candidate: &str) -> Result<LogicBuffer, GateError> {
     let mut buf = local_gates(candidate)?;
     nibli_reason::transform_compute_nodes(&mut buf, &nibli_reason::default_compute_predicates());
+    // The reference-external-compute name guard is the ENGINE's own function,
+    // and it runs FIRST here for the same reason it runs before the generic
+    // ComputeNode guard in `validate_assertion_buffer`: `exponential`/
+    // `logarithm` are query-only at ingress REGISTERED OR NOT, so a candidate
+    // carrying one could never load anywhere, and the specific message must
+    // win regardless of any session's registration state.
+    if let Err(why) = nibli_reason::validate_no_external_compute_names(&buf) {
+        return Err(GateError::Semantic(format!(
+            "{why} Preserve the source claim as a query, or assert the classification it \
+             supports as an ordinary predicate — do not store a computed result as a fact."
+        )));
+    }
     if nibli_reason::contains_asserted_count_node(&buf) {
         return Err(GateError::Semantic(
             "exact-count formulas (exactly N and no) are query-only and cannot be \
@@ -127,9 +140,10 @@ pub fn validate(candidate: &str) -> Result<LogicBuffer, GateError> {
     }
     if nibli_reason::contains_asserted_compute_node(&buf) {
         return Err(GateError::Semantic(
-            "compute formulas (product, sum, and quotient) are query-only and cannot be \
-             emitted as knowledge-base assertions or rule atoms. Preserve the source claim, \
-             but do not fabricate an ordinary stored fact around a computed result."
+            "executable compute formulas (the built-in product, sum, and quotient — and any \
+             relation registered for compute) are query-only and cannot be emitted as \
+             knowledge-base assertions or rule atoms. Preserve the source claim, but do not \
+             fabricate an ordinary stored fact around a computed result."
                 .to_string(),
         ));
     }
@@ -302,6 +316,36 @@ mod tests {
 
         validate("believe(me, fact { sum(5, 2, 3) }).")
             .expect("compute inside opaque quoted content is not executed as a KB premise");
+    }
+
+    /// The reference external-compute names are query-only at engine ingress
+    /// REGISTERED OR NOT (the static name guard), so Formalize must refuse
+    /// them even though its local marking never registers them — otherwise a
+    /// candidate passes the whole gate stack and dies at `assert_text`. The
+    /// guard is the engine's own function, so the two sides cannot drift.
+    #[test]
+    fn reference_external_compute_is_rejected_even_unregistered() {
+        local_gates("exponential(2, 3, 8).")
+            .expect("the compiler/query surface must retain the unregistered spelling");
+
+        for candidate in [
+            "exponential(2, 3, 8).",
+            "logarithm(3, 8, 2).",
+            "all $x: big($x) & exponential($x, 2, 8) -> animal($x).",
+            "all $x: big($x) -> exponential($x, 2, 8).",
+        ] {
+            let err = validate(candidate)
+                .expect_err("Formalize must not emit a reference compute name as KB content");
+            assert!(matches!(err, GateError::Semantic(_)), "{err:?}");
+            assert!(err.message().contains("query-only"), "{err:?}");
+            assert!(
+                err.message().contains("reserved for EXTERNAL COMPUTE"),
+                "{err:?}"
+            );
+        }
+
+        validate("believe(me, fact { exponential(2, 3, 8) }).")
+            .expect("a reference compute name inside opaque quoted content is not a KB premise");
     }
 
     /// The engine refuses a numeric comparison whose operands could be numbers, in a

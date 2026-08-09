@@ -144,7 +144,7 @@ property, carried on the verdict side by `ProofTrace.naf_dependent` and
 | You want | Use |
 |----------|-----|
 | Text → IR | `NibliEngine::compile_debug` (native), `compile-debug` (WIT), or `nibli_semantics::compile_from_ast` (+ `transform_compute_nodes`) |
-| A programmatic ground fact | `CoreSession::assert_fact_direct` or `NibliEngine::assert_fact_direct` — decomposes and pads exactly like surface text, applies the live compute registry, and rejects registered compute as query-only. The lower-level compiler is `nibli_semantics::compile_injected_fact(relation, args)` |
+| A programmatic ground fact | `CoreSession::assert_fact_direct` or `NibliEngine::assert_fact_direct` — decomposes and pads exactly like surface text, applies the live compute registry, and rejects registered compute — and the reference external names regardless of registration — as query-only. The lower-level compiler is `nibli_semantics::compile_injected_fact(relation, args)` |
 | Reason over a buffer (BYO-IR) | `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact`. `CountNode` and executable `ComputeNode` formulas in asserted position are query-only; `assert_fact` and assumptions reject them, while opaque quoted content remains inert |
 | A packaged surface | `nibli_engine::NibliEngine` (native), the nibli-wasm `Session` (browser JS), or the `nibli-pipeline` component ([WIT surface](wit-surface.md)) |
 
@@ -168,7 +168,7 @@ concrete index values, the compiler's tree IR (`IrForm`), stored-fact forms,
 on-disk mirrors.
 
 The buffer has no version field — the WIT package version
-(`nibli:engine@0.10.0`) and nibli-store's fail-closed schema versions are the
+(`nibli:engine@0.11.0`) and nibli-store's fail-closed schema versions are the
 only version markers. Treat the format as pre-1.0: pin a commit if you build
 against it.
 

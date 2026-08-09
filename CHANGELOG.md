@@ -13,7 +13,57 @@ here first.
 
 ## [Unreleased]
 
+### Changed
+
+- **WIT 0.11.0: registration order can no longer strand a stored compute fact
+  (decided 2026-08-09).** An external compute relation asserted BEFORE
+  registration stored an ordinary fact no later compute query would ever
+  consult — listed by `:facts`, retractable, unreachable the moment any session
+  registered the name. Closed with BOTH guards. The reference names
+  `exponential`/`logarithm` are query-only at assertion ingress on every
+  surface, registered or not (`validate_no_external_compute_names`, ahead of
+  the count/compute/comparison guards in preflight, before id allocation — unlike the comparisons
+  there is no relational reading to protect: every committed place is numeric,
+  and a registered query forwards even symbolic operands to the backend); role
+  spellings collapse onto the anchor, opaque quoted content stays assertable,
+  and a legacy persisted row carrying a reference name now fails replay
+  non-destructively (the count-row precedent). And `register-compute-predicate`
+  is now fallible — refused while live stored facts or rules (NAF bodies
+  included) reference the name, the blocking fact ids in the message — closing
+  the OPEN registry (`:compute foo` over a live `foo` fact is refused instead
+  of silently orphaning it). Role spellings collapse on BOTH sides of the
+  reference scan and role-shaped names are refused outright (`:compute eats_x1`
+  would have found no blockers while marking exactly the role conjuncts every
+  stored `eats` fact carries); the engine-special relations (identity, the
+  numeric comparisons) are refused too, since marking them would silently
+  replace built-in query semantics; the scan re-runs on re-registration so a
+  raw sub-session ingress violation surfaces instead of returning Ok forever;
+  and recompile-free buffer replay (`assert-buffer-with-id`, engine store
+  replay) re-marks against the live registry, so an out-of-order replay fails
+  closed instead of storing a plain fact for a registered name. The new `compute-predicates` getter reports the
+  sorted registry; bare `:compute` prints it, `:compute <name>` prints a
+  refusal verbatim and journals only successes. Formalize, nibli-validate, and
+  RDF import refuse the same text via the engine's own exported guard. Pinned
+  in both orders at the engine level
+  (`an_external_compute_name_is_query_only_even_before_registration`,
+  `assert_then_register_is_refused_until_the_statements_are_retracted`), by
+  `pins/external-compute-boundary.nibli` on the static half, and across the WIT
+  boundary by the `smoke-host-compute-query-only` and
+  `smoke-host-compute-registration-order` gates. GUARANTEES §Compute Result
+  Lifecycle states the contract; §Disclosed Sharp Edges carries the residuals
+  and the re-open trigger.
+
 ### Fixed
+
+- **`:reset` no longer forgets compute registrations on a later trap rebuild.**
+  nibli-host's `:reset` cleared the replay journal including its
+  `RegisterCompute` entries, while the guest session's registry survives
+  `reset-kb` (`CoreSession::reset` touches only the KB) — so a post-reset
+  trap-triggered rebuild replayed an empty journal into a fresh session and
+  silently dropped every registration, re-opening the registration-order hole
+  this release closes. The journal now retains registration entries across
+  `:reset`, mirroring the guest — pinned by the `:reset` + fuel-trap tail of
+  the `smoke-host-compute-registration-order` gate.
 
 - **Negation no longer launders a search cut past witness enumeration.** `negate_result`
   collapses every non-definitive inner verdict to `Unknown(NafDependent)` — deliberately,

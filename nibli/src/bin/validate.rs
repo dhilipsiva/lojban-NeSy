@@ -4,7 +4,8 @@
 //! front-end, nibli-semantics, and engine assertion ingress in a fresh KB.
 //! This validates assertable KB input,
 //! not every formula that is legal as a query: query-only `exactly N` / `no`
-//! formulas are rejected. Outputs one JSON object per line to stdout:
+//! formulas and the reference external compute names (`exponential`,
+//! `logarithm`) are rejected. Outputs one JSON object per line to stdout:
 //!   {"line":"...","valid":true}
 //!   {"line":"...","valid":false,"error":"parse error: ..."}
 
@@ -97,5 +98,22 @@ mod tests {
 
         validate_statement(&engine, "believe(me, fact { big(exactly 1 dog) }).")
             .expect("a count in opaque quoted content is assertable");
+    }
+
+    #[test]
+    fn reporter_rejects_reference_external_compute_names() {
+        let engine = NibliEngine::new();
+        for statement in ["exponential(8, 2, 3).", "logarithm(3, 8, 2)."] {
+            let error = validate_statement(&engine, statement)
+                .expect_err("a reference compute name is query-only, registered or not");
+            assert!(error.contains("query-only"), "{statement}: {error}");
+            assert!(
+                engine.list_facts().unwrap().is_empty(),
+                "the rejected candidate must leave the fresh validator KB empty"
+            );
+        }
+
+        validate_statement(&engine, "believe(me, fact { exponential(8, 2, 3) }).")
+            .expect("a reference compute name in opaque quoted content is assertable");
     }
 }

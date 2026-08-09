@@ -46,6 +46,15 @@ pub fn is_numeric_comparison(rel: &str) -> bool {
     NUMERIC_COMPARISONS.contains(&rel)
 }
 
+/// Is `rel` (exact name) an external compute predicate served by the
+/// reference backend? These names are reserved at assertion ingress on every
+/// surface — see nibli-reason's `validate_no_external_compute_names`. Exact
+/// name only: collapsing role spellings (`exponential_x1`) onto the anchor is
+/// the caller's job.
+pub fn is_reference_external_compute(rel: &str) -> bool {
+    REFERENCE_EXTERNAL_COMPUTE.contains(&rel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,6 +71,14 @@ mod tests {
             assert!(is_numeric_comparison(r));
             assert!(!is_builtin_arithmetic(r));
         }
+        for r in REFERENCE_EXTERNAL_COMPUTE {
+            assert!(is_reference_external_compute(r));
+            assert!(!is_builtin_arithmetic(r));
+            assert!(!is_numeric_comparison(r));
+        }
+        assert!(!is_reference_external_compute("sum"));
+        // Exact-name helper: role spellings collapse at the caller, not here.
+        assert!(!is_reference_external_compute("exponential_x1"));
     }
 
     #[test]

@@ -276,6 +276,57 @@ smoke-host-backend-unavailable: build-wasm build-host
         if echo "$out" | grep -qF '[Query] FALSE'; then echo 'FAIL: backend outage degraded to a definitive FALSE'; exit 1; fi; \
         echo 'PASS: an unreachable compute backend yields UNKNOWN (backend-unavailable), not FALSE'
 
+# Reference external-compute names are query-only at assertion ingress across the
+# WIT boundary + persistent host, REGISTERED OR NOT (decided 2026-08-09): an
+# unregistered `exponential(2, 3, 8).` used to store as an ordinary fact that no
+# compute query would ever consult after registration. Mixed statements reject
+# atomically; the refusal consumes no id; nothing persists. NOT in `ci` (needs
+# the WASM build).
+smoke-host-compute-query-only: build-wasm build-host
+    @echo "Smoke-testing gasnu query-only reference compute names (assertion ingress)..."
+    @dir=$(mktemp -d); db="$dir/nibli-compute.redb"; \
+        out1=$(printf 'exponential(2, 3, 8).\nperson(Adam). logarithm(3, 8, 2).\n? person(Adam).\n:facts\nperson(Adam).\n:facts\n' \
+            | NIBLI_DB_PATH="$db" NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$out1"; \
+        echo "$out1" | grep -qF 'reserved for EXTERNAL COMPUTE' || { echo 'FAIL: an unregistered reference compute assertion was not refused by the name guard'; rm -rf "$dir"; exit 1; }; \
+        echo "$out1" | grep -qF '[Facts] Knowledge base is empty.' || { echo 'FAIL: mixed refused call left a partial fact'; rm -rf "$dir"; exit 1; }; \
+        echo "$out1" | grep -qF '[Query] FALSE' || { echo 'FAIL: person must be FALSE — the mixed call had to reject atomically'; rm -rf "$dir"; exit 1; }; \
+        echo "$out1" | grep -qF '[Fact #0] Asserted.' || { echo 'FAIL: the refusals consumed a fact id'; rm -rf "$dir"; exit 1; }; \
+        echo "$out1" | grep -qF '[Facts] 1 active fact(s):' || { echo 'FAIL: an ordinary fact after the refusals did not assert'; rm -rf "$dir"; exit 1; }; \
+        out2=$(printf ':facts\n' | NIBLI_DB_PATH="$db" NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$out2"; \
+        echo "$out2" | grep -qF '[Facts] 1 active fact(s):' || { echo 'FAIL: a refused compute assertion wrote a durable row'; rm -rf "$dir"; exit 1; }; \
+        rm -rf "$dir"; \
+        echo 'PASS: reference compute names are query-only at assertion ingress, atomically, across WIT + persistence'
+
+# Registration-order closure across the WIT boundary (decided 2026-08-09):
+# `:compute <name>` over a relation with LIVE stored statements is refused
+# naming the blocking fact ids — a registration can no longer silently strand
+# an already-stored fact. After retraction the same registration succeeds, and
+# the query routes to dispatch (never the retracted store). Bare `:compute`
+# reports the registry through the new WIT getter. The tail pins the `:reset`
+# journal retention: `reset-kb` clears facts but NOT the guest registry, so
+# the journal keeps its RegisterCompute entries — after `:reset` plus a fuel
+# trap, the rebuilt session must still refuse a `person` assertion as
+# query-only (reverting retain() to clear() makes that assert succeed and this
+# smoke FAIL). NOT in `ci` (needs the WASM build).
+smoke-host-compute-registration-order: build-wasm build-host
+    @echo "Smoke-testing gasnu fallible :compute (live statements block registration)..."
+    @out=$(printf 'person(Adam).\n:compute person\n:facts\n:retract 0\n:compute person\n:compute\n? person(Adam).\n:reset\n:fuel 1000\n? dog(Adam).\n:fuel 10000000000\nperson(Bel).\n' \
+        | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$out"; \
+        echo "$out" | grep -qF 'cannot register' || { echo 'FAIL: registration over a live fact was not refused'; exit 1; }; \
+        echo "$out" | grep -qF '(#0)' || { echo 'FAIL: the refusal did not name the blocking fact id'; exit 1; }; \
+        echo "$out" | grep -qF '[Facts] 1 active fact(s):' || { echo 'FAIL: the refused registration disturbed the KB'; exit 1; }; \
+        [ "$(echo "$out" | grep -cF "[Compute] Registered 'person'")" -eq 1 ] || { echo 'FAIL: expected exactly ONE successful registration (the refused one must not print success)'; exit 1; }; \
+        echo "$out" | grep -qF '[Compute] Registered: ' || { echo 'FAIL: bare :compute did not report the registry'; exit 1; }; \
+        echo "$out" | grep -F '[Compute] Registered: ' | grep -qF 'person' || { echo 'FAIL: the registry report must include the newly registered name'; exit 1; }; \
+        echo "$out" | grep -qF '[Query] UNKNOWN (backend-unavailable)' || { echo 'FAIL: the post-retraction registration did not take — the query must route to dispatch'; exit 1; }; \
+        if echo "$out" | grep -qF '[Query] TRUE'; then echo 'FAIL: a retracted fact answered a registered compute query'; exit 1; fi; \
+        echo "$out" | grep -qF 'rebuilding and replaying' || { echo 'FAIL: the fuel trap did not trigger a session rebuild'; exit 1; }; \
+        echo "$out" | grep -qF 'compute formulas are query-only' || { echo 'FAIL: registration lost across :reset + trap rebuild — the journal must retain RegisterCompute entries'; exit 1; }; \
+        echo 'PASS: registration refused over live references (ids named), succeeds after retraction, routes queries to dispatch, and survives :reset + trap rebuild'
+
 # Quiet-mode smoke: NIBLI_QUIET=1 suppresses the per-assertion bookkeeping the book
 # strips — `[Fact #N]` on the host, `[Skolem]`/`[Rule]` in the guest (the latter reached
 # only via the host->guest WASI env hop) — while the verdict + proof trace stay. The
@@ -495,7 +546,7 @@ ci: fmt-check release-check clippy-runtime test test-engine test-host test-valid
 # them all: fuel exhaustion + post-trap recovery + journal replay
 # (trap-recovery), plus the script transcript, persist-replay, NAF-note,
 # :debug round-trip, and the determinism corpus.
-ci-wasm: smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-count-query-only smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
+ci-wasm: smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-count-query-only smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-compute-query-only smoke-host-compute-registration-order smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
 
 # Three-way determinism, WASMTIME leg: the shared determinism-corpus.nibli must produce
 # exactly its pinned annotations through the lasna component under gasnu. The

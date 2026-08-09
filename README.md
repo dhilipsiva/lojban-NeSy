@@ -131,7 +131,7 @@ Built-in, zero-hallucination **authorization** (entailment of `authorized(...)` 
 |-------|----------|
 | Guide | [mdBook: Authorization](https://dhilipsiva.github.io/nibli/user/authorization.html) (or `just docs-serve`) |
 | Rust crate | `nibli-auth` — `Authorizer`, `tls` (thread-local for async servers). Not on crates.io yet (`publish = false`) — use a git or path dependency |
-| WIT | `nibli:engine@0.10.0` export `authorizer` (the version lives in `wit/world.wit`) |
+| WIT | `nibli:engine@0.11.0` export `authorizer` (the version lives in `wit/world.wit`) |
 | Python | `just build-auth-py` → `nibli_auth` / `nibli_auth_native` |
 | Examples | `examples/auth-axum`, `examples/auth-fastapi` (same policy) |
 | Tests | `just test-auth`; Python: `just test-auth-py` (local, maturin) |
@@ -352,12 +352,12 @@ rejected as scope-ambiguous; separate period-terminated statements are independe
 | `? <statement>` | Query with proof trace |
 | `?? <statement>` | Witness extraction (find all satisfying bindings, `$x` variables) |
 | `:debug <statement>` | Show compiled FOL logic |
-| `:assert <rel> <args...>` | Assert a fact directly (bypasses text parsing; a registered compute relation is rejected as query-only) |
+| `:assert <rel> <args...>` | Assert a fact directly (bypasses text parsing; a registered compute relation — or `exponential`/`logarithm`, registered or not — is rejected as query-only) |
 | `:retract <id>` | Retract a fact by ID and rebuild the KB |
 | `:facts` | List all active facts |
 | `:load <filepath>` | Batch-load a `.nibli` file |
 | `:reset` | Clear the entire knowledge base |
-| `:compute <predicate>` | Register a predicate for external compute dispatch |
+| `:compute [predicate]` | Show registered compute predicates (bare), or register one for external dispatch — refused while live stored facts or rules reference the name |
 | `:backend [host:port]` | Show or change the compute backend address |
 | `:fuel [amount]` | Show or set the WASM fuel limit |
 | `:memory [mb]` | Show or set the WASM memory limit |
@@ -437,7 +437,7 @@ just run-with-backend
 
 > **Asserted numbers are quantifier-domain members.** A number appearing in anything you assert — a fact or a rule's operands, mirroring how constants are noted — is enumerated like any entity: with `big(5).` asserted, `sum(every big, 2, 3).` is `TRUE` because `5` was **checked** (not vacuously), the arithmetically false `sum(every big, 2, 2).` is `FALSE` with `5` as its counterexample, and `exactly N` / `no` / `some` all agree with the universal. Query-time compute never changes that domain, and non-finite values (NaN/±inf — never spellable in nibli KR's digits-only numbers, but injectable via RDF import, `:assert`, or the WIT term API) are skipped fail-closed. See GUARANTEES §Disclosed Sharp Edges for the full contract.
 
-**External predicates** (via backend): `exponential`, `logarithm`, and any custom predicates you add to the backend server.
+**External predicates** (via backend): `exponential`, `logarithm`, and any custom predicates you add to the backend server. Both reference names are query-only as assertions even before registration.
 
 > **Trust boundary.** An external predicate is a **trusted oracle**, not something Nibli proves. Its reply decides the current `ComputeCheck`, so the backend (and whoever operates it) is part of the trusted computing base for any proof that uses that step. Nibli does not independently verify the answer; a proof that passes through `exponential`/`logarithm` is sound only relative to that oracle.
 
@@ -465,7 +465,7 @@ signature, or policy plug-in. The current proof schema identifies the backend
 nonces, or admission receipts. `nibli-auth` authorizes application actions; it
 does not authenticate this compute socket.
 
-> **Compute results are proof-local and query-only.** Built-in and external results are evidence for the current derivation only. They are never inserted into the typed fact store or fact registry, receive no fact id, do not appear in `:facts`, cannot be retracted, never join the quantifier domain, are not persisted or replayed, and trigger no forward chaining. Assertion ingress rejects executable compute atoms—including rule guards and conclusions—before allocating an id; opaque abstraction content remains quoted. Each top-level query recomputes locally or redispatches to the backend. Repeated identical external checks may share only a transient within-query memo so the verdict and proof cannot disagree; normal KR queries and raw `ComputeNode` buffers have the same lifecycle.
+> **Compute results are proof-local and query-only.** Built-in and external results are evidence for the current derivation only. They are never inserted into the typed fact store or fact registry, receive no fact id, do not appear in `:facts`, cannot be retracted, never join the quantifier domain, are not persisted or replayed, and trigger no forward chaining. Assertion ingress rejects executable compute atoms—including rule guards and conclusions—before allocating an id; opaque abstraction content remains quoted. Registration itself is guarded: `exponential`/`logarithm` are refused at assertion ingress registered or not, and registering any name while live stored facts or rules reference it is refused with the blocking ids named — retract first. Registration order can no longer strand a stored fact. Each top-level query recomputes locally or redispatches to the backend. Repeated identical external checks may share only a transient within-query memo so the verdict and proof cannot disagree; normal KR queries and raw `ComputeNode` buffers have the same lifecycle.
 
 Configure with `NIBLI_COMPUTE_ADDR=host:port` or `:backend host:port` in the REPL. Connection is lazy (connects on first dispatch) with auto-reconnect. The browser UI has no TCP, so external predicates resolve only in the `nibli-host` REPL; built-in arithmetic still works everywhere.
 

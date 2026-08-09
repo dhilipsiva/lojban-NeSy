@@ -5621,7 +5621,9 @@ fn stub_tenfa_batch(reqs: &[EngineComputeRequest]) -> Vec<Result<bool, String>> 
 fn per_instance_compute_dispatch_is_isolated() {
     // engine_a registers a per-instance dispatch → external `tenfa` resolves TRUE.
     let mut engine_a = fresh_engine();
-    engine_a.register_compute_predicate("exponential".to_string());
+    engine_a
+        .register_compute_predicate("exponential".to_string())
+        .expect("fresh-name registration must succeed");
     engine_a.set_compute_dispatch(stub_tenfa_eval, stub_tenfa_batch);
     assert_true(
         &engine_a.query_holds("exponential(8, 2, 3).").unwrap(),
@@ -5633,7 +5635,9 @@ fn per_instance_compute_dispatch_is_isolated() {
     // the same thread; per-instance dispatch keeps them independent → `tenfa` is
     // unresolved (no built-in, no backend) and the query is not TRUE.
     let mut engine_b = fresh_engine();
-    engine_b.register_compute_predicate("exponential".to_string());
+    engine_b
+        .register_compute_predicate("exponential".to_string())
+        .expect("fresh-name registration must succeed");
     let r = engine_b.query_holds("exponential(8, 2, 3).").unwrap();
     // Isolation: engine_a's dispatch must NOT leak here, so `tenfa` stays unresolved.
     assert!(
@@ -5746,7 +5750,9 @@ fn native_compute_backend_dispatches_external_predicate() {
     let addr = mock_compute_server(r#"{"result": true}"#);
     let mut engine = fresh_engine();
     engine.enable_compute_backend(&addr);
-    engine.register_compute_predicate("exponential".to_string());
+    engine
+        .register_compute_predicate("exponential".to_string())
+        .expect("fresh-name registration must succeed");
     assert_true(
         &engine.query_holds("exponential(8, 2, 3).").unwrap(),
         "tenfa dispatches through the native TCP client to the backend",
@@ -5758,7 +5764,9 @@ fn native_compute_backend_is_opt_in() {
     // Without `enable_compute_backend`, an external predicate stays unprovable —
     // the dispatch hook is unregistered (per-instance isolation).
     let mut engine = fresh_engine();
-    engine.register_compute_predicate("exponential".to_string());
+    engine
+        .register_compute_predicate("exponential".to_string())
+        .expect("fresh-name registration must succeed");
     let r = engine.query_holds("exponential(8, 2, 3).").unwrap();
     assert!(
         !r.is_true(),
@@ -5792,7 +5800,9 @@ fn native_compute_backend_real_python_tenfa() {
     let run = || {
         let mut engine = fresh_engine();
         engine.enable_compute_backend(&addr);
-        engine.register_compute_predicate("exponential".to_string());
+        engine
+            .register_compute_predicate("exponential".to_string())
+            .expect("fresh-name registration must succeed");
         // 8 = 2^3 (TRUE); 9 = 2^3 (FALSE) — the backend does the arithmetic.
         let t = engine.query_holds("exponential(8, 2, 3).").unwrap();
         let f = engine.query_holds("exponential(9, 2, 3).").unwrap();
@@ -5878,7 +5888,9 @@ fn surface_numeric_negation() {
 #[test]
 fn executable_compute_is_query_only_in_facts_and_rules() {
     let mut engine = fresh_engine();
-    engine.register_compute_predicate("exponential".to_string());
+    engine
+        .register_compute_predicate("exponential".to_string())
+        .expect("fresh-name registration must succeed");
 
     for statement in [
         "sum(5, 2, 3).",
@@ -5925,6 +5937,165 @@ fn executable_compute_is_query_only_in_facts_and_rules() {
         &engine.query_holds("sum(5, 2, 3).").unwrap(),
         "the same compute formula remains valid on the query surface",
     );
+
+    // The reference name gets the SPECIFIC name-guard message even here, in a
+    // registered session — the name guard runs before the ComputeNode guard.
+    let named_err = engine
+        .assert_text("exponential(8, 2, 3).")
+        .expect_err("the reference name stays refused");
+    assert!(
+        named_err
+            .to_string()
+            .contains("reserved for EXTERNAL COMPUTE"),
+        "{named_err}"
+    );
+}
+
+// ─── Registration-order closure (TODO exit: pinned in BOTH orders) ──────────
+
+/// The static half: a reference external-compute name is query-only with NO
+/// registration at all — the exact pre-fix hole (assert → ordinary stored fact
+/// → TRUE from the store → unreachable after registration). Registration of
+/// the name afterwards is vacuously never blocked.
+#[test]
+fn an_external_compute_name_is_query_only_even_before_registration() {
+    let mut engine = fresh_engine();
+    let err = engine
+        .assert_text("exponential(2, 3, 8).")
+        .expect_err("an UNREGISTERED reference compute name must be refused at ingress");
+    assert!(
+        err.to_string().contains("reserved for EXTERNAL COMPUTE"),
+        "{err}"
+    );
+    assert!(engine.list_facts().unwrap().is_empty());
+    assert_false(
+        &engine.query_holds("exponential(2, 3, 8).").unwrap(),
+        "unregistered: the necessarily-empty stored extension is closed-world FALSE",
+    );
+
+    engine
+        .register_compute_predicate("exponential".to_string())
+        .expect("a reference name can never have live references, so registration succeeds");
+    let r = engine.query_holds("exponential(2, 3, 8).").unwrap();
+    assert!(
+        !r.is_true() && !r.is_false(),
+        "registered with no backend: dispatch surfaces backend-unavailable, never a \
+         store answer: {r:?}"
+    );
+}
+
+/// The registration half, in the assert-then-register order: live stored
+/// statements (a fact AND a rule) block registration with their ids; after
+/// retracting both, registration succeeds, the name flips to query-only, and
+/// no fact id was burned along the way.
+#[test]
+fn assert_then_register_is_refused_until_the_statements_are_retracted() {
+    let mut engine = fresh_engine();
+    let fact_id = engine.assert_text("eats(Bela, Cheese).").unwrap()[0];
+    let rule_id = engine
+        .assert_text("all $x: eats($x, Cheese) -> animal($x).")
+        .unwrap()[0];
+
+    let err = engine
+        .register_compute_predicate("eats".to_string())
+        .expect_err("live references must block registration");
+    let message = err.to_string();
+    assert!(message.contains("cannot register"), "{message}");
+    assert!(
+        message.contains(&format!("#{fact_id}")) && message.contains(&format!("#{rule_id}")),
+        "the refusal must name both blocking ids: {message}"
+    );
+
+    engine.retract_fact(fact_id).unwrap();
+    engine
+        .register_compute_predicate("eats".to_string())
+        .expect_err("the rule alone must still block registration");
+    engine.retract_fact(rule_id).unwrap();
+    engine
+        .register_compute_predicate("eats".to_string())
+        .expect("with no live references left, registration succeeds");
+
+    let err = engine
+        .assert_text("eats(Bela, Cheese).")
+        .expect_err("register-then-assert is closed by the ComputeNode guard");
+    assert!(err.to_string().contains("query-only"), "{err}");
+
+    assert_eq!(
+        engine.assert_text("big(5).").unwrap(),
+        vec![fact_id.max(rule_id) + 1],
+        "refused registrations and refused asserts must not consume ids"
+    );
+}
+
+/// A legacy DB row holding a pre-fix unregistered `exponential` fact (the
+/// permanently-unmarked ordinary spelling) fails replay non-destructively —
+/// the count-row precedent. Silently replaying it would preserve the
+/// unreachable-fact divergence this contract closes.
+#[test]
+fn legacy_persisted_external_compute_row_fails_replay_without_deleting_the_row() {
+    let path = temp_db_path("legacy_external_compute_assertion");
+    cleanup(&path);
+
+    // The legacy stored shape: compiled WITHOUT registration, so the anchor is
+    // an ordinary Predicate — `compile_debug` never marks what the session has
+    // not registered.
+    let compiler = fresh_engine();
+    let legacy = compiler
+        .compile_debug("exponential(2, 3, 8).")
+        .expect("the query surface must still compile the unregistered spelling");
+    let payload = postcard::to_allocvec(&legacy).expect("fixture should serialize");
+    {
+        let mut store = NibliStore::open(&path, "local".into()).expect("store should open");
+        store
+            .insert_fact(7, "legacy external compute".into(), payload)
+            .expect("legacy fixture should persist");
+    }
+
+    let error = match NibliEngine::open(&path) {
+        Ok(_) => panic!("a legacy external-compute row must not replay as an ordinary fact"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("Replay error (fact 7)") && error.contains("reserved for EXTERNAL COMPUTE"),
+        "replay failure must identify the row and the name-guard contract: {error}"
+    );
+    {
+        let store = NibliStore::open(&path, "local".into()).expect("store should reopen");
+        assert!(
+            store.get_fact(7).unwrap().is_some(),
+            "failed replay is non-destructive; the operator must repair/re-import explicitly"
+        );
+    }
+
+    cleanup(&path);
+}
+
+/// The registration scan reads registry state rebuilt from disk: ordinary
+/// facts persisted in one session block registration after reopen.
+#[test]
+fn persisted_ordinary_facts_block_registration_after_reopen() {
+    let path = temp_db_path("persisted_facts_block_registration");
+    cleanup(&path);
+
+    let fact_id = {
+        let engine = NibliEngine::open(&path).expect("fresh persistent engine");
+        engine.assert_text("eats(Bela, Cheese).").unwrap()[0]
+    };
+
+    let mut engine = fresh_open(&path, "reopen must replay the persisted fact");
+    let err = engine
+        .register_compute_predicate("eats".to_string())
+        .expect_err("the disk-replayed fact must block registration");
+    assert!(
+        err.to_string().contains(&format!("#{fact_id}")),
+        "the refusal must name the replayed id: {err}"
+    );
+    engine.retract_fact(fact_id).unwrap();
+    engine
+        .register_compute_predicate("eats".to_string())
+        .expect("after retracting the replayed fact, registration succeeds");
+
+    cleanup(&path);
 }
 
 #[test]

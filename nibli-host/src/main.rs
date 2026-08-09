@@ -916,11 +916,13 @@ impl Repl {
                     .map_err(|e| anyhow::anyhow!("{}", format_nibli_error(&e)))?;
             }
             JournalEntry::RegisterCompute(name) => {
-                session.call_register_compute_predicate(
-                    &mut self.store,
-                    self.session_handle,
-                    name,
-                )?;
+                // Impossible in a well-formed journal (only live-ACCEPTED
+                // registrations are journaled, and replay preserves original
+                // order), so an inner refusal here means corruption — fail the
+                // rebuild loudly rather than serve a partially replayed KB.
+                session
+                    .call_register_compute_predicate(&mut self.store, self.session_handle, name)?
+                    .map_err(|e| anyhow::anyhow!("{}", format_nibli_error(&e)))?;
             }
         }
         Ok(())
@@ -1131,7 +1133,14 @@ impl Repl {
                                  facts may resurrect on restart."
                             );
                         }
-                        self.journal.clear();
+                        // `reset-kb` clears facts and rules but NOT the guest's
+                        // compute registry (`CoreSession::reset` touches only the
+                        // KB), so the journal must keep the RegisterCompute
+                        // entries or a post-reset trap rebuild replays them away —
+                        // silently re-opening the registration-order hole for
+                        // arbitrary registered names.
+                        self.journal
+                            .retain(|e| matches!(e, JournalEntry::RegisterCompute(_)));
                         println!("[Reset] Knowledge base cleared.");
                     }
                     Ok(Err(e)) => println!("{}", format_nibli_error(&e)),
@@ -1169,6 +1178,24 @@ impl Repl {
             }
             ":memory" | ":m" => {
                 println!("[Memory] Limit: {} MB", self.memory_limit_mb);
+                return false;
+            }
+            ":compute" => {
+                self.prepare_session();
+                let session = self.pipeline.nibli_engine_engine().session();
+                match session.call_compute_predicates(&mut self.store, self.session_handle) {
+                    Ok(names) => {
+                        println!("[Compute] Registered: {}", names.join(", "));
+                        println!(
+                            "[Compute] product, sum, quotient are built-in (local arithmetic \
+                             first); other names dispatch to the external backend"
+                        );
+                    }
+                    Err(e) => {
+                        println!("{}", format_host_error(&e));
+                        self.needs_rebuild = true;
+                    }
+                }
                 return false;
             }
             ":backend" | ":b" => {
@@ -1221,7 +1248,10 @@ impl Repl {
                 println!("  :debug <text>       Show compiled logic tree");
                 println!("  :load <filepath>    Load a .nibli file (assert each line)");
                 println!("  :dump <filepath>    Export KB source lines to a file");
-                println!("  :compute <name>     Register predicate for compute dispatch");
+                println!(
+                    "  :compute [name]     Show registered compute predicates, or register \
+                     one for dispatch"
+                );
                 println!("  :assert <rel> <args..> Assert a ground fact directly");
                 println!("  :retract <id>       Retract a fact by ID (rebuilds KB)");
                 println!("  :facts              List all active facts in the KB");
@@ -1452,11 +1482,15 @@ impl Repl {
                 self.session_handle,
                 name,
             ) {
-                Ok(()) => {
+                Ok(Ok(())) => {
+                    // Journal only ACCEPTED registrations — a refusal mutated
+                    // nothing, so replaying it would refuse again and poison
+                    // trap recovery.
                     self.journal
                         .push(JournalEntry::RegisterCompute(name.to_string()));
                     println!("[Compute] Registered '{}' for external dispatch", name)
                 }
+                Ok(Err(e)) => println!("{}", format_nibli_error(&e)),
                 Err(e) => {
                     println!("{}", format_host_error(&e));
                     self.needs_rebuild = true;
@@ -1970,7 +2004,7 @@ fn main() -> Result<()> {
     let use_script_mode = script_path.is_some() || !std::io::stdin().is_terminal();
 
     println!(
-        "Ready. Commands: :quit :reset :load <file> :facts :retract <id> :debug <text> :compute <name> :assert <rel> <args..> :backend [addr] :fuel [n] :memory [mb] :strict [on|off] :existential-import [on|off] :materialize [on|off] :db :help"
+        "Ready. Commands: :quit :reset :load <file> :facts :retract <id> :debug <text> :compute [name] :assert <rel> <args..> :backend [addr] :fuel [n] :memory [mb] :strict [on|off] :existential-import [on|off] :materialize [on|off] :db :help"
     );
     println!(
         "Prefix '?' for queries with proof trace, '??' for find, plain text for assertions.\n"
