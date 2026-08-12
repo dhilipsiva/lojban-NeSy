@@ -1749,16 +1749,13 @@ pub(super) struct KnowledgeBaseInner {
     /// detector for `depth_cut_table` inserts (snapshot before deriving a
     /// goal; unchanged ⇒ the subtree's Depth verdict is path-independent).
     pub(super) cycle_cut_epoch: Cell<u64>,
-    /// Monotone counter bumped whenever `negate_result_tracked` collapses a
-    /// SEARCH-CUT reason into `NafDependent` — the contamination detector for
-    /// witness enumeration (snapshot before evaluating a witness leaf; changed ⇒ a
-    /// cut was laundered somewhere in that leaf's subtree).
+    /// Monotone counter bumped whenever `negate_result_tracked` collapses any
+    /// `Unknown(_)` into `NafDependent`. It is a diagnostic record of collapse
+    /// sites for the final-leaf regression guards.
     ///
-    /// Needed because the collapse is deliberate and Lean-pinned: after it,
-    /// `Unknown(CycleCut)` and `Unknown(NafDependent)` are the same value, and only
-    /// the second is a defensible absence. Sibling of `cycle_cut_epoch`, with the
-    /// same rule — consulted ONLY on a non-definitive branch, so an abandoned rule
-    /// attempt cannot turn an answer into a refusal.
+    /// The collapse is deliberate and Lean-pinned. The epoch never decides collection
+    /// membership: every final non-definitive leaf refuses, while an abandoned internal
+    /// attempt cannot turn an ultimately definitive leaf into an error.
     ///
     /// Wraparound is irrelevant: every use is an inequality against a snapshot.
     /// Zeroed by `Clone` (so `with_assumptions` never inherits a snapshot across KB
@@ -1869,13 +1866,13 @@ pub(super) struct KnowledgeBaseInner {
     /// cannot reach — turning a TRUE into `ResourceExceeded(Depth)`. Both phases must
     /// agree on which evaluator they are using.
     pub(super) positive_lookup: Cell<bool>,
-    /// Transient (per `query_find`): set when witness enumeration drops a candidate
-    /// because its leaf check hit the depth/cycle horizon (`ResourceExceeded` /
-    /// `Unknown(CycleCut)` / …) rather than a genuine False. `query_find_inner`
-    /// resets it before enumeration and checks it after, so `count_witnesses` /
-    /// `aggregate` REFUSE to emit a definitive (under)count when the search was cut.
+    /// Transient (per `query_find`): set when witness enumeration evaluates a
+    /// candidate whose final leaf is `Unknown(_)` or `ResourceExceeded(_)` rather
+    /// than definitive False. `query_find_inner` resets it before enumeration and
+    /// checks it after, so `count_witnesses` / `aggregate` REFUSE to emit a partial
+    /// collection as definitive.
     /// Not configuration; not cleared by `reset()` (query_find owns its lifecycle).
-    pub(super) find_horizon_hit: bool,
+    pub(super) find_enumeration_incomplete: bool,
     /// Transient (per `query_find`): witness enumeration is running, so external
     /// compute MUST NOT be dispatched.
     ///
@@ -1888,8 +1885,8 @@ pub(super) struct KnowledgeBaseInner {
     /// to honour it.
     ///
     /// This is a SCOPE refusal, not an outage: the resulting
-    /// `Unknown(BackendUnavailable)` is a `witness_search_cut`, so find/count/aggregate
-    /// refuse as incomplete rather than undercount — but the backend was never
+    /// `Unknown(BackendUnavailable)` is non-definitive, so find/count/aggregate refuse
+    /// as incomplete rather than undercount — but the backend was never
     /// consulted and may be perfectly healthy. Anything decidable LOCALLY (a numeric
     /// comparison, or built-in arithmetic over resolved operands) is decided before
     /// reaching a dispatch and is unaffected.
@@ -1955,7 +1952,7 @@ impl Clone for KnowledgeBaseInner {
             materialized: RefCell::new(None),
             materialization: self.materialization,
             positive_lookup: Cell::new(true),
-            find_horizon_hit: false,
+            find_enumeration_incomplete: false,
             find_enumeration: false,
         }
     }
@@ -2021,7 +2018,7 @@ impl KnowledgeBaseInner {
             // differential in `nibli-verify` expressible.
             materialization: true,
             positive_lookup: Cell::new(true),
-            find_horizon_hit: false,
+            find_enumeration_incomplete: false,
             find_enumeration: false,
         }
     }
@@ -2188,10 +2185,10 @@ impl KnowledgeBaseInner {
         }
     }
 
-    /// Track a finite number asserted into a predicate fact as a quantifier-
-    /// domain member. Non-finite values (NaN/±inf) are skipped fail-closed:
-    /// they satisfy no arithmetic and would pollute counterexample reporting
-    /// (their evaluation already surfaces `Unknown(NonFinite)`).
+    /// Track a finite number asserted into a predicate fact as a quantifier-domain
+    /// member. Non-finite values (NaN/±inf) are deliberately excluded; stored
+    /// non-finite facts remain index-reachable, while exact `CountNode` continues
+    /// to enumerate this finite-only general domain.
     pub(super) fn note_number(&mut self, value: f64) {
         if value.is_finite() && self.known_numbers.insert(value.to_bits()) {
             self.domain_members_dirty = true;

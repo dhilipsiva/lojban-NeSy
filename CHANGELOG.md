@@ -55,6 +55,18 @@ here first.
 
 ### Fixed
 
+- **Raw witness collections now fail closed on every non-definitive final leaf.**
+  `KnowledgeBase::query_find`, `count_witnesses`, and `aggregate` return the existing
+  `witness enumeration incomplete` reasoning error whenever any evaluated candidate
+  finishes as `Unknown(_)` or `ResourceExceeded(_)`, across either polarity. The old
+  reason allowlist treated direct `NafDependent` and `NonFinite` leaves as complete
+  absences, allowing `Ok([])`, `Ok(0)`, or `Ok(None)` — and even a partial row from an
+  `Unknown OR True` branch. The classifier is now `!QueryResult::is_definitive()`;
+  definitive TRUE/FALSE rows, equality canonicalisation, logical deduplication, proof
+  behavior, and the separate exact-`CountNode` evaluator are unchanged. Public
+  reasoner/session/engine docs now state the complete-or-error contract. No result enum,
+  signature, workspace version, or WIT ABI changed.
+
 - **`:reset` no longer forgets compute registrations on a later trap rebuild.**
   nibli-host's `:reset` cleared the replay journal including its
   `RegisterCompute` entries, while the guest session's registry survives
@@ -67,8 +79,7 @@ here first.
 
 - **Negation no longer launders a search cut past witness enumeration.** `negate_result`
   collapses every non-definitive inner verdict to `Unknown(NafDependent)` — deliberately,
-  and pinned by `proofs/Combiner.lean` — while `witness_search_cut` deliberately excludes
-  `NafDependent` as a defensible absence. Between them, a leaf that was CUT
+  and pinned by `proofs/Combiner.lean`. Before the partial repair, a leaf that was CUT
   (`CycleCut`/`IncompleteKnowledge`/`BackendUnavailable`) and then negated became
   indistinguishable from one that was merely unprovable, so `find`/`count_witnesses`/
   `aggregate` reported a definitive ZERO for a leaf they never decided. This was not
@@ -76,16 +87,12 @@ here first.
   goal inherited the laundering whenever a rule concluding it had an undecided negated
   antecedent — a silent zero for a query containing no negation at all.
   A monotone `naf_cut_epoch` now records the collapse at the six negation sites, and the
-  witness-leaf guard consults it ONLY when the leaf's own verdict is non-definitive. That
-  gating is the correctness argument, not caution: a negation is evaluated inside a rule
-  attempt the engine may abandon, so a goal that ends TRUE — or definitively FALSE by
-  another rule — still enumerates, and rule registration order cannot decide
-  answer-versus-refusal. Pinned in both directions, including two false-positive guards
-  (the "default via NAF plus explicit override" idiom, and a definitively-false conjunct
-  after a collapse) and the negated non-finite case, which stays non-cut on both
-  polarities. `negate_result`, `UnknownReason`, the WIT surface and the Lean model are all
-  unchanged; `ResourceExceeded` under `~` already refused, being forwarded rather than
-  collapsed.
+  witness-leaf guard still consults it only after the leaf's final verdict. The generalized
+  classifier above now refuses direct `NafDependent` and `NonFinite` leaves too; the epoch
+  remains a regression-visible record of collapse sites. Final-leaf gating keeps the
+  correctness boundary: a rule attempt the engine abandons cannot make a goal that ends
+  TRUE, or definitively FALSE by another route, refuse. `negate_result`, `UnknownReason`,
+  the WIT result surface, and the Lean model are unchanged.
 - **`find_enumeration` is now scoped to `query_find_inner`'s dynamic extent.** It was set
   on entry and cleared only at the two entailment entries, which two thin wrappers bypass
   — so a latch left set could have disabled the compute backend for a later ordinary
@@ -108,10 +115,9 @@ here first.
   route funnels through — with a stated budget of **zero calls**, on the direct,
   obligation and permission routes alike. `UNKNOWN (backend-unavailable)` under
   enumeration now means the engine declined to call out, not that the backend failed.
-  Two residuals are pinned rather than papered over: an overflowing arithmetic result
-  yields no witness without refusing, and a compute leaf under `~` still reports zero
-  rows because negation collapses the refusal reason into the NAF-dependent one — not
-  compute-specific, and tracked in `TODO.md`.
+  Non-finite operands/results and their negated `NafDependent` wrappers now inherit the
+  complete-or-error collection contract above; they no longer return a definitive empty
+  collection. Strict numeric projection remains a separate `TODO.md` item.
 - **A numeric comparison now filters witnesses, not just verdicts.**
   `try_evaluate_numeric_group` had exactly one caller — the `ExistsNode` arm of the
   entailment evaluator. `find_witnesses` has its own `ExistsNode` arm, which peeled the

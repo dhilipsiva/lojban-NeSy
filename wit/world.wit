@@ -429,9 +429,11 @@ interface engine {
         /// Query KR text with proof trace.
         query-text-with-proof: func(input: string) -> result<tuple<query-result, proof-trace>, nibli-error>;
         /// Query KR text and return witness bindings for existential
-        /// variables.
+        /// variables. A successful list is complete; if any evaluated candidate
+        /// leaf is non-definitive, returns nibli-error instead of partial rows.
         query-find-text: func(input: string) -> result<list<list<witness-binding>>, nibli-error>;
-        /// Debug: compile text to the typed logic buffer without asserting.
+        /// Debug: compile text to the typed logic buffer without asserting or
+        /// checking assertion admission.
         /// The host renders it (structural tree + English gloss); no S-expression
         /// string crosses the boundary.
         compile-debug: func(input: string) -> result<logic-buffer, nibli-error>;

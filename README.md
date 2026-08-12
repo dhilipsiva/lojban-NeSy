@@ -103,6 +103,14 @@ building alternative front-ends or consumers against it).
 - **`nibli-wasm`** — wasm-bindgen wrapper exposing the in-browser pipeline (powers the live demo at dhilipsiva.dev/nibli).
 - **`nibli`** — Native direct-crate REPL and `nibli-validate`. Developer tooling, not the canonical production path.
 
+Validation names have different scopes. `NibliEngine::validate` is parse+compile only:
+it does not mutate the KB and accepts legal query-only IR such as exact counts and
+compute formulas. Use `assert_text` for text assertion admission; raw-buffer callers can
+run `KnowledgeBase::validate_assertion` as structural preflight before `assert_fact`.
+The `nibli-validate` CLI is an assertion-admission reporter: it runs each input statement
+through a fresh engine's `assert_text`, so it is per-statement admission rather than a
+whole multi-statement KB consistency check.
+
 Every surface speaks nibli KR — the single front-end since THE DROP.
 
 ---
@@ -170,7 +178,8 @@ fn main() -> Result<(), EngineError> {
     println!("{}", display_query_result(&verdict)); // TRUE
     print!("{proof}");
 
-    // Witness extraction: every binding that satisfies the claim.
+    // Witness extraction: every binding, or an error if any candidate leaf was
+    // non-definitive (partial collections are never returned as complete).
     for bindings in engine.query_find_text("dog($x).")? {
         for b in bindings.iter().filter(|b| b.variable.starts_with('$')) {
             println!("{} = {} [{}]", b.variable, display_term(&b.term), b.origin.label());
@@ -182,6 +191,9 @@ fn main() -> Result<(), EngineError> {
 
 `NibliEngine::open(path)` swaps the in-memory store for a durable redb one; `query_holds`
 returns just the verdict; `retract_fact(id)` retracts by the id `assert_text` minted.
+`NibliEngine::validate` only parses and compiles; it does not perform assertion admission
+or mutate the KB. Query-only IR can therefore validate successfully and still be rejected
+by `assert_text`, which is the admission boundary.
 The default profile is clean-core: universals mint no existential witnesses. Legacy
 xorlo behavior is an explicit, fallible opt-in with
 `engine.set_existential_import(true)?`; changing it transactionally rebuilds the active
@@ -435,7 +447,7 @@ just run-with-backend
 
 > **One deliberate approximation.** `product`/`sum`/`quotient` check `x1 = x2 ∘ x3` with **tolerant** float equality — `isclose` with relative tolerance `1e-9` (matching Python's `math.isclose`), i.e. `|a − b| ≤ 1e-9 · max(|a|, |b|)`. So `0.3 = 0.1 + 0.2` answers `TRUE` despite IEEE-754 rounding making the sum `0.30000000000000004`. That is a real, bounded approximation on the numeric result — the one place Nibli is not bit-exact. The exact-equality predicate **`num_equal` (`=`) is exact** (`==`, tolerates no rounding); `quotient`'s divide-by-zero check is likewise an exact guard. The single evaluator (`nibli-types/src/arithmetic.rs`) is shared by the in-WASM engine, the `nibli-host` host, and the Python reference backend, so all three agree.
 
-> **Asserted numbers are quantifier-domain members.** A number appearing in anything you assert — a fact or a rule's operands, mirroring how constants are noted — is enumerated like any entity: with `big(5).` asserted, `sum(every big, 2, 3).` is `TRUE` because `5` was **checked** (not vacuously), the arithmetically false `sum(every big, 2, 2).` is `FALSE` with `5` as its counterexample, and `exactly N` / `no` / `some` all agree with the universal. Query-time compute never changes that domain, and non-finite values (NaN/±inf — never spellable in nibli KR's digits-only numbers, but injectable via RDF import, `:assert`, or the WIT term API) are skipped fail-closed. See GUARANTEES §Disclosed Sharp Edges for the full contract.
+> **Asserted numbers are quantifier-domain members.** A finite number appearing in anything you assert — a fact or a rule's operands, mirroring how constants are noted — is enumerated like any entity: with `big(5).` asserted, `sum(every big, 2, 3).` is `TRUE` because `5` was **checked** (not vacuously), the arithmetically false `sum(every big, 2, 2).` is `FALSE` with `5` as its counterexample, and `exactly N` / `no` / `some` all agree with the universal. Query-time compute never changes that domain. Non-finite values (NaN/±inf — never spellable in nibli KR's digits-only numbers, but injectable via RDF import, `:assert`, or the WIT term API) are skipped from the general quantifier-domain list; if an indexed candidate reaches non-finite arithmetic, witness collections refuse as incomplete rather than return an empty complete set. Exact `CountNode` remains domain-based, so a NaN-only stored extension can be found through an anchored existential while `exactly 0` is TRUE; this accepted candidate-source mismatch is pinned and disclosed in GUARANTEES §Disclosed Sharp Edges.
 
 **External predicates** (via backend): `exponential`, `logarithm`, and any custom predicates you add to the backend server. Both reference names are query-only as assertions even before registration.
 
@@ -499,14 +511,14 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
   multi-dependency); friendly `sk_N` text is display only and cannot alias a user
   constant
 - **Proof traces:** every query produces a proof tree over the `ProofRule` taxonomy (`nibli-types/src/logic.rs`) with DAG memoization via `ProofRef`. Stored truth and source are separate: `Asserted` lists every active fact id/label, `Derived` cites stable assertion-local rule ids and grounded premises (including eagerly stored conclusions), and existential-import facts are `Presupposed`, never `[given]`
-- **Witness extraction:** `query-find` returns all satisfying binding sets for existential variables
+- **Witness extraction:** `query-find` returns all satisfying binding sets for existential variables, or a reasoning error if any evaluated candidate leaf is `UNKNOWN`/`RESOURCE_EXCEEDED`; it never returns a partial set as complete
 - **Belief revision:** retract-and-rebuild with monotonic fact IDs; `:retract <id>` and `:facts` REPL commands
 - **Four-valued query result:** `TRUE`, `FALSE`, `UNKNOWN` (cycle cut / incomplete knowledge / NAF dependent / backend unavailable / non-finite), `RESOURCE_EXCEEDED` (depth / fuel / memory)
 - **Temporal reasoning:** `Past`/`Present`/`Future` wrappers are preserved end-to-end and ordinary predicate rule literals are flavor-exact. Bare rules are bare-only; write mappings explicitly (`all $x: past dog($x) -> past animal($x).`). One atom may have a temporal prefix or a deontic prefix, never both: mixed stacks fail at KR compilation, and manually nested raw-IR wrappers fail at engine ingress
 - **Neo-Davidsonian event semantics:** every predication decomposes into event type + role predicates; compound predicates share event variables
 - **Conjunction introduction:** `And(A, B)` verified recursively with mutual `InDomain` entities (bounded, no exponential blowup)
 - **Numerical comparisons:** `greater` (>), `less` (<), `num_equal` (==) evaluated at query time on `Num` terms — deciding the verdict *and* filtering witnesses, so `quantity($x, $n) & greater($n, 15).` finds exactly the rows past the threshold. Query-time ONLY: a comparison whose operands could be numbers is refused at assertion ingress, in a ground fact and in every rule position alike, because a query computes it while a rule would look it up in a store that holds none. There is deliberately no numeric threshold RULE (GUARANTEES §Disclosed Sharp Edges records the decision and its re-open trigger). A comparison between non-numeric terms (`greater(Alis, Bob)`, "taller than") is an ordinary relational fact and asserts normally
-- **Compute dispatch:** `compute-backend` WIT protocol with `ComputeNode` IR variant; results are proof-local and never stored as KB facts
+- **Compute dispatch:** `compute-backend` WIT protocol with `ComputeNode` IR variant; results are proof-local and never stored as KB facts. Find/count/aggregate never dispatch, and any non-definitive compute leaf makes the collection incomplete rather than empty
 - **Ground conjunction flattening:** top-level `And` trees flattened before assertion; ground material conditionals auto-registered as zero-variable rules for modus ponens
 - **Equality reasoning:** the `=` identity builtin (compiled relation `equals`) with union-find congruence closure; proof substitution follows and cites actual stored equality edges rather than presenting a compressed class link as an asserted equality
 - **Stratification enforcement:** predicate dependency graph analysis prevents unsound negative cycles

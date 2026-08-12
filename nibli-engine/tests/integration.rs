@@ -1672,6 +1672,41 @@ fn tensed_negation_is_flavor_exact() {
 }
 
 #[test]
+fn validate_is_compile_only_while_assert_text_enforces_admission() {
+    for statement in [
+        "big(exactly 1 dog).",
+        "product(10, 2, 5).",
+        "exponential(8, 2, 3).",
+    ] {
+        let engine = fresh_engine();
+        engine.validate(statement).unwrap_or_else(|error| {
+            panic!("compile-only validate rejected `{statement}`: {error}")
+        });
+        assert!(
+            engine.list_facts().unwrap().is_empty(),
+            "validate must not mutate the assertion registry for `{statement}`"
+        );
+
+        let error = engine
+            .assert_text(statement)
+            .expect_err("assertion admission must reject query-only IR");
+        assert!(
+            error.to_string().contains("query-only"),
+            "expected query-only assertion rejection for `{statement}`, got: {error}"
+        );
+        assert!(
+            engine.list_facts().unwrap().is_empty(),
+            "rejected assertion must remain atomic for `{statement}`"
+        );
+        assert_eq!(
+            engine.assert_text("person(Adam).").unwrap(),
+            vec![0],
+            "validation and rejected admission must consume no assertion id"
+        );
+    }
+}
+
+#[test]
 fn exact_count_assertions_are_query_only_in_every_import_profile() {
     for import_enabled in [false, true] {
         for statement in [

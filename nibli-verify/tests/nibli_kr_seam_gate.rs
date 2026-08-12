@@ -33,6 +33,7 @@ const SEAM_BATCH: u64 = 60;
 #[test]
 fn kr_semantics_seam_conformance() {
     let mut structural = 0usize;
+    let mut scope_rejected = 0usize;
     let mut rejected = 0usize;
     let mut metamorphic = 0usize;
 
@@ -112,6 +113,23 @@ fn kr_semantics_seam_conformance() {
             "both bite propositions must use the one shared `$x` variable"
         );
         structural += 1;
+    }
+
+    // A repeated textual name may not cross a negative scope boundary. Assertion
+    // and query compilation must both reject both operand orders, so neither path
+    // can silently reinterpret one `$x` as proposition-local.
+    for text in [
+        "~bite($x, Bel) & bite($x, Dana).",
+        "bite($x, Dana) & ~bite($x, Bel).",
+    ] {
+        for result in [kompile(text), kompile_query(text)] {
+            let error = result.expect_err("negative-scope co-reference must fail closed");
+            assert!(
+                error.contains("de-re/de-dicto"),
+                "scope rejection must explain the ambiguity for `{text}`: {error}"
+            );
+            scope_rejected += 1;
+        }
     }
 
     // The rule shape: `every` compiles to ∀-implication —
@@ -437,7 +455,7 @@ fn kr_semantics_seam_conformance() {
     // ── non-vacuity floors ──
     eprintln!(
         "kr→nibli-semantics seam: {structural} structural golden + {rejected} fail-closed \
-         stack checks + {inventory} inventory + {metamorphic} metamorphic checks passed"
+         stack checks + {scope_rejected} scope checks + {inventory} inventory + {metamorphic} metamorphic checks passed"
     );
     assert!(
         structural >= 10,
@@ -450,6 +468,10 @@ fn kr_semantics_seam_conformance() {
     assert!(
         metamorphic >= (SEAM_BATCH as usize) + 4,
         "metamorphic family near-vacuous ({metamorphic})"
+    );
+    assert_eq!(
+        scope_rejected, 4,
+        "negative-scope co-reference matrix must cover assertion/query in both orders"
     );
 }
 

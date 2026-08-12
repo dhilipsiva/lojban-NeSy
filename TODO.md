@@ -243,7 +243,7 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 - **Make aggregation fail closed instead of returning a partial numeric result.**
   `KnowledgeBase::aggregate` uses `filter_map` over witness bindings
-  (`nibli-reason/src/lib.rs`:1451-1480), silently dropping a witness when the requested
+  (`nibli-reason/src/lib.rs`:1501-1534), silently dropping a witness when the requested
   variable is absent or nonnumeric and then summing/averaging the survivors. It also does
   not reject non-finite operands or overflowed results, while the embedding API exposes
   only `Option<f64>`. Define a typed outcome that distinguishes empty input, incomplete or

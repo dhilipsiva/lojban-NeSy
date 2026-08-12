@@ -269,6 +269,7 @@ mod strict;
 mod tense;
 mod traces;
 mod unify_equality;
+mod witness_completeness;
 mod witnesses;
 mod zoo;
 
@@ -740,6 +741,18 @@ fn query_with_proof(kb: &KnowledgeBase, buf: LogicBuffer) -> (bool, ProofTrace) 
 
 fn query_find(kb: &KnowledgeBase, buf: LogicBuffer) -> Vec<Vec<WitnessBinding>> {
     kb.query_find_inner(buf).unwrap()
+}
+
+fn assert_incomplete_enumeration<T: std::fmt::Debug>(result: Result<T, NibliError>) {
+    match result {
+        Err(NibliError::Reasoning(message)) => assert!(
+            message.starts_with("witness enumeration incomplete"),
+            "unexpected collection refusal: {message}"
+        ),
+        other => {
+            panic!("non-definitive witness leaf must refuse collection enumeration, got {other:?}")
+        }
+    }
 }
 
 /// Build a comparison predicate: Pred(rel, [Num(a), Num(b), Zoe, ...])

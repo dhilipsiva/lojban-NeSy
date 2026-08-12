@@ -365,12 +365,15 @@ impl CoreSession {
     }
 
     /// Compile a KR query and extract all satisfying witness binding sets.
+    /// Returns the reasoner's incomplete-enumeration error instead of partial rows
+    /// when any evaluated candidate leaf is non-definitive.
     pub fn query_find_text(&self, text: &str) -> Result<Vec<Vec<WitnessBinding>>, NibliError> {
         let buf = self.compile_query_text(text)?;
         self.kb.query_find(buf)
     }
 
     /// Count the distinct witness binding sets satisfying a KR query.
+    /// Inherits [`nibli_reason::KnowledgeBase::query_find`]'s complete-or-error contract.
     pub fn count_witnesses_text(&self, text: &str) -> Result<usize, NibliError> {
         let buf = self.compile_query_text(text)?;
         self.kb.count_witnesses(buf)
@@ -378,6 +381,8 @@ impl CoreSession {
 
     /// Aggregate the numeric values bound to `variable` across all witness
     /// binding sets of a KR query. `Ok(None)` when no numeric witnesses exist.
+    /// Incomplete witness enumeration is an error before projection; nonnumeric
+    /// or missing bindings retain their separately documented projection behavior.
     pub fn aggregate_text(
         &self,
         text: &str,

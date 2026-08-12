@@ -686,7 +686,7 @@ fn stored_non_finite_witnesses_stay_reachable_through_the_index() {
 // predicate fact IS a quantifier-domain member (`note_number` → both member
 // caches): `every` checks it, `exactly N` counts it, `some` reaches it. These
 // pin the corrected verdicts and the deliberate residuals (non-finite values
-// skipped fail-closed here; proof-local query-time compute never growing the
+// excluded from the general domain; proof-local query-time compute never growing the
 // domain is pinned in compute_ingest.rs).
 
 #[test]
@@ -816,15 +816,31 @@ fn negative_numbers_join_the_domain_and_serve_as_counterexamples() {
 }
 
 #[test]
-fn non_finite_numbers_are_skipped_fail_closed() {
-    // NaN satisfies no arithmetic and its evaluation already surfaces
-    // Unknown(NonFinite); noting it would only pollute counterexample search.
+fn non_finite_numbers_are_excluded_from_the_general_domain() {
+    // NaN satisfies no arithmetic; noting it would pollute counterexample search.
     // With a NaN-only extension the domain stays number-free and the universal
-    // is vacuous — the pre-change behavior, kept deliberately for non-finite
-    // values.
+    // is vacuous — the existing behavior, kept deliberately for non-finite values.
     let kb = new_kb();
     assert_buf(&kb, decomposed_big_fact(f64::NAN));
     assert!(query(&kb, compile_surface("sum(every big, 2, 2).")));
+}
+
+#[test]
+fn non_finite_index_witnesses_remain_outside_exact_count_domain() {
+    // This boundary is intentionally unchanged by the collection repair. Stored NaN
+    // is reachable through an anchored existential's fact index, but CountNode ranges
+    // over the finite-only general domain. The resulting mismatch is disclosed rather
+    // than mislabeled fail-closed.
+    let kb = new_kb();
+    assert_buf(&kb, decomposed_big_fact(f64::NAN));
+    assert!(
+        query(&kb, compile_surface("big(some big).")),
+        "premise: the indexed NaN must remain existentially reachable"
+    );
+    assert!(
+        query(&kb, compile_surface("big(no big).")),
+        "CountNode deliberately sees zero members in the NaN-only general domain"
+    );
 }
 
 #[test]
@@ -1046,24 +1062,24 @@ fn aggregate_sums_only_witnesses_past_the_threshold() {
     );
 }
 
-/// A non-finite operand satisfies no comparison. That is a genuine NO, not a search
-/// cut, so enumeration must return zero rows rather than refusing the whole query as
-/// incomplete — `witness_search_cut` deliberately excludes `Unknown(NonFinite)`, and
-/// this pins that exclusion as a decision rather than a fallout.
+/// A non-finite operand leaves comparison membership undecided. Entailment remains
+/// `Unknown(NonFinite)`, while every collection surface refuses the incomplete
+/// witness set rather than presenting an empty set, zero, or `None` as complete.
 #[test]
-fn a_non_finite_operand_yields_no_witness_not_an_incomplete_refusal() {
+fn a_non_finite_operand_refuses_incomplete_collections() {
     let kb = new_kb();
     // A non-finite value never reaches the KR surface (the `number` rule is digits
     // only), so build the stored fact the way `stored_non_finite_witnesses_...` does.
     assert_buf(&kb, decomposed_big_fact(f64::INFINITY));
     let buf = compile_surface("big($n) & greater($n, 15).");
     assert_eq!(
-        kb.query_find_inner(buf)
-            .expect("find must not refuse")
-            .len(),
-        0,
-        "a non-finite operand yields no witness, not an incomplete-enumeration error"
+        kb.query_entailment(buf.clone()).unwrap(),
+        QueryResult::Unknown(UnknownReason::NonFinite),
+        "premise: the comparison leaf must remain non-finite"
     );
+    assert_incomplete_enumeration(kb.query_find(buf.clone()));
+    assert_incomplete_enumeration(kb.count_witnesses(buf.clone()));
+    assert_incomplete_enumeration(kb.aggregate(buf, "$n", nibli_types::logic::AggregateOp::Sum));
 }
 
 /// The hook must not STEAL a comparison from the store. `greater(Alis, Bob)`
@@ -1243,10 +1259,10 @@ fn find_refuses_a_compute_group_on_every_positive_route() {
 /// The NEGATED route refuses too, so all four routes agree.
 ///
 /// `negate_result` collapses every non-definitive inner verdict to
-/// `Unknown(NafDependent)` — deliberately, and pinned by the Lean model — and
-/// `witness_search_cut` deliberately excludes `NafDependent`. Between them the fact
-/// that the inner leaf was REFUSED rather than merely unprovable used to be lost, so
-/// enumeration reported a definitive zero for a leaf it never decided. A monotone
+/// `Unknown(NafDependent)` — deliberately, and pinned by the Lean model. Before the
+/// generalized classifier, that collapsed reason could hide whether the inner leaf
+/// was REFUSED rather than merely unprovable, so enumeration reported a definitive
+/// zero for a leaf it never decided. A monotone
 /// `naf_cut_epoch` now records the laundering at the collapse point, and the leaf guard
 /// consults it only when the leaf ends non-definitive.
 ///
@@ -1338,29 +1354,26 @@ fn find_row_shape_is_unchanged_by_an_arithmetic_conjunct() {
     );
 }
 
-/// An arithmetic RESULT that overflows f64 is `Unknown(NonFinite)`, which
-/// `witness_search_cut` deliberately excludes — so find reports zero rows without
-/// refusing, and the verdict is non-definitive.
+/// An arithmetic RESULT that overflows f64 is `Unknown(NonFinite)`. Find, count,
+/// and aggregate must all refuse because the evaluated leaf did not decide
+/// membership.
 ///
 /// Materially different from the comparison twin
-/// (`a_non_finite_operand_yields_no_witness_not_an_incomplete_refusal`): there the
+/// (`a_non_finite_operand_refuses_incomplete_collections`): there the
 /// OPERANDS are non-finite, here they are perfectly finite and only the product
-/// overflows. "No witness" is a claim about f64 range, not about the data.
+/// overflows. Neither case licenses a complete empty collection.
 #[test]
-fn an_overflowing_arithmetic_result_under_find_is_no_witness_not_a_refusal() {
+fn an_overflowing_arithmetic_result_refuses_incomplete_collections() {
     let kb = new_kb();
     let buf = make_decomposed_compute_query("product", f64::MAX, 1e308, 1e308);
-    assert!(
-        !query(&kb, buf.clone()) && !query_false(&kb, buf.clone()),
-        "an overflowing result is neither TRUE nor definitively FALSE"
-    );
     assert_eq!(
-        kb.query_find_inner(buf)
-            .expect("an overflowing result must not refuse the enumeration")
-            .len(),
-        0,
-        "it yields no witness"
+        kb.query_entailment(buf.clone()).unwrap(),
+        QueryResult::Unknown(UnknownReason::NonFinite),
+        "premise: the overflowing arithmetic leaf must remain non-finite"
     );
+    assert_incomplete_enumeration(kb.query_find(buf.clone()));
+    assert_incomplete_enumeration(kb.count_witnesses(buf.clone()));
+    assert_incomplete_enumeration(kb.aggregate(buf, "x", nibli_types::logic::AggregateOp::Sum));
 }
 
 /// The fix must not rest on `event_decompose` emitting the head leftmost. The group
@@ -1400,26 +1413,19 @@ fn a_role_first_arithmetic_group_is_consumed_too() {
     );
 }
 
-/// `NonFinite` is the ONE negated `Unknown` that still does not refuse — the sole
-/// inhabitant of the "defensibly excluded" category, and therefore what gives that
-/// category meaning.
+/// Negating a non-finite group preserves the verdict combiner's
+/// `Unknown(NafDependent)` mapping, but does not make the witness set definitive.
+/// Collection enumeration therefore refuses on this polarity too.
 ///
-/// It is a claim about f64 range, not about the search: a non-finite operand satisfies
-/// no arithmetic, and negating that does not make a witness more likely to exist beyond
-/// some budget. So it is non-cut on BOTH polarities — the positive twin is
-/// `an_overflowing_arithmetic_result_under_find_is_no_witness_not_a_refusal`. Treating
-/// the negated case as a cut while the positive case is not would be an asymmetry with
-/// no principle behind it.
-///
-/// The trailing control matters: it pins that the epoch bump (or absence of one) left no
-/// residue that truncates the rest of the sweep.
+/// The trailing control pins that the query-global latch is cleared before the next
+/// collection call.
 #[test]
-fn a_negated_non_finite_group_under_find_is_zero_rows_not_a_refusal() {
+fn a_negated_non_finite_group_refuses_incomplete_collections() {
     let kb = new_kb();
     assert_buf(&kb, compile_surface("dog(Adam)."));
 
     // ¬(∃ev. product-group(f64::MAX, 1e308, 1e308)) — finite operands, overflowing
-    // result, so the inner verdict is Unknown(NonFinite) rather than a cut.
+    // result, so the inner verdict is Unknown(NonFinite).
     let mut nodes = Vec::new();
     let ev = || LogicalTerm::Variable("_ev0".to_string());
     let head = compute(&mut nodes, "product", vec![ev()]);
@@ -1434,13 +1440,18 @@ fn a_negated_non_finite_group_under_find_is_zero_rows_not_a_refusal() {
     }
     let grp = exists(&mut nodes, "_ev0", acc);
     let root = not(&mut nodes, grp);
-    let rows = kb
-        .query_find_inner(LogicBuffer {
-            nodes,
-            roots: vec![root],
-        })
-        .expect("a negated non-finite group must not refuse the enumeration");
-    assert_eq!(rows.len(), 0, "it yields no witness, got {rows:?}");
+    let buf = LogicBuffer {
+        nodes,
+        roots: vec![root],
+    };
+    assert_eq!(
+        kb.query_entailment(buf.clone()).unwrap(),
+        QueryResult::Unknown(UnknownReason::NafDependent),
+        "premise: negation preserves the NAF-dependent verdict mapping"
+    );
+    assert_incomplete_enumeration(kb.query_find(buf.clone()));
+    assert_incomplete_enumeration(kb.count_witnesses(buf.clone()));
+    assert_incomplete_enumeration(kb.aggregate(buf, "x", nibli_types::logic::AggregateOp::Sum));
 
     // Control, same KB: nothing was truncated and no epoch residue leaked.
     assert_eq!(
@@ -1450,6 +1461,55 @@ fn a_negated_non_finite_group_under_find_is_zero_rows_not_a_refusal() {
     );
 }
 
+#[test]
+fn a_non_definitive_or_true_leaf_refuses_the_collection_in_either_order() {
+    let kb = new_kb();
+    assert_buf(&kb, make_assertion("adam", "person"));
+
+    for non_definitive_first in [true, false] {
+        let mut nodes = Vec::new();
+        let ev = || LogicalTerm::Variable("_ev0".to_string());
+        let head = compute(&mut nodes, "product", vec![ev()]);
+        let mut acc = head;
+        for (i, v) in [f64::MAX, 1e308, 1e308].iter().enumerate() {
+            let role = pred(
+                &mut nodes,
+                &format!("product_x{}", i + 1),
+                vec![ev(), LogicalTerm::Number(*v)],
+            );
+            acc = and(&mut nodes, acc, role);
+        }
+        let group = exists(&mut nodes, "_ev0", acc);
+        let non_definitive = not(&mut nodes, group);
+        let person = pred(
+            &mut nodes,
+            "person",
+            vec![
+                LogicalTerm::Variable("x".to_string()),
+                LogicalTerm::Unspecified,
+            ],
+        );
+        let choice = if non_definitive_first {
+            or(&mut nodes, non_definitive, person)
+        } else {
+            or(&mut nodes, person, non_definitive)
+        };
+        let root = exists(&mut nodes, "x", choice);
+        let buf = LogicBuffer {
+            nodes,
+            roots: vec![root],
+        };
+
+        assert_eq!(
+            kb.query_entailment(buf.clone()).unwrap(),
+            QueryResult::True,
+            "premise: the definitive branch entails the disjunction"
+        );
+        assert_incomplete_enumeration(kb.query_find(buf.clone()));
+        assert_incomplete_enumeration(kb.count_witnesses(buf.clone()));
+        assert_incomplete_enumeration(kb.aggregate(buf, "x", nibli_types::logic::AggregateOp::Sum));
+    }
+}
 /// The two compute families answer a NON-NUMERIC operand differently, and the
 /// difference is principled rather than an oversight — pinned here because it reads
 /// like an inconsistency and will otherwise be re-litigated.

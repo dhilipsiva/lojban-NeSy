@@ -91,7 +91,8 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
 - **Tolerant equality (disclosed):** arithmetic equality is `isclose` with
   `rel_tol 1e-9, abs_tol 0` — `0.3 = 0.1 + 0.2` is TRUE. The comparison
   predicate `num_equal` is exact `==`. Non-finite operands yield
-  `UNKNOWN (non-finite)`.
+  `UNKNOWN (non-finite)`; find/count/aggregate then refuse the incomplete
+  collection rather than return empty/zero/None.
 - **Comparisons are query-only, and that is decided:** `greater` / `less` /
   `num_equal` over operands that could be numbers are refused at assertion
   ingress in facts and in every rule position, so there is no numeric threshold
@@ -99,11 +100,15 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   `find` / `count_witnesses` / `aggregate`.
 - **Witness enumeration never dispatches:** `find` / `count_witnesses` /
   `aggregate` run the same group recogniser the verdict path does, so anything
-  decidable locally — a comparison, or built-in arithmetic over resolved
-  operands — filters rows. Anything whose routing would reach the backend is
+  definitively decidable locally — a comparison, or finite built-in arithmetic
+  over resolved operands — filters rows. A locally detected non-finite operand
+  or overflow is also non-definitive and makes the collection incomplete.
+  Anything whose routing would reach the backend is
   refused at the dispatch choke point with a budget of ZERO calls, and the
-  enumeration is reported incomplete. `UNKNOWN (backend-unavailable)` there means
-  the engine declined to call out, not that the backend failed.
+  enumeration is reported incomplete. Any final `UNKNOWN` or
+  `RESOURCE_EXCEEDED` leaf has the same complete-or-error collection behavior.
+  `UNKNOWN (backend-unavailable)` there means the engine declined to call out,
+  not that the backend failed.
 - **Admission policy (explicitly low-assurance):** an external reply is trusted
   evidence for the current `ComputeCheck`. The stock client is plaintext and
   unauthenticated, with no peer identity, confidentiality, integrity or

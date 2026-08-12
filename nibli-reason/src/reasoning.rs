@@ -373,16 +373,16 @@ fn negate_result(result: QueryResult) -> QueryResult {
     }
 }
 
-/// [`negate_result`], plus a note in `naf_cut_epoch` when the collapse just hid a
-/// SEARCH CUT.
+/// [`negate_result`], plus a monotone note in `naf_cut_epoch` whenever an `Unknown`
+/// is collapsed to `Unknown(NafDependent)`.
 ///
 /// The verdict is bit-identical to `negate_result`'s — the mapping is pinned by
 /// `exhaustive_soundness_matches_lean_model` and by `proofs/Combiner.lean`, and
 /// `NafDependent` remains the one verdict-level reason for a negated non-definitive.
-/// What is added is a side note, because `Unknown(CycleCut)` and
-/// `Unknown(NafDependent)` are indistinguishable AFTER the collapse and only the
-/// second is treated as a defensible absence. Enumeration would otherwise report a
-/// definitive zero rows for a leaf it never decided.
+/// Final `NafDependent` witness leaves now refuse by their own non-definitive verdict;
+/// the epoch remains a separate record of collapse sites so abandoned internal rule
+/// attempts can be regression-tested without changing the final-leaf gate. It never
+/// changes entailment, proof construction, or the `True`/`False` collection controls.
 ///
 /// The epoch RECORDS; it never decides. That separation is what makes this sound:
 /// a collapse site sits upstream of every pending-discard point in rule firing, so a
@@ -397,9 +397,7 @@ fn negate_result(result: QueryResult) -> QueryResult {
 /// path (whose input is always definitive, so it never bumps) and the candidate
 /// filter (whose verdict never escapes).
 fn negate_result_tracked(result: QueryResult, inner: &KnowledgeBaseInner) -> QueryResult {
-    if let QueryResult::Unknown(r) = &result
-        && unknown_reason_is_cut(r)
-    {
+    if matches!(&result, QueryResult::Unknown(_)) && witness_enumeration_incomplete(&result) {
         inner
             .naf_cut_epoch
             .set(inner.naf_cut_epoch.get().wrapping_add(1));
@@ -1743,13 +1741,13 @@ pub(super) fn find_witnesses(
     tense: Option<&str>,
     compute_memo: &mut QueryComputeMemo,
 ) -> Result<Vec<Vec<(String, GroundTerm)>>, String> {
-    // Once any leaf has been CUT at the depth/cycle horizon the enumeration is known
-    // incomplete and `query_find_inner` will refuse with `Err` regardless of what the
+    // Once any final leaf is non-definitive the enumeration is known incomplete and
+    // `query_find_inner` will refuse with `Err` regardless of what the
     // remaining candidates yield — so stop the (potentially huge) candidate sweep
     // immediately instead of exploring it to the end. Without this, a cyclic
     // event-decomposed find terminates but only after enumerating the full
     // member×Skolem cartesian (seconds), even though the verdict is already decided.
-    if inner.find_horizon_hit {
+    if inner.find_enumeration_incomplete {
         return Ok(Vec::new());
     }
     match get_node(buffer, node_id)? {
@@ -1768,10 +1766,10 @@ pub(super) fn find_witnesses(
             //
             // Enumeration does NOT dispatch: `find_enumeration` makes any group whose
             // routing would call out refuse at `dispatch_to_backend`, so the verdict
-            // comes back non-definitive, `witness_search_cut` treats it as a cut, and
+            // comes back non-definitive, the shared classifier latches incompleteness, and
             // the caller reports an incomplete enumeration instead of an undercount.
-            // Anything decidable locally — a comparison, or arithmetic over resolved
-            // operands — is decided here and filters rows.
+            // Anything definitively decidable locally — a finite comparison, or finite
+            // arithmetic over resolved operands — is decided here and filters rows.
             //
             // Nothing else changes shape: the group binds no user-visible variable, so
             // a satisfied one yields the same empty binding set the satisfied-leaf arm
@@ -1785,7 +1783,7 @@ pub(super) fn find_witnesses(
                     return Ok(vec![vec![]]);
                 }
                 if leaf_search_incomplete(&group.verdict, &*inner, epoch_before) {
-                    inner.find_horizon_hit = true;
+                    inner.find_enumeration_incomplete = true;
                 }
                 return Ok(Vec::new());
             }
@@ -1855,7 +1853,24 @@ pub(super) fn find_witnesses(
             compute_memo,
         ),
         LogicNode::AndNode((l, r)) => {
+            let incomplete_before = inner.find_enumeration_incomplete;
             let left_results = find_witnesses(buffer, *l, subs, inner, tense, compute_memo)?;
+            // An incomplete left subtree is not itself the final candidate formula:
+            // a definitively-False right conjunct absorbs it, making this candidate
+            // definitively absent. Re-evaluate the whole conjunction in that narrow
+            // case so collection success cannot depend on grouping or operand order.
+            //
+            // A definitive True here deliberately does NOT clear the latch. That shape
+            // arises when the left child is an Or with both a non-definitive branch and
+            // a True branch; the selected collection policy refuses because that
+            // branch may contribute additional bindings even though entailment is True.
+            if !incomplete_before && inner.find_enumeration_incomplete {
+                inner.find_enumeration_incomplete = false;
+                let verdict =
+                    check_formula_holds(buffer, node_id, subs, inner, tense, compute_memo)?;
+                inner.find_enumeration_incomplete = !verdict.is_false();
+                return Ok(Vec::new());
+            }
             let mut results = Vec::new();
             for left_bindings in left_results {
                 let mut merged_subs = subs.clone();
@@ -1886,7 +1901,7 @@ pub(super) fn find_witnesses(
         }
         _ => {
             // Snapshot BEFORE evaluating: `leaf_search_incomplete` compares against it
-            // to see whether a cut was laundered by a negation anywhere in this leaf's
+            // to retain a diagnostic record of any negation collapse in this leaf's
             // subtree. Nothing on the find path evaluates before this point —
             // `collect_entailment_candidates` narrows from MANDATORY POSITIVE anchors
             // and skips `NotNode`, so it cannot negate. If a future collector ever
@@ -1896,12 +1911,12 @@ pub(super) fn find_witnesses(
             if verdict.is_true() {
                 Ok(vec![vec![]])
             } else {
-                // Not a witness. Distinguish a genuine "no" from the search being CUT —
-                // the latter means a witness may exist beyond the budget, so flag the
-                // enumeration incomplete. `query_find_inner` then refuses a definitive
-                // count/aggregate rather than silently undercounting.
+                // Not a witness. A definitive False is a genuine absence; any Unknown
+                // or ResourceExceeded leaves membership undecided. Flag the latter so
+                // `query_find_inner` refuses a partial count/aggregate rather than
+                // silently undercounting.
                 if leaf_search_incomplete(&verdict, &*inner, epoch_before) {
-                    inner.find_horizon_hit = true;
+                    inner.find_enumeration_incomplete = true;
                 }
                 Ok(vec![])
             }
@@ -1909,69 +1924,67 @@ pub(super) fn find_witnesses(
     }
 }
 
-/// Whether an `Unknown` reason means the SEARCH was cut, as opposed to a
-/// genuine/defensible absence.
+/// True when a final witness-leaf verdict leaves membership undecided.
 ///
-/// The two exclusions are deliberate and different in kind. `NafDependent` is the
-/// collapsed reason `negate_result` produces for any negated non-definitive inner; it
-/// says nothing about whether the inner was cut, which is exactly why
-/// `naf_cut_epoch` exists to record that separately. `NonFinite` is a claim about f64
-/// range rather than about the search — a non-finite operand satisfies no arithmetic —
-/// and it is non-cut on BOTH polarities, so negating it changes nothing.
-///
-/// Single source of truth: `witness_search_cut` delegates here, and so does the
-/// epoch bump in [`negate_result_tracked`]. A second copy of this list is how the
-/// two would come to disagree.
-fn unknown_reason_is_cut(r: &UnknownReason) -> bool {
-    matches!(
-        r,
-        UnknownReason::CycleCut
-            | UnknownReason::IncompleteKnowledge
-            | UnknownReason::BackendUnavailable
-    )
+/// Collections may emit rows only from definitive `True` leaves and discard only
+/// definitive `False` leaves. Every `Unknown(_)` and `ResourceExceeded(_)`, across
+/// either polarity, therefore latches the existing query-global incomplete-enumeration
+/// refusal. This is deliberately reason-agnostic so a future non-definitive reason
+/// fails closed without another allowlist edit.
+fn witness_enumeration_incomplete(v: &QueryResult) -> bool {
+    !v.is_definitive()
 }
 
-/// True when a non-`True` witness-leaf verdict means the search was CUT (a witness
-/// may exist beyond the depth budget or behind a cut cycle), as opposed to a
-/// genuine/defensible absence. `False` is a real no; see [`unknown_reason_is_cut`]
-/// for why `NafDependent` and `NonFinite` are excluded. `ResourceExceeded(_)` is
-/// always a cut and is polarity-independent (`negate_result` forwards it unchanged),
-/// so a negated depth cut already refuses without help from the epoch.
-fn witness_search_cut(v: &QueryResult) -> bool {
-    match v {
-        QueryResult::ResourceExceeded(_) => true,
-        QueryResult::Unknown(r) => unknown_reason_is_cut(r),
-        QueryResult::True | QueryResult::False => false,
+#[cfg(test)]
+mod witness_enumeration_incomplete_tests {
+    use super::*;
+
+    #[test]
+    fn every_non_definitive_verdict_refuses_witness_enumeration() {
+        let non_definitive = [
+            QueryResult::Unknown(UnknownReason::CycleCut),
+            QueryResult::Unknown(UnknownReason::IncompleteKnowledge),
+            QueryResult::Unknown(UnknownReason::NafDependent),
+            QueryResult::Unknown(UnknownReason::BackendUnavailable),
+            QueryResult::Unknown(UnknownReason::NonFinite),
+            QueryResult::ResourceExceeded(ResourceKind::Depth),
+            QueryResult::ResourceExceeded(ResourceKind::Fuel),
+            QueryResult::ResourceExceeded(ResourceKind::Memory),
+        ];
+        for verdict in non_definitive {
+            assert!(
+                witness_enumeration_incomplete(&verdict),
+                "non-definitive witness leaf must refuse: {verdict:?}"
+            );
+        }
+
+        assert!(!witness_enumeration_incomplete(&QueryResult::True));
+        assert!(!witness_enumeration_incomplete(&QueryResult::False));
     }
 }
 
-/// Whether a non-`True` witness leaf leaves the witness set INCOMPLETE — either
-/// because its own verdict is a cut, or because a negation inside its subtree
-/// COLLAPSED a cut into `NafDependent` while the leaf itself stayed undecided.
+/// Whether a non-`True` witness leaf leaves the witness set incomplete.
 ///
 /// `epoch_before` is `naf_cut_epoch` sampled immediately before the leaf was
-/// evaluated.
+/// evaluated. The epoch term is retained as a defensive record of a collapse inside
+/// the leaf; the reason-agnostic classifier already covers every current
+/// non-definitive final verdict.
 ///
-/// The `!is_definitive()` conjunct is the whole safety argument, and it is not
-/// belt-and-braces. Rule firing tries every matching rule and every candidate
-/// binding, and a negation collapse happens INSIDE an attempt the engine may then
-/// abandon — a later rule concludes the goal, or a sibling conjunct is definitively
-/// false. Gating on the leaf's OWN verdict means an abandoned attempt cannot turn an
-/// answer into a refusal, and rule registration order cannot decide
-/// answer-vs-refusal. Without it, the ordinary "default via NAF, with an explicit
-/// override" idiom would start refusing.
+/// Final-leaf gating is the safety boundary. Rule firing tries every matching rule and
+/// candidate binding, and may encounter a non-definitive internal attempt before a
+/// later rule proves the leaf `True` or a sibling makes it definitively `False`.
+/// Consulting incompleteness only after the leaf's own verdict is known prevents those
+/// abandoned attempts from turning definitive rows or absences into errors.
 ///
-/// The remaining conservatism is bounded and deliberate: a leaf that ends
-/// non-definitive for an UNRELATED reason, while a cut was negated somewhere in its
-/// subtree, refuses. That only ever turns `Ok(no row)` into `Err` — the row was never
-/// going to be emitted — so it cannot flip a `True` row or a definitive `False` into a
-/// refusal. Same class as the And/Or split that already ships.
+/// If the final verdict is non-definitive for any reason, refusal is deliberate even
+/// when another OR branch produced a row: the evaluated candidate's full membership
+/// set was not decided, so returning a partial collection would overstate completeness.
 fn leaf_search_incomplete(
     verdict: &QueryResult,
     inner: &KnowledgeBaseInner,
     epoch_before: u64,
 ) -> bool {
-    witness_search_cut(verdict)
+    witness_enumeration_incomplete(verdict)
         || (!verdict.is_definitive() && inner.naf_cut_epoch.get() != epoch_before)
 }
 

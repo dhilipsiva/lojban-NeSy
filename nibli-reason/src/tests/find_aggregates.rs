@@ -294,9 +294,9 @@ fn test_find_cycle_cut_errs() {
 // ─── Negation hiding a search cut ────────────────────────────────────────────
 //
 // `negate_result` collapses EVERY non-definitive inner verdict to
-// `Unknown(NafDependent)` — deliberately, and pinned by the Lean model. But
-// `witness_search_cut` deliberately EXCLUDES `NafDependent` as a defensible
-// exclusion, so between them the fact that the inner leaf was CUT rather than
+// `Unknown(NafDependent)` — deliberately, and pinned by the Lean model. The
+// pre-`naf_cut_epoch` classifier excluded that collapsed reason, so the fact that
+// the inner leaf was CUT rather than
 // merely unprovable used to be lost, and enumeration reported a definitive zero.
 //
 // Note what the query below does NOT contain: a `~`. The laundering happens inside

@@ -243,7 +243,8 @@ impl NibliEngine {
     /// This is intentionally compile-only: CountNode and ComputeNode are valid
     /// query IR even though `assert_text` will reject them as query-only (and
     /// the reference external compute names are rejected there registered or
-    /// not).
+    /// not). Use `assert_text` for text assertion admission; raw-buffer callers
+    /// can run `KnowledgeBase::validate_assertion` before `assert_fact`.
     pub fn validate(&self, text: &str) -> Result<(), String> {
         self.compile_text(text)
             .map(|_| ())
@@ -412,6 +413,8 @@ impl NibliEngine {
     }
 
     /// Parse a KR query and extract all satisfying witness bindings.
+    /// Returns a reasoning error instead of partial rows when any evaluated
+    /// candidate leaf is `Unknown(_)` or `ResourceExceeded(_)`.
     pub fn query_find_text(
         &self,
         text: &str,
@@ -421,6 +424,7 @@ impl NibliEngine {
 
     /// Count the number of distinct witness binding sets satisfying a KR query.
     /// Exposes `nibli_reason::KnowledgeBase::count_witnesses` at the embedding level.
+    /// Inherits the reasoner's complete-or-error collection contract.
     pub fn count_witnesses_text(&self, text: &str) -> Result<usize, EngineError> {
         self.core.count_witnesses_text(text)
     }
@@ -428,6 +432,8 @@ impl NibliEngine {
     /// Aggregate the numeric values bound to `variable` across all witness binding
     /// sets of a KR query, applying `op` (Sum/Min/Max/Avg). Returns `Ok(None)`
     /// when no numeric witnesses are found. Exposes `nibli_reason::KnowledgeBase::aggregate`.
+    /// Incomplete witness enumeration is an error before numeric projection;
+    /// mixed/missing binding projection remains a separate API policy.
     pub fn aggregate_text(
         &self,
         text: &str,

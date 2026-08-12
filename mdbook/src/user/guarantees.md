@@ -84,6 +84,18 @@ How to read a query result (product README wording):
 
 All four are `QueryResult` variants in the engine itself, not host conventions — `RESOURCE_EXCEEDED` carries which limit was hit. Raise them with the `NIBLI_FUEL` / `NIBLI_MEMORY_MB` env vars or the `:fuel` / `:memory` REPL commands; see [GUARANTEES.md](https://github.com/dhilipsiva/nibli/blob/main/GUARANTEES.md).
 
+Witness enumeration has a separate complete-or-error contract. Native
+`query_find`/`count_witnesses`, and WIT `query-find-text`, return a
+reasoning error if any evaluated candidate leaf is `UNKNOWN` or
+`RESOURCE_EXCEEDED`; they do not turn an undecided membership into an empty row
+set or partial count. This includes non-finite arithmetic and negated
+non-definitive leaves, even if another OR branch is true. Definitive TRUE/FALSE
+enumeration is unchanged. Native `aggregate` inherits the same refusal before
+numeric projection, but still filters missing or nonnumeric bindings; strict
+projection remains a separate tracker item. Exact-count formulas use their
+separate domain-based `CountNode` evaluator and are not changed by this collection
+rule, including the disclosed NaN-only domain boundary.
+
 ## Trusted proof-local compute
 
 Results from the **external compute backend** (`exponential`, `logarithm`, or predicates you register) are **trusted evidence for the current `ComputeCheck`**, not stored premises. Built-in arithmetic (`product` / `sum` / `quotient`) follows the same proof-local lifecycle: no compute result enters the fact store or registry, receives an id, changes the domain, survives replay, or triggers forward chaining. Compute atoms are query-only; assertions and rules containing executable compute are rejected before an id is allocated, while quoted abstraction content remains opaque. The reference names `exponential`/`logarithm` are query-only as assertions even before registration, and registering a name while live stored facts or rules reference it is refused with the blocking ids named — registration order cannot strand a stored fact. The numeric comparisons (`greater` / `less` / `num_equal`) are query-only on the same terms whenever an operand could be a number: they decide a verdict and filter witnesses, but a rule may not carry one, so there is no numeric threshold rule. That is a decision rather than a gap — a comparison in a rule would be looked up in a store that never holds one, which is inert as a positive guard and, under `~`, succeeds for every binding. A comparison between two named things (`greater(Alis, Bob)`, "taller than") is an ordinary relational fact and asserts normally. Each top-level query recomputes or redispatches; repeated identical external checks may share a transient within-query memo only to keep the verdict and proof consistent. A backend error is always `UNKNOWN (backend-unavailable)`, even after an earlier successful query or when an ordinary fact has the same tuple. Any conclusion that uses a successful external check is only as sound as that oracle.

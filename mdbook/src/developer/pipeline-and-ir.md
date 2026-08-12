@@ -143,9 +143,9 @@ property, carried on the verdict side by `ProofTrace.naf_dependent` and
 
 | You want | Use |
 |----------|-----|
-| Text → IR | `NibliEngine::compile_debug` (native), `compile-debug` (WIT), or `nibli_semantics::compile_from_ast` (+ `transform_compute_nodes`) |
+| Text → IR | `NibliEngine::compile_debug` / compile-only `NibliEngine::validate` (native), `compile-debug` (WIT), or `nibli_semantics::compile_from_ast` (+ `transform_compute_nodes`). These do not check assertion admission; use `assert_text` for that boundary |
 | A programmatic ground fact | `CoreSession::assert_fact_direct` or `NibliEngine::assert_fact_direct` — decomposes and pads exactly like surface text, applies the live compute registry, and rejects registered compute — and the reference external names regardless of registration — as query-only. The lower-level compiler is `nibli_semantics::compile_injected_fact(relation, args)` |
-| Reason over a buffer (BYO-IR) | `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact`. `CountNode` and executable `ComputeNode` formulas in asserted position are query-only; `assert_fact` and assumptions reject them, while opaque quoted content remains inert |
+| Reason over a buffer (BYO-IR) | `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact`. Witness enumeration returns complete rows/counts or the incomplete-enumeration error when any final candidate leaf is non-definitive; `aggregate` inherits that refusal before its separate numeric projection, which still filters missing or nonnumeric bindings. `CountNode` and executable `ComputeNode` formulas in asserted position are query-only; run `validate_assertion` as structural preflight and use `assert_fact` for admission, while opaque quoted content remains inert |
 | A packaged surface | `nibli_engine::NibliEngine` (native), the nibli-wasm `Session` (browser JS), or the `nibli-pipeline` component ([WIT surface](wit-surface.md)) |
 
 The reasoner's fact store remains a set keyed only by `StoredFact`; origin is a

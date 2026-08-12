@@ -136,7 +136,7 @@ The proofs are model-level (the perfect model is *characterized* by axioms, not 
 
 **Contract:** When a resource limit is hit, the engine returns `ResourceExceeded(kind)` — never FALSE. The engine honestly reports that it cannot determine the answer within its resource bounds, rather than guessing.
 
-**find/count/aggregate refuse rather than undercount.** Witness enumeration has no verdict channel to carry `ResourceExceeded` through, so `query_find` / `count_witnesses` / `aggregate` return an `Err` when any witness leaf could not be DECIDED — a definitive undercount would be a wrong quantity, which is worse than no answer. Since stratum-ordered materialisation (§Negation Policy) this refusal narrowed rather than disappeared: a leaf inside the saturated fragment always decides, so the refusal no longer fires there, and it now marks the genuine residue — compute predicates, whose numeric domain is infinite and therefore not a finite set to saturate, and any relation the eligibility analysis refused. `KnowledgeBase::materialization_report` names which. The refusal is deliberately KEPT: for that residue it is the only honest answer.
+**find/count/aggregate refuse rather than undercount.** Witness enumeration has no verdict channel to carry `Unknown` or `ResourceExceeded` through, so `query_find` / `count_witnesses` / `aggregate` return an `Err` when any final witness leaf could not be DECIDED — a definitive undercount would be a wrong quantity, which is worse than no answer. Stratum-ordered materialisation (§Negation Policy) makes eligible relation leaves definitive, but genuine residue remains: non-finite or unavailable compute, NAF-dependent membership, resource exhaustion, and relations the eligibility analysis refused. `KnowledgeBase::materialization_report` identifies the materialisation subset; it cannot make a non-finite computation definitive. The refusal is deliberately KEPT: it is the only honest collection answer.
 
 ## Retraction Model
 
@@ -157,7 +157,7 @@ Every query returns exactly one of four results:
 
 There is no confident-sounding middle ground. The engine never guesses. (One deliberately DECIDED numeric case that surprises: divide-by-zero over finite operands is a confident FALSE, not non-finite — see "Disclosed Sharp Edges".)
 
-`NafDependent` is the single verdict-level reason for a negation over any non-definitive sub-goal: the inner reason collapses into it, which keeps the four-valued contract small and is what the mechanised negation model pins. It therefore cannot, on its own, distinguish "the inner leaf was CUT" from "the inner leaf was merely unprovable" — a distinction the VERDICT does not need (both are non-definitive) but witness enumeration does, since only the second is a defensible absence. The engine records it separately at the point of collapse rather than widening the reason; §Compute Result Lifecycle states the resulting enumeration rule.
+`NafDependent` is the single verdict-level reason for a negation over any non-definitive sub-goal: the inner reason collapses into it, which keeps the four-valued contract small and is what the mechanised negation model pins. Witness enumeration does not reinterpret that collapse as absence: every final `NafDependent` leaf is non-definitive and therefore refuses collection. A separate monotone epoch records collapse sites only so regressions can prove that abandoned internal attempts do not poison an ultimately definitive leaf; it does not decide a verdict or collection.
 
 ## Compute Result Lifecycle
 
@@ -199,18 +199,20 @@ Query-only covers WITNESS ENUMERATION as well as the boolean verdict, and enumer
 runs the SAME group recogniser and the same routing the verdict path does. What it does
 not do is call out.
 
-- **Decided locally → filters rows.** A numeric comparison, and built-in arithmetic
-  (`product`/`sum`/`quotient`) whose operands resolve to numbers, are decided in place,
-  so `find`/`count_witnesses`/`aggregate` return exactly the rows the verdict would
-  accept. A ground group with no user variables yields one empty binding set when it
-  holds and none when it does not — the same shape a comparison gives.
+- **Definitively decided locally → filters rows.** A numeric comparison, and built-in
+  arithmetic (`product`/`sum`/`quotient`) whose operands resolve to finite numbers and
+  produce a finite result, are decided in place, so
+  `find`/`count_witnesses`/`aggregate` return exactly the rows the verdict accepts. A
+  ground group with no user variables yields one empty binding set when it holds and
+  none when it is definitively false. A non-finite operand or result is not false: it
+  leaves membership undecided and therefore refuses the collection.
 - **Would dispatch → refuses, budget ZERO.** Any group whose routing would reach the
   external backend — a registered relation, or a built-in name whose operands do not
   resolve — is refused at `dispatch_to_backend`/`dispatch_batch_to_backend`, the single
   choke point every evaluation route funnels through. Enumeration evaluates its body
   once per candidate, so dispatching there would cost one request per candidate over a
   transport with no request binding, idempotency, or replay detection (§External Compute
-  Admission Policy). The undecided leaf is a search cut, so the caller reports an
+  Admission Policy). The undecided leaf is non-definitive, so the caller reports an
   incomplete enumeration rather than an undercount.
 
 The refusal is **scope-based, not outage-based**: `UNKNOWN (backend-unavailable)` under
@@ -218,23 +220,21 @@ enumeration means the engine declined to consult the backend, not that the backe
 failed — it was never contacted. The verdict path is deliberately different, and MAY
 forward a free or non-numeric operand to the backend.
 
-**Negation does not launder a cut.** An undecided leaf refuses whether or not a `~` sits
-between it and the query. The verdict-level reason for any negated non-definitive is
-`NafDependent` (see §Query Result Contract), which by itself cannot say whether the inner
-leaf was CUT or merely unprovable — so the engine records the distinction separately, at
-the point of collapse, and enumeration consults it only when the leaf's own verdict is
-non-definitive. That gating is load-bearing rather than cautious: a negation is evaluated
-inside a rule ATTEMPT the engine may then abandon, so a goal that ends TRUE — or
-definitively FALSE by another rule — still enumerates, and rule registration order never
-decides answer-versus-refusal. This covers the case with no `~` on the surface at all: a
-rule with an undecided negated antecedent makes its own head refuse.
+**Collections are complete or error.** Only a definitive `True` establishes membership
+and only a definitive `False` excludes it. If any final evaluated candidate leaf is
+`Unknown(_)` or `ResourceExceeded(_)` — including `NafDependent` and `NonFinite`, under
+either polarity — `query_find`, `count_witnesses`, and `aggregate` return the existing
+`witness enumeration incomplete` reasoning error. They never reinterpret UNKNOWN as
+FALSE or certify a partial set as complete. This also applies when another OR branch
+produced a true row: an evaluated undecided branch means the full collection was not
+decided.
 
-One disclosed residual, symmetric across polarity. `Unknown(NonFinite)` — a non-finite
-operand, or a finite-operand computation whose result overflows f64 — is deliberately not
-a search cut, so enumeration reports no witness without refusing, both plainly and under
-`~`. It is a claim about f64 range rather than about the search, and negating it does not
-make a witness likelier to exist beyond some budget. The dispatch budget holds throughout:
-zero calls either way.
+Final-leaf gating is load-bearing. Negation and rule firing may encounter an undecided
+internal attempt that is later abandoned because another rule proves the leaf TRUE or a
+sibling makes it definitively FALSE. The query-global latch is consulted only after the
+candidate leaf's final verdict is known, so those definitive controls still enumerate and
+rule registration order does not decide answer-versus-refusal. Entailment verdicts,
+proof construction, and the separate exact-`CountNode` evaluator are unchanged.
 
 Every top-level query starts with no compute results from an earlier query.
 Built-ins recompute locally; registered external predicates redispatch to the
@@ -324,9 +324,9 @@ dispatches normally.
 
 **Exact-count formulas are query-only (decided 2026-08-05).** `big(exactly 1 dog).` and `big(no dog).` compile to `CountNode` and may be evaluated as queries, but every assertion ingress rejects a count in asserted position before minting an id or mutating the KB. Nibli has no persistent cardinality-constraint object: assert auditable ordinary facts, then query their current count. The result is a closed-domain/closed-world snapshot and may change after another assertion, an equality merge or retraction, or an existential-import profile change. Rebuild and reopen reproduce the same count when the active assertion set and profile are unchanged. `exactly 0` is therefore a query, never a stored prohibition; `CountResult { expected, actual, existential_imported }` reports the observed tally and provenance share, not an enforced invariant. A count inside an opaque `fact { … }`/`event { … }` remains legal quoted content and does not affect the outer KB. Legacy persisted count-assertion buffers fail closed on replay instead of regenerating witnesses or being silently dropped.
 
-**count_witnesses:** Returns the number of distinct ENTITY-level witness binding sets satisfying an existential formula (the same collapse rules as above; an enumeration whose leaves could not be DECIDED refuses to return a definitive undercount — see §Resource Limits).
+**count_witnesses:** Returns the number of distinct ENTITY-level witness binding sets satisfying an existential formula (the same collapse rules as above). If any final candidate leaf is non-definitive, it returns the incomplete-enumeration error rather than a partial count.
 
-**aggregate(formula, variable, op):** Extracts numeric values from a named variable across all witness bindings and applies Sum, Min, Max, or Avg. Returns None if no numeric witnesses found.
+**aggregate(formula, variable, op):** Extracts numeric values from a named variable across all witness bindings and applies Sum, Min, Max, or Avg. Returns None if no numeric witnesses are found. It inherits the same incomplete-enumeration error before projection; its separate policy of filtering missing or nonnumeric bindings is unchanged.
 
 ## Disclosed Sharp Edges
 
@@ -344,7 +344,7 @@ Deliberate or accepted-but-surprising behaviors, each pinned by a test so any ch
 
 - **External compute names are query-only BY NAME; registration is refused over live references (decided 2026-08-09).** The comparison bullet above declines a name ban because `greater(Alis, Bob)` has a legitimate relational reading; `exponential` and `logarithm` have none — every committed place is numeric (result/base/power and result/number/base), and a registered query forwards even symbolic operands to the backend — so for these two names the NAME is the operand test and nothing is collateral (`validate_no_external_compute_names`, `nibli-reason/src/kb.rs`, ahead of the count/compute/comparison content guards in the preflight stack so the specific message wins in every registration state; role spellings like `exponential_x1` collapse onto the anchor). Before the guard, registration ORDER was load-bearing: `exponential(2, 3, 8).` asserted pre-registration stored an ordinary fact that answered TRUE — until any session registered the name, after which the query side dispatched the backend and the stored fact was unreachable forever, still listed and retractable. The other half closes the OPEN registry: `register_compute_predicate` (any name — the dispatch mechanism is open) is refused while live stored facts or rules reference the name, with the blocking ids in the message, which also stops a mistyped `:compute person` from silently orphaning a knowledge base. The reference scan collapses role spellings on BOTH sides and re-runs even for already-registered names; role-shaped names (`eats_x1` — register the anchor) and the engine-special relations (identity, the numeric comparisons) are refused outright, since marking them would silently replace built-in query semantics. Recompile-free buffer replay (`assert-buffer-with-id`, the engine's store replay) re-marks each buffer against the live registry, so an out-of-order replay fails closed instead of storing a plain fact for a registered name; the raw `KnowledgeBase` API below the session seam remains the documented BYO-IR boundary where marking is the caller's responsibility, and a violation surfaces on the next registration attempt rather than never. Two residuals, both fail-closed: a refused registration requires retracting the named statements first — refusal is not invalidation, the engine deletes nothing on its own; and a name outside the reference set stays session-dependent on the QUERY side (unregistered = closed-world store lookup, registered = dispatch), with the guarantee only that no stored fact straddles the flip. Pinned in both orders at the engine level (`an_external_compute_name_is_query_only_even_before_registration`, `assert_then_register_is_refused_until_the_statements_are_retracted`), by `pins/external-compute-boundary.nibli` on the static half, and across the WIT boundary by the `smoke-host-compute-query-only` / `smoke-host-compute-registration-order` gates. **Re-open trigger:** a corpus or import source that needs either name as ordinary relational vocabulary, or a configurable reference set — either turns the static list into policy and would need the operand-style test the comparison guard uses.
 
-- **Asserted numbers ARE quantifier-domain members** (2026-08-01 semantics decision; it REPLACES the old "numbers never enter the quantifier domain" contract and its `[Domain]` diagnostic). A finite number appearing in ANY asserted statement — a predicate fact (`big(5).`) or an ordinary asserted rule's operands and thresholds — is a domain member of the individual sort, exactly mirroring constants (`collect_and_note_constants` walks the whole buffer, and a rule mentioning `Adam` has always noted Adam; pinned by `rule_operand_numbers_join_the_domain_like_constants`), and retraction removes membership exactly (retraction always rebuilds — §Retraction Model). Compute formulas themselves are query-only and therefore never contribute members. So `every` CHECKS an asserted number, `exactly N` COUNTS it, and `some` reaches it, and the three quantifiers agree: with `big(5).`, `sum(every big, 2, 3).` is TRUE *by checking 5* and the arithmetically false `sum(every big, 2, 2).` is FALSE with 5 as its counterexample (pinned by `numeric_terms_are_universal_domain_members`); with `big(5). dog(5).` entailed, `dog(no big).` is FALSE and agrees with `dog(some big).` — pre-change those two were BOTH true, a jointly inconsistent pair (pinned by `exact_count_ranges_over_asserted_numbers`). Rule-derived numeric witnesses now reach `query_find`/`count_witnesses`/`aggregate` too (pinned by `find_reaches_rule_derived_numeric_witnesses`), and the assert-vs-query asymmetry is gone: rule firing always unified numbers, and the queried universal now enumerates the same values. Membership is ATEMPORAL, same as constants (`past big(5).` notes 5, but the restrictor still evaluates under the query's own tense, so a past-only fact leaves a present universal guard-vacuous — pinned by `a_past_only_number_is_a_member_but_fails_a_present_restrictor`); identity-linked numbers count once (`du_linked_numbers_count_once`). When the explicit legacy existential-import profile is ON, its imported restrictor witness is another logical entity and counts by the same rule; `WitnessOrigin` and `CountResult.existential_imported` make that contribution visible. **Two disclosed residuals, both fail-closed:** (1) NON-FINITE values (NaN/±inf, reachable via RDF import, never via the digits-only KR `number` rule) are skipped — they satisfy no arithmetic and already evaluate to `Unknown(NonFinite)` (pinned by `non_finite_numbers_are_skipped_fail_closed`) — though a STORED non-finite fact stays entailment-reachable as an existential witness, because narrowing draws candidates from the bitwise stored-fact index, not the member list (pinned by `stored_non_finite_witnesses_stay_reachable_through_the_index`); (2) equality is the store's bitwise equality, so `-0.0` and `0.0` are two members, consistent with fact matching. The retired `[Domain]`/`numeric_domain_gap` diagnostic announced the old exclusion; with asserted numbers as members its candidate source (the stored-fact index) can no longer name a non-member, so it was removed rather than left as dead code.
+- **Asserted numbers ARE quantifier-domain members** (2026-08-01 semantics decision; it REPLACES the old "numbers never enter the quantifier domain" contract and its `[Domain]` diagnostic). A finite number appearing in ANY asserted statement — a predicate fact (`big(5).`) or an ordinary asserted rule's operands and thresholds — is a domain member of the individual sort, exactly mirroring constants (`collect_and_note_constants` walks the whole buffer, and a rule mentioning `Adam` has always noted Adam; pinned by `rule_operand_numbers_join_the_domain_like_constants`), and retraction removes membership exactly (retraction always rebuilds — §Retraction Model). Compute formulas themselves are query-only and therefore never contribute members. So `every` CHECKS an asserted number, `exactly N` COUNTS it, and `some` reaches it, and the three quantifiers agree: with `big(5).`, `sum(every big, 2, 3).` is TRUE *by checking 5* and the arithmetically false `sum(every big, 2, 2).` is FALSE with 5 as its counterexample (pinned by `numeric_terms_are_universal_domain_members`); with `big(5). dog(5).` entailed, `dog(no big).` is FALSE and agrees with `dog(some big).` — pre-change those two were BOTH true, a jointly inconsistent pair (pinned by `exact_count_ranges_over_asserted_numbers`). Rule-derived numeric witnesses now reach `query_find`/`count_witnesses`/`aggregate` too (pinned by `find_reaches_rule_derived_numeric_witnesses`), and the assert-vs-query asymmetry is gone: rule firing always unified numbers, and the queried universal now enumerates the same values. Membership is ATEMPORAL, same as constants (`past big(5).` notes 5, but the restrictor still evaluates under the query's own tense, so a past-only fact leaves a present universal guard-vacuous — pinned by `a_past_only_number_is_a_member_but_fails_a_present_restrictor`); identity-linked numbers count once (`du_linked_numbers_count_once`). When the explicit legacy existential-import profile is ON, its imported restrictor witness is another logical entity and counts by the same rule; `WitnessOrigin` and `CountResult.existential_imported` make that contribution visible. **Two disclosed residuals:** (1) NON-FINITE values (NaN/±inf, reachable via RDF import, never via the digits-only KR `number` rule) are skipped from the general quantifier-domain member list (pinned by `non_finite_numbers_are_excluded_from_the_general_domain`), though a STORED non-finite fact remains entailment-reachable through the bitwise stored-fact index (`stored_non_finite_witnesses_stay_reachable_through_the_index`). If evaluating such an indexed candidate needs arithmetic, the leaf is `Unknown(NonFinite)` and collection APIs now refuse rather than emit a complete empty set. Exact `CountNode` deliberately remains domain-based: with a NaN-only stored extension an anchored existential can find the indexed NaN while `exactly 0` is TRUE because NaN is absent from the general domain (`non_finite_index_witnesses_remain_outside_exact_count_domain`). This accepted candidate-source mismatch is not described as fail-closed. (2) equality is the store's bitwise equality, so `-0.0` and `0.0` are two members, consistent with fact matching. The retired `[Domain]`/`numeric_domain_gap` diagnostic announced the old exclusion; with asserted finite numbers as members its candidate source (the stored-fact index) can no longer name a finite non-member, so it was removed rather than left as dead code.
 
 ## What the Engine Cannot Do
 

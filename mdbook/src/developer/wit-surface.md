@@ -89,8 +89,8 @@ its policy metadata is outside the current proof schema.
 | `assert-text(input)` | → `list<(fact-id, logic-buffer)>` — multi-statement input splits into one independent fact per root (a connective stays one compound fact); each pair carries the compiled buffer so a persisting host can replay without recompiling. `CountNode` and executable `ComputeNode` formulas in asserted position fail as query-only before an id is allocated; opaque quoted content remains inert |
 | `query-text(input)` | → `query-result` |
 | `query-text-with-proof(input)` | → `(query-result, proof-trace)` |
-| `query-find-text(input)` | → witness binding sets |
-| `compile-debug(input)` | Compile without asserting; the host renders the buffer |
+| `query-find-text(input)` | → complete witness binding sets; any non-definitive candidate leaf returns `nibli-error` instead of partial rows |
+| `compile-debug(input)` | Compile without asserting or checking assertion admission; the host renders the buffer |
 | `assert-fact(relation, args)` / `assert-fact-with-id(…)` | Ground fact, bypassing text parsing; the `-with-id` form takes a caller-chosen id for restart replay. A relation already registered for compute is rejected as query-only rather than stored as a shadow fact; the reference external names are rejected even when unregistered |
 | `assert-buffer-with-id(buffer, label, id)` | **The** recompile-free replay primitive (the legacy `assert-text-with-id` was removed at 0.5.0 with store schema v3). Legacy count or executable-compute assertion rows fail closed rather than regenerating witnesses or premises; the buffer is re-marked against the live compute registry, so an out-of-order replay of a registered name fails closed too |
 | `retract-fact(id)` / `list-facts()` / `reset-kb()` | KB management |

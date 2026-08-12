@@ -12,7 +12,8 @@
 //!   provenance traces derived facts through universal rule chains, including conclusions
 //!   eagerly inserted by forward chaining.
 //! - **Witness extraction** — [`find_witnesses`] returns all satisfying entity bindings for
-//!   existential variables.
+//!   existential variables only when every evaluated candidate leaf is definitive; collection
+//!   APIs refuse an incomplete witness set instead of returning partial rows.
 //! - **Compute dispatch** — `ComputeNode` predicates are forwarded to the host-provided
 //!   `compute-backend` WIT interface for query-local external evaluation. Results
 //!   contribute to the current derivation only; they never mutate the KB.
@@ -306,6 +307,34 @@ impl KnowledgeBase {
             // Shared with And/Or so the four-valued non-definitive precedence cannot drift.
             reasoning::combine_indeterminate(left, right)
         }
+    }
+
+    /// Multi-root buffers are a conjunction. When collection enumeration latched
+    /// incompleteness in one root, check whether another root makes the WHOLE formula
+    /// definitively False before surfacing an error. This mirrors an explicit
+    /// `AndNode`: `False ∧ Unknown = False`, independent of root order.
+    ///
+    /// Called only after an incomplete leaf was observed. A True or non-definitive
+    /// overall verdict preserves the collection refusal, including the selected
+    /// `Unknown OR True` policy.
+    fn multi_root_conjunction_is_definitively_false(
+        logic: &LogicBuffer,
+        inner: &mut KnowledgeBaseInner,
+        compute_memo: &mut QueryComputeMemo,
+    ) -> Result<bool, String> {
+        if logic.roots.len() < 2 {
+            return Ok(false);
+        }
+        let mut overall = QueryResult::True;
+        for &root_id in &logic.roots {
+            let mut subs = HashMap::new();
+            let result = check_formula_holds(logic, root_id, &mut subs, inner, None, compute_memo)?;
+            overall = Self::combine_root_results(overall, result);
+            if overall.is_false() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Assert FOL facts from a logic buffer into the knowledge base.
@@ -692,6 +721,8 @@ impl KnowledgeBase {
 
     /// Find all satisfying binding sets for existential variables in the query formula.
     /// Returns one `Vec<WitnessBinding>` per satisfying assignment.
+    /// Returns an incomplete-enumeration error if any final candidate leaf is
+    /// `Unknown(_)` or `ResourceExceeded(_)`.
     /// Witness enumeration, with `find_enumeration` scoped to its DYNAMIC EXTENT.
     ///
     /// The latch is cleared here rather than at the entailment entries alone because
@@ -717,37 +748,36 @@ impl KnowledgeBase {
     ) -> Result<Vec<Vec<WitnessBinding>>, String> {
         validate_single_flavor_paths(&logic)?;
         canonicalize_abstraction_markers(&mut logic)?;
-        // Surfaced (as an Err) when witness enumeration is CUT at the depth/cycle
-        // horizon: find/count/aggregate must refuse a definitive (under)count rather
-        // than silently report a wrong quantity. See `find_witnesses` /
-        // `find_horizon_hit` — this is the find-path analog of the entailment path's
+        // Surfaced (as an Err) when any final witness leaf is non-definitive:
+        // find/count/aggregate must refuse a partial set rather than silently report a
+        // wrong quantity. See `find_witnesses` / `find_enumeration_incomplete` — resource exhaustion
+        // remains the find-path analog of the entailment path's
         // `ResourceExceeded(Depth)` verdict.
         //
         // WHAT THIS MEANS SINCE STRATUM-ORDERED MATERIALISATION. A saturated relation
-        // returns only definitive verdicts, so `witness_search_cut` never fires for a
+        // returns only definitive verdicts, so the incompleteness latch never fires for a
         // leaf inside the materialised fragment and this refusal never triggers there —
         // no code change was needed for that, it falls out. What remains is the genuine
-        // residue: compute predicates (an infinite numeric domain, not a finite set to
-        // saturate) and any relation the eligibility analysis refused. So the refusal
-        // stopped meaning "your search was too deep" and now means "this query reached
-        // the fragment the engine cannot complete" — and the advice changed with it,
-        // because raising the depth limit does nothing for an unsaturable relation.
-        // `KnowledgeBase::materialization_report` names which relations those are.
+        // residue: every final candidate that remains `Unknown(_)` or
+        // `ResourceExceeded(_)`, including compute predicates (an infinite numeric
+        // domain, not a finite set to saturate) and relations the eligibility analysis
+        // refused. The refusal therefore means "this query did not decide the complete
+        // witness set"; `KnowledgeBase::materialization_report` can explain an
+        // unsaturated relation, while non-finite compute and exhausted budgets must be
+        // addressed at their source.
         const INCOMPLETE_MSG: &str = "witness enumeration incomplete: a witness leaf could not be decided \
-             (a compute predicate, or a relation outside the materialised fragment), so \
-             find/count/aggregate would undercount — run `:materialize` (or call \
-             `materialization_report`) to see which relations were not saturated and why; \
-             raising the depth limit helps only for a relation the engine falls back to \
-             backward chaining on";
+             (`UNKNOWN` or `RESOURCE_EXCEEDED`), so find/count/aggregate would undercount — \
+             `materialization_report` can explain unsaturated relations; non-finite compute \
+             or exhausted budgets must be addressed at their source";
         self.ensure_materialized(&logic, true);
         let mut inner = self.inner.borrow_mut();
         clear_and_enable_pred_cache(&inner);
         inner.ensure_domain_members_cached();
-        inner.find_horizon_hit = false;
+        inner.find_enumeration_incomplete = false;
         // Enumeration runs its body once per candidate, so external compute is not
         // dispatched from here at all — see `KnowledgeBaseInner::find_enumeration`.
         // Anything locally decidable still decides; anything that would call out
-        // refuses, and the refusal is a cut, so the caller reports an incomplete
+        // refuses, and the non-definitive leaf makes the caller report an incomplete
         // enumeration instead of an undercount.
         inner.find_enumeration = true;
         let mut result_sets: Option<Vec<Vec<(String, GroundTerm)>>> = None;
@@ -766,7 +796,15 @@ impl KnowledgeBase {
                 None => result_sets = Some(witnesses),
                 Some(prev) => {
                     if witnesses.is_empty() {
-                        if inner.find_horizon_hit {
+                        if inner.find_enumeration_incomplete {
+                            if Self::multi_root_conjunction_is_definitively_false(
+                                &logic,
+                                &mut inner,
+                                &mut compute_memo,
+                            )? {
+                                inner.find_enumeration_incomplete = false;
+                                return Ok(vec![]);
+                            }
                             return Err(INCOMPLETE_MSG.to_string());
                         }
                         return Ok(vec![]);
@@ -784,7 +822,15 @@ impl KnowledgeBase {
                         }
                     }
                     if joined.is_empty() {
-                        if inner.find_horizon_hit {
+                        if inner.find_enumeration_incomplete {
+                            if Self::multi_root_conjunction_is_definitively_false(
+                                &logic,
+                                &mut inner,
+                                &mut compute_memo,
+                            )? {
+                                inner.find_enumeration_incomplete = false;
+                                return Ok(vec![]);
+                            }
                             return Err(INCOMPLETE_MSG.to_string());
                         }
                         return Ok(vec![]);
@@ -793,9 +839,17 @@ impl KnowledgeBase {
                 }
             }
         }
-        // Enumeration finished — but if any witness leaf was cut at the depth/cycle
-        // horizon, the result is an under-count, not a definitive one. Refuse it.
-        if inner.find_horizon_hit {
+        // Enumeration finished — but if any witness leaf was non-definitive, the result
+        // is an under-count, not a complete collection. Refuse it.
+        if inner.find_enumeration_incomplete {
+            if Self::multi_root_conjunction_is_definitively_false(
+                &logic,
+                &mut inner,
+                &mut compute_memo,
+            )? {
+                inner.find_enumeration_incomplete = false;
+                return Ok(vec![]);
+            }
             return Err(INCOMPLETE_MSG.to_string());
         }
         let mut binding_sets = result_sets.unwrap_or_default();
@@ -1483,17 +1537,22 @@ impl KnowledgeBase {
     }
 
     /// Find all satisfying witness binding sets for existential variables in the formula.
+    /// Returns `NibliError::Reasoning` with `witness enumeration incomplete` when any
+    /// evaluated candidate leaf is `Unknown(_)` or `ResourceExceeded(_)`.
     pub fn query_find(&self, logic: LogicBuffer) -> Result<Vec<Vec<WitnessBinding>>, NibliError> {
         self.query_find_inner(logic).map_err(NibliError::Reasoning)
     }
 
     /// Count the number of distinct witness binding sets satisfying the formula.
+    /// Inherits [`Self::query_find`]'s complete-or-error collection contract.
     pub fn count_witnesses(&self, logic: LogicBuffer) -> Result<usize, NibliError> {
         self.query_find(logic).map(|bindings| bindings.len())
     }
 
     /// Aggregate numeric values of a named variable across all witness binding sets.
     /// Returns `None` if no numeric witnesses found for the variable.
+    /// Inherits [`Self::query_find`]'s incomplete-enumeration error; this does not
+    /// change the separate numeric-projection behavior for nonnumeric/missing bindings.
     pub fn aggregate(
         &self,
         logic: LogicBuffer,
