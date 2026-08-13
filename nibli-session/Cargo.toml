@@ -9,6 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+nibli-lexicon = { workspace = true }
 nibli-kr = { workspace = true }
 nibli-semantics = { workspace = true }
 nibli-reason = { workspace = true }

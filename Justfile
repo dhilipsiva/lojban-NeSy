@@ -299,33 +299,38 @@ smoke-host-compute-query-only: build-wasm build-host
         rm -rf "$dir"; \
         echo 'PASS: reference compute names are query-only at assertion ingress, atomically, across WIT + persistence'
 
-# Registration-order closure across the WIT boundary (decided 2026-08-09):
-# `:compute <name>` over a relation with LIVE stored statements is refused
-# naming the blocking fact ids — a registration can no longer silently strand
-# an already-stored fact. After retraction the same registration succeeds, and
-# the query routes to dispatch (never the retracted store). Bare `:compute`
-# reports the registry through the new WIT getter. The tail pins the `:reset`
-# journal retention: `reset-kb` clears facts but NOT the guest registry, so
-# the journal keeps its RegisterCompute entries — after `:reset` plus a fuel
-# trap, the rebuilt session must still refuse a `person` assertion as
-# query-only (reverting retain() to clear() makes that assert succeed and this
-# smoke FAIL). NOT in `ci` (needs the WASM build).
+# Compute text-contract + registration-order closure across the WIT boundary
+# (decided 2026-08-09, corpus boundary reconciled 2026-08-13). An unknown
+# `:compute` name is refused because registration declares neither vocabulary nor
+# arity, and the same unknown KR query remains a compile error. A corpus
+# over-arity query also fails before dispatch. Separately, `:compute <name>` over
+# a corpus relation with LIVE stored statements is refused naming the blocking
+# ids; after retraction registration succeeds and the valid query dispatches.
+# Bare `:compute` reports the canonical registry. The tail pins `:reset` journal
+# retention: `reset-kb` clears facts but NOT the guest registry, so after a fuel
+# trap the rebuilt session must still refuse a `person` assertion as query-only.
+# NOT in `ci` (needs the WASM build).
 smoke-host-compute-registration-order: build-wasm build-host
-    @echo "Smoke-testing gasnu fallible :compute (live statements block registration)..."
-    @out=$(printf 'person(Adam).\n:compute person\n:facts\n:retract 0\n:compute person\n:compute\n? person(Adam).\n:reset\n:fuel 1000\n? dog(Adam).\n:fuel 10000000000\nperson(Bel).\n' \
+    @echo "Smoke-testing gasnu corpus-scoped, fallible :compute..."
+    @out=$(printf ':compute external_probe\n? external_probe(Sample).\nperson(Adam).\n:compute person\n:facts\n:retract 0\n:compute person\n:compute\n? person(Adam).\n? person(Adam, Bel).\n:reset\n:fuel 1000\n? dog(Adam).\n:fuel 10000000000\nperson(Bel).\n' \
         | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm ./target/{{profile}}/nibli-host 2>&1); \
         echo "$out"; \
+        echo "$out" | grep -qF 'not a corpus-resolvable nibli KR predicate' || { echo 'FAIL: an unknown compute registration was not refused at the WIT boundary'; exit 1; }; \
+        echo "$out" | grep -qF 'unknown predicate "external_probe": not a corpus name' || { echo 'FAIL: registration changed the fail-closed unknown-text query contract'; exit 1; }; \
         echo "$out" | grep -qF 'cannot register' || { echo 'FAIL: registration over a live fact was not refused'; exit 1; }; \
         echo "$out" | grep -qF '(#0)' || { echo 'FAIL: the refusal did not name the blocking fact id'; exit 1; }; \
         echo "$out" | grep -qF '[Facts] 1 active fact(s):' || { echo 'FAIL: the refused registration disturbed the KB'; exit 1; }; \
-        [ "$(echo "$out" | grep -cF "[Compute] Registered 'person'")" -eq 1 ] || { echo 'FAIL: expected exactly ONE successful registration (the refused one must not print success)'; exit 1; }; \
+        [ "$(echo "$out" | grep -cF "[Compute] Registered corpus predicate 'person'")" -eq 1 ] || { echo 'FAIL: expected exactly ONE successful corpus registration'; exit 1; }; \
         echo "$out" | grep -qF '[Compute] Registered: ' || { echo 'FAIL: bare :compute did not report the registry'; exit 1; }; \
         echo "$out" | grep -F '[Compute] Registered: ' | grep -qF 'person' || { echo 'FAIL: the registry report must include the newly registered name'; exit 1; }; \
+        if echo "$out" | grep -F '[Compute] Registered: ' | grep -qF 'external_probe'; then echo 'FAIL: refused unknown name leaked into the registry'; exit 1; fi; \
         echo "$out" | grep -qF '[Query] UNKNOWN (backend-unavailable)' || { echo 'FAIL: the post-retraction registration did not take — the query must route to dispatch'; exit 1; }; \
+        [ "$(echo "$out" | grep -cF '[Query] UNKNOWN (backend-unavailable)')" -eq 1 ] || { echo 'FAIL: unknown/over-arity text reached dispatch instead of failing compilation'; exit 1; }; \
+        echo "$out" | grep -qF 'too many arguments for "person" (arity 1)' || { echo 'FAIL: registered corpus over-arity did not fail before dispatch'; exit 1; }; \
         if echo "$out" | grep -qF '[Query] TRUE'; then echo 'FAIL: a retracted fact answered a registered compute query'; exit 1; fi; \
         echo "$out" | grep -qF 'rebuilding and replaying' || { echo 'FAIL: the fuel trap did not trigger a session rebuild'; exit 1; }; \
         echo "$out" | grep -qF 'compute formulas are query-only' || { echo 'FAIL: registration lost across :reset + trap rebuild — the journal must retain RegisterCompute entries'; exit 1; }; \
-        echo 'PASS: registration refused over live references (ids named), succeeds after retraction, routes queries to dispatch, and survives :reset + trap rebuild'
+        echo 'PASS: text registration is corpus-scoped and arity-safe; live references block it; accepted routing survives :reset + trap rebuild'
 
 # Quiet-mode smoke: NIBLI_QUIET=1 suppresses the per-assertion bookkeeping the book
 # strips — `[Fact #N]` on the host, `[Skolem]`/`[Rule]` in the guest (the latter reached

@@ -141,7 +141,7 @@ pub fn validate(candidate: &str) -> Result<LogicBuffer, GateError> {
     if nibli_reason::contains_asserted_compute_node(&buf) {
         return Err(GateError::Semantic(
             "executable compute formulas (the built-in product, sum, and quotient — and any \
-             relation registered for compute) are query-only and cannot be emitted as \
+             corpus relation registered for compute routing) are query-only and cannot be emitted as \
              knowledge-base assertions or rule atoms. Preserve the source claim, but do not \
              fabricate an ordinary stored fact around a computed result."
                 .to_string(),

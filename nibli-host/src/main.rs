@@ -14,7 +14,7 @@
 //!   registered compute relations remain query-only)
 //! - **`:retract`** — Retract a fact by ID (triggers KB rebuild)
 //! - **`:facts`** — List all active facts in the KB
-//! - **`:compute`** — Register predicates for compute dispatch
+//! - **`:compute`** — Route corpus predicates to compute dispatch
 //! - **`:backend`** — Show/change external compute backend address
 //! - **`:reset`** — Clear the knowledge base
 //! - **`:fuel`** / **`:memory`** — Show/set WASM execution limits
@@ -1138,7 +1138,7 @@ impl Repl {
                         // KB), so the journal must keep the RegisterCompute
                         // entries or a post-reset trap rebuild replays them away —
                         // silently re-opening the registration-order hole for
-                        // arbitrary registered names.
+                        // registered corpus relations.
                         self.journal
                             .retain(|e| matches!(e, JournalEntry::RegisterCompute(_)));
                         println!("[Reset] Knowledge base cleared.");
@@ -1188,7 +1188,12 @@ impl Repl {
                         println!("[Compute] Registered: {}", names.join(", "));
                         println!(
                             "[Compute] product, sum, quotient are built-in (local arithmetic \
-                             first); other names dispatch to the external backend"
+                             first); other registered corpus relations dispatch to the \
+                             external backend"
+                        );
+                        println!(
+                            "[Compute] Registration routes existing KR vocabulary; it does not \
+                             declare names or infer arity."
                         );
                     }
                     Err(e) => {
@@ -1249,8 +1254,8 @@ impl Repl {
                 println!("  :load <filepath>    Load a .nibli file (assert each line)");
                 println!("  :dump <filepath>    Export KB source lines to a file");
                 println!(
-                    "  :compute [name]     Show registered compute predicates, or register \
-                     one for dispatch"
+                    "  :compute [name]     Show compute relations, or route a corpus predicate \
+                     to dispatch"
                 );
                 println!("  :assert <rel> <args..> Assert a ground fact directly");
                 println!("  :retract <id>       Retract a fact by ID (rebuilds KB)");
@@ -1488,7 +1493,11 @@ impl Repl {
                     // trap recovery.
                     self.journal
                         .push(JournalEntry::RegisterCompute(name.to_string()));
-                    println!("[Compute] Registered '{}' for external dispatch", name)
+                    println!(
+                        "[Compute] Registered corpus predicate '{}' for external dispatch \
+                         (bare :compute shows its canonical compiled relation)",
+                        name
+                    )
                 }
                 Ok(Err(e)) => println!("{}", format_nibli_error(&e)),
                 Err(e) => {

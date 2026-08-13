@@ -277,10 +277,11 @@ pub fn asserted_external_compute_name(buffer: &LogicBuffer) -> Option<&'static s
 /// committed place of these two relations is numeric (result/base/power;
 /// result/number/base), so there is no relational reading to protect — and a
 /// registered query forwards even symbolic operands to the backend, so no
-/// operand shape keeps the store consulted. The registry's OPEN half (any
-/// other name may still be registered) is closed by the registration-time
-/// guard instead: `CoreSession::register_compute_predicate` refuses while
-/// live stored statements reference the name.
+/// operand shape keeps the store consulted. For every other committed-corpus
+/// relation, the registration-time guard closes the same divergence:
+/// `CoreSession::register_compute_predicate` refuses while live stored
+/// statements reference its canonical compiled name. Registration is not a
+/// text vocabulary or arity declaration.
 ///
 /// **Re-open trigger** (GUARANTEES §Disclosed Sharp Edges): a corpus or import
 /// source that needs either name as ordinary relational vocabulary, or a

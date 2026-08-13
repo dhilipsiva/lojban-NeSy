@@ -90,8 +90,13 @@ fn main() {
                         println!("[Compute] Registered: {}", names.join(", "));
                         println!(
                             "[Compute] product, sum, quotient are built-in (local arithmetic); \
-                             other names need external dispatch, which this debug REPL does \
-                             not wire — their queries answer UNKNOWN (backend-unavailable)"
+                             other registered corpus relations need external dispatch, which \
+                             this debug REPL does not wire — their queries answer UNKNOWN \
+                             (backend-unavailable)"
+                        );
+                        println!(
+                            "[Compute] Registration routes existing KR vocabulary; it does not \
+                             declare names or infer arity."
                         );
                         continue;
                     }
@@ -158,8 +163,8 @@ fn main() {
                         println!("  :debug <text>       Show compiled logic tree");
                         println!("  :load <filepath>    Load a .nibli file (assert each line)");
                         println!(
-                            "  :compute [name]     Show registered compute predicates, or \
-                             register one for dispatch"
+                            "  :compute [name]     Show compute relations, or route a corpus \
+                             predicate to dispatch"
                         );
                         println!("  :assert <rel> <args..> Assert a ground fact directly");
                         println!("  :retract <id>       Retract a fact by ID (rebuilds KB)");
@@ -223,7 +228,11 @@ fn main() {
                     }
                     match engine.register_compute_predicate(name.to_string()) {
                         Ok(()) => {
-                            println!("[Compute] Registered '{}' for compute dispatch", name)
+                            println!(
+                                "[Compute] Registered corpus predicate '{}' for compute dispatch \
+                                 (bare :compute shows its canonical compiled relation)",
+                                name
+                            )
                         }
                         Err(e) => println!("{}", e),
                     }

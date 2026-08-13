@@ -5,10 +5,13 @@
 //! - `nibli-engine` — the native embedder holds one in a `thread_local!` (per
 //!   `spawn_blocking` worker on `nibli-server`).
 //!
-//! It dispatches external compute predicates (`tenfa`, `dugri`, custom) to the
-//! Python reference backend (`python/nibli_backend.py`). Built-in arithmetic
-//! (`pilji`/`sumji`/`dilcu`) is resolved upstream (in nibli-reason for the engine, in
-//! nibli-host's host impl) and never reaches this client.
+//! It dispatches external compute predicates (`exponential`, `logarithm`, or an
+//! arbitrary relation supplied explicitly by a native raw `ComputeNode`) to a
+//! backend such as `python/nibli_backend.py`. Text-level registration is
+//! corpus-scoped and does not declare vocabulary. Built-in arithmetic
+//! (`product`/`sum`/`quotient`) is resolved upstream (in nibli-reason for the
+//! engine, in nibli-host's host impl) and never reaches this client when its
+//! operands are locally evaluable.
 //!
 //! The client is term-type-AGNOSTIC: callers pre-convert their own logical-term
 //! representation (WIT `compute-backend.logical-term` for nibli-host,

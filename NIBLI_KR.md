@@ -250,6 +250,12 @@ rain().                                # observative — all places Unspecified
   `product(50, 5, 10).` (`pilji`; tolerant isclose, trusted-backend policy unchanged).
   Compute formulas are query-only: asserting one directly or placing one in a rule
   guard/head is rejected until the rule IR can execute compute compositionally.
+  Session compute registration only routes an existing committed-corpus relation
+  after this fail-closed text compilation; it does not declare vocabulary or infer
+  arity. An unknown registered name is refused and remains a compile error. Native
+  BYO-IR callers may query an explicit arbitrary `ComputeNode`; the user-authored
+  text schema that would make arbitrary KR names legal is the unimplemented §14.1
+  extension.
   The comparisons `greater`/`less`/`num_equal` are query-only on the same terms
   WHENEVER an operand could be a number, and that one is **decided, not pending**: a
   numeric threshold cannot be a rule guard, and the alternative was evaluated and
@@ -708,10 +714,12 @@ These *look* Lojban-flavored but are load-bearing engine semantics, and v2 keeps
   markers** (`__abs_` versioned lossless identity); **tense + deontic wrappers**; the **`via` modal
   conjunct shape**; fail-closed validation everywhere.
 - **Compute predicates** stay, under canonical names `product`/`sum`/`quotient`
-  (the English rename LANDED at the predicate-name flip; the remaining engine item
-  is making the compute set configurable — today it is the hard-coded
-  `default_compute_predicates`). Tolerant-isclose and the trusted-backend
-  policy are unchanged and stay disclosed.
+  (the English rename LANDED at the predicate-name flip). The per-session compute
+  set is configurable for committed-corpus relations through
+  `register_compute_predicate`; registration is routing metadata, not the §14.1
+  schema, so arbitrary text names remain unavailable. Native raw `ComputeNode`
+  queries remain the schema-free programmatic path. Tolerant-isclose and the
+  trusted-backend policy are unchanged and stay disclosed.
 
 ### 14.4 Engine + gate checklist
 

@@ -69,6 +69,12 @@ The engine calls this for predicates registered for compute dispatch; the host
 answers built-in arithmetic locally and forwards the rest over TCP
 ([WASM, host & compute](wasm-host-compute.md)).
 
+The import transports relation calls; it does not declare guest KR vocabulary
+or arity. The exported session resolves text through the committed corpus before
+compute marking, and this WIT version has neither a raw-buffer query nor a
+vocabulary/schema method. A custom host implementation therefore cannot make an
+arbitrary relation name usable through `query-text` merely by accepting it.
+
 Results are query-local. Neither `evaluate` nor `evaluate-batch` creates a KB
 fact, fact id, registry row, or replay entry, and a later backend error is
 `UNKNOWN (backend-unavailable)` even if the same request succeeded earlier.
@@ -87,15 +93,15 @@ its policy metadata is outside the current proof schema.
 |--------|----------|
 | `constructor()` | Fresh KB |
 | `assert-text(input)` | → `list<(fact-id, logic-buffer)>` — multi-statement input splits into one independent fact per root (a connective stays one compound fact); each pair carries the compiled buffer so a persisting host can replay without recompiling. `CountNode` and executable `ComputeNode` formulas in asserted position fail as query-only before an id is allocated; opaque quoted content remains inert |
-| `query-text(input)` | → `query-result` |
-| `query-text-with-proof(input)` | → `(query-result, proof-trace)` |
-| `query-find-text(input)` | → complete witness binding sets; any non-definitive candidate leaf returns `nibli-error` instead of partial rows |
-| `compile-debug(input)` | Compile without asserting or checking assertion admission; the host renders the buffer |
+| `query-text(input)` | → `query-result`; names and arities must resolve through the committed corpus before compute routing is applied |
+| `query-text-with-proof(input)` | → `(query-result, proof-trace)` under the same fail-closed text contract |
+| `query-find-text(input)` | → complete witness binding sets under the same fail-closed text contract; any non-definitive candidate leaf returns `nibli-error` instead of partial rows |
+| `compile-debug(input)` | Compile-only: enforces corpus vocabulary/arity, but does not assert or check assertion admission; the host renders the buffer |
 | `assert-fact(relation, args)` / `assert-fact-with-id(…)` | Ground fact, bypassing text parsing; the `-with-id` form takes a caller-chosen id for restart replay. A relation already registered for compute is rejected as query-only rather than stored as a shadow fact; the reference external names are rejected even when unregistered |
 | `assert-buffer-with-id(buffer, label, id)` | **The** recompile-free replay primitive (the legacy `assert-text-with-id` was removed at 0.5.0 with store schema v3). Legacy count or executable-compute assertion rows fail closed rather than regenerating witnesses or premises; the buffer is re-marked against the live compute registry, so an out-of-order replay of a registered name fails closed too |
 | `retract-fact(id)` / `list-facts()` / `reset-kb()` | KB management |
-| `register-compute-predicate(name)` | Marks a relation for compute dispatch; `result` — refused while live stored facts or rules reference the name (blocking ids in the message; retract first). The reference external names are query-only at assertion ingress regardless |
-| `compute-predicates()` | Sorted registry snapshot, built-ins included — the bare `:compute` report's source |
+| `register-compute-predicate(name)` | Post-compile routing for an existing corpus spelling or canonical relation; aliases/committed compounds normalize to the canonical IR name. It declares no vocabulary or arity, so an unknown name is refused. Also refused while live stored facts or rules reference the canonical relation (blocking ids in the message; retract first). The reference external names are query-only at assertion ingress regardless |
+| `compute-predicates()` | Sorted canonical compiled-relation registry snapshot, built-ins included — the bare `:compute` report's source |
 | `set-strict(bool)` | Off = permissive warn-and-insert; on = arity/integrity violations reject atomically |
 | `set-existential-import(bool)` / `existential-import-enabled()` | Default OFF = clean-core classical ∃. Explicit ON enables legacy xorlo witnesses, which participate in ∃/∀/find/count/aggregate. The setter returns `result` because it transactionally rebuilds the active KB; the getter reports the effective profile |
 | `set-materialization(bool)` / `materialization-report()` | Query-cone materialisation toggle + its cumulative-since-mutation report — added in 0.7.0 because the optimisation is invisible when it fails: without the report, a KB whose `~p(x)` stays slow has no way to learn which requested relation fell out of the materialisable fragment, or why. Purely positive entailment stays lazy unless exact reasoning remains non-definitive; find/count request complete positive cones. A definitive TRUE/FALSE can never flip (the `materialize_diff` gate enforces it); a non-definitive OFF verdict may become definitive under ON — the deliberate completeness gain |
@@ -150,3 +156,8 @@ types.
 | 0.4.0 | `set-existential-import` |
 | 0.3.0 | Named-field `proof-rule` payload records |
 | 0.2.0 | `set-language` (no longer present in the current WIT — the Lojban front-end retired at THE DROP) |
+
+The 2026-08-13 text-contract reconciliation narrowed registration to existing
+corpus relations without changing these WIT method shapes or the 0.11.0 package
+ABI. The table records when each ABI member was introduced, not every later
+semantic clarification.

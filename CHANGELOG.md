@@ -15,6 +15,24 @@ here first.
 
 ### Changed
 
+- **Text compute registration is now explicitly corpus-scoped (decided
+  2026-08-13; no Rust signature or WIT ABI change).**
+  `register_compute_predicate("name")` / `register-compute-predicate(name)` is
+  post-compile routing metadata, not a vocabulary or arity declaration: it now
+  refuses an unknown name immediately, while unknown KR text continues to fail
+  closed at compilation. Resolvable surface aliases and committed compounds are
+  normalized to the canonical relation emitted in logic IR, so the registry,
+  live-reference scan, and backend agree on one name; known text over-arity
+  still fails before dispatch. Arbitrary compute names remain supported only as
+  caller-built raw `ComputeNode` buffers through the native `KnowledgeBase`
+  query API (or after a future explicit schema extension). The shipping
+  component exports no raw-buffer query, so supplying a custom WIT backend does
+  not add component text vocabulary. Native tests pin the fail-closed text
+  contract, raw-IR query-only lifecycle, all six single flavors, deterministic
+  compilation, assertion/rule refusal, and existing corpus dispatch; the host
+  smoke pins unknown registration/query rejection and corpus over-arity across
+  the WIT boundary.
+
 - **WIT 0.11.0: registration order can no longer strand a stored compute fact
   (decided 2026-08-09).** An external compute relation asserted BEFORE
   registration stored an ordinary fact no later compute query would ever
@@ -29,9 +47,9 @@ here first.
   and a legacy persisted row carrying a reference name now fails replay
   non-destructively (the count-row precedent). And `register-compute-predicate`
   is now fallible — refused while live stored facts or rules (NAF bodies
-  included) reference the name, the blocking fact ids in the message — closing
-  the OPEN registry (`:compute foo` over a live `foo` fact is refused instead
-  of silently orphaning it). Role spellings collapse on BOTH sides of the
+  included) reference the corpus relation, the blocking fact ids in the message
+  — closing the registration-order hole (`:compute person` over a live `person`
+  fact is refused instead of silently orphaning it). Role spellings collapse on BOTH sides of the
   reference scan and role-shaped names are refused outright (`:compute eats_x1`
   would have found no blockers while marking exactly the role conjuncts every
   stored `eats` fact carries); the engine-special relations (identity, the

@@ -61,8 +61,10 @@ pub fn default_compute_predicates() -> HashSet<String> {
         .collect()
 }
 
-/// Transform registered compute predicates from Predicate → ComputeNode in a logic buffer.
-/// Call this after nibli-semantics compilation and before asserting/querying.
+/// Transform exact registered relation names from `Predicate` → `ComputeNode`
+/// in an already-compiled logic buffer. Call this after nibli-semantics
+/// compilation and before asserting/querying. This pointwise rewrite neither
+/// declares text vocabulary nor supplies/guesses an arity.
 pub fn transform_compute_nodes(buf: &mut LogicBuffer, compute_preds: &HashSet<String>) {
     let nodes = std::mem::take(&mut buf.nodes);
     buf.nodes = nodes
@@ -1530,7 +1532,12 @@ impl KnowledgeBase {
         Ok(())
     }
 
-    /// Check whether a formula is entailed by the knowledge base (four-valued result).
+    /// Check whether a caller-supplied formula is entailed by the knowledge
+    /// base (four-valued result). This is the native BYO-IR query boundary: an
+    /// explicit [`LogicNode::ComputeNode`] may carry an arbitrary relation name
+    /// and argument vector directly to the configured dispatcher. No text
+    /// registration or arity inference occurs on this path; compute IR remains
+    /// query-only at assertion ingress.
     pub fn query_entailment(&self, logic: LogicBuffer) -> Result<QueryResult, NibliError> {
         self.query_entailment_inner(logic)
             .map_err(NibliError::Reasoning)

@@ -5652,6 +5652,208 @@ fn stub_tenfa_batch(reqs: &[EngineComputeRequest]) -> Vec<Result<bool, String>> 
         .collect()
 }
 
+// Neutral compute-contract stub. `eats` exercises the text path because it is
+// a committed corpus relation; `external_probe` exercises the native BYO-IR path
+// because it deliberately is not text vocabulary.
+fn stub_text_raw_contract_eval(rel: &str, args: &[EngineLogicalTerm]) -> Result<bool, String> {
+    Ok(matches!(
+        (rel, args.len()),
+        ("eats", 2) | ("external_probe", 1)
+    ))
+}
+
+fn stub_text_raw_contract_batch(reqs: &[EngineComputeRequest]) -> Vec<Result<bool, String>> {
+    reqs.iter()
+        .map(|request| stub_text_raw_contract_eval(&request.relation, &request.args))
+        .collect()
+}
+
+fn root_flavor(buffer: &EngineLogicBuffer) -> &'static str {
+    match &buffer.nodes[buffer.roots[0] as usize] {
+        EngineLogicNode::PastNode(_) => "past",
+        EngineLogicNode::PresentNode(_) => "now",
+        EngineLogicNode::FutureNode(_) => "future",
+        EngineLogicNode::ObligatoryNode(_) => "must",
+        EngineLogicNode::PermittedNode(_) => "may",
+        _ => "bare",
+    }
+}
+
+#[test]
+fn text_compute_registration_is_corpus_scoped_arity_checked_and_flavor_preserving() {
+    let mut engine = fresh_engine();
+
+    let registration_error = engine
+        .register_compute_predicate("external_probe".to_string())
+        .expect_err("registration must not declare unknown text vocabulary");
+    assert!(
+        matches!(registration_error, EngineError::Reasoning(_)),
+        "registration policy belongs to the session/reasoning boundary: {registration_error}"
+    );
+    let registration_message = registration_error.to_string();
+    assert!(
+        registration_message.contains("not a corpus-resolvable")
+            && registration_message.contains("does not declare")
+            && registration_message.contains("infer arity"),
+        "{registration_message}"
+    );
+    assert!(
+        !engine
+            .compute_predicates()
+            .iter()
+            .any(|name| name == "external_probe")
+    );
+
+    let query_error = engine
+        .query_holds("external_probe(Sample).")
+        .expect_err("unregistered unknown text must fail closed");
+    assert!(
+        matches!(query_error, EngineError::Syntax(_)),
+        "{query_error}"
+    );
+    assert!(
+        query_error
+            .to_string()
+            .contains("unknown predicate \"external_probe\"")
+    );
+    let validate_error = engine
+        .validate("external_probe(Sample).")
+        .expect_err("compile-only validation still enforces vocabulary");
+    assert!(
+        validate_error.contains("unknown predicate \"external_probe\""),
+        "{validate_error}"
+    );
+
+    engine
+        .register_compute_predicate("eats".to_string())
+        .expect("an existing corpus relation may be routed to compute");
+    engine.set_compute_dispatch(stub_text_raw_contract_eval, stub_text_raw_contract_batch);
+
+    engine
+        .validate("eats(Agent, Meal).")
+        .expect("validate remains compile-only for a registered compute query");
+    for statement in [
+        "eats(Agent, Meal).",
+        "all $x: person($x) & eats($x, Meal) -> animal($x).",
+        "all $x: person($x) & ~eats($x, Meal) -> animal($x).",
+        "all $x: person($x) -> eats($x, Meal).",
+    ] {
+        let assertion_error = engine
+            .assert_text(statement)
+            .expect_err("registered compute must be refused in every assertion/rule position");
+        assert!(
+            assertion_error.to_string().contains("query-only"),
+            "{statement}: {assertion_error}"
+        );
+        assert!(
+            engine.list_facts().unwrap().is_empty(),
+            "a refused compute-bearing statement must not mutate the KB: {statement}"
+        );
+    }
+
+    let arity_error = engine
+        .query_holds("eats(Agent, Meal, Extra).")
+        .expect_err("registration must not override corpus arity");
+    assert!(
+        matches!(arity_error, EngineError::Syntax(_)),
+        "{arity_error}"
+    );
+    assert!(
+        arity_error
+            .to_string()
+            .contains("too many arguments for \"eats\" (arity 2)"),
+        "{arity_error}"
+    );
+
+    for (prefix, expected_flavor) in [
+        ("", "bare"),
+        ("past ", "past"),
+        ("now ", "now"),
+        ("future ", "future"),
+        ("must ", "must"),
+        ("may ", "may"),
+    ] {
+        let text = format!("{prefix}eats(Agent, Meal).");
+        let first = engine.compile_debug(&text).unwrap();
+        let second = engine.compile_debug(&text).unwrap();
+        assert_eq!(
+            first, second,
+            "registered compilation must be deterministic: {text}"
+        );
+        assert_eq!(root_flavor(&first), expected_flavor, "{text}: {first:#?}");
+        assert!(
+            first.nodes.iter().any(
+                |node| matches!(node, EngineLogicNode::ComputeNode((name, _)) if name == "eats")
+            ),
+            "registration must mark the compiled relation without stripping its wrapper: {first:#?}"
+        );
+        assert_true(
+            &engine.query_holds(&text).unwrap(),
+            "every supported single flavor must reach the same registered compute check",
+        );
+    }
+
+    let mut first_order = fresh_engine();
+    first_order
+        .register_compute_predicate("eats".to_string())
+        .unwrap();
+    first_order
+        .register_compute_predicate("person".to_string())
+        .unwrap();
+    let mut opposite_order = fresh_engine();
+    opposite_order
+        .register_compute_predicate("person".to_string())
+        .unwrap();
+    opposite_order
+        .register_compute_predicate("eats".to_string())
+        .unwrap();
+    assert_eq!(
+        first_order.compute_predicates(),
+        opposite_order.compute_predicates(),
+        "the public registry report is deterministic across insertion order"
+    );
+    assert_eq!(
+        first_order
+            .compile_debug("future eats(Agent, Meal).")
+            .unwrap(),
+        opposite_order
+            .compile_debug("future eats(Agent, Meal).")
+            .unwrap(),
+        "HashSet insertion order must not affect compiled IR"
+    );
+}
+
+#[test]
+fn arbitrary_compute_names_are_native_raw_ir_only_and_remain_query_only() {
+    let engine = fresh_engine();
+    engine.set_compute_dispatch(stub_text_raw_contract_eval, stub_text_raw_contract_batch);
+    let raw = EngineLogicBuffer {
+        nodes: vec![EngineLogicNode::ComputeNode((
+            "external_probe".to_string(),
+            vec![EngineLogicalTerm::Constant("Sample".to_string())],
+        ))],
+        roots: vec![0],
+    };
+
+    assert_true(
+        &engine.kb().query_entailment(raw.clone()).unwrap(),
+        "an explicit raw ComputeNode supplies its own name and arity and dispatches natively",
+    );
+
+    let validation_error = engine
+        .kb()
+        .validate_assertion(&raw)
+        .expect_err("raw compute IR is still query-only at assertion preflight");
+    assert!(validation_error.to_string().contains("query-only"));
+    let assertion_error = engine
+        .kb()
+        .assert_fact(raw, "raw compute assertion".to_string())
+        .expect_err("raw compute IR must not persist as a fact");
+    assert!(assertion_error.to_string().contains("query-only"));
+    assert!(engine.list_facts().unwrap().is_empty());
+    assert_eq!(engine.kb().next_fact_id().unwrap(), 0);
+}
+
 #[test]
 fn per_instance_compute_dispatch_is_isolated() {
     // engine_a registers a per-instance dispatch → external `tenfa` resolves TRUE.

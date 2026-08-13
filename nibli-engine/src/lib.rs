@@ -130,8 +130,9 @@ impl NibliEngine {
     }
 
     /// Register this engine's external compute dispatch (per-instance). Without
-    /// it, external predicates (e.g. `tenfa`/`dugri`) return an error; built-in
-    /// arithmetic (pilji/sumji/dilcu) works regardless. Replaces the old
+    /// it, a registered external predicate such as `exponential` yields
+    /// `UNKNOWN (backend-unavailable)`; built-in arithmetic
+    /// (`product`/`sum`/`quotient`) works regardless. Replaces the old
     /// thread-local registration that the multithreaded server could not use.
     /// This is the native embedder's admission-policy boundary: an `Ok(bool)` is
     /// trusted for the current proof-local check, while an error becomes
@@ -148,14 +149,17 @@ impl NibliEngine {
 
     /// Enable external compute dispatch to a Python-style JSON-Lines backend at
     /// `addr` (e.g. `"127.0.0.1:5555"`). Wires the native TCP client as this
-    /// engine's compute dispatch, so registered external predicates (e.g.
-    /// `tenfa`/`dugri`) are evaluated by the backend; valid numeric built-in
-    /// arithmetic (pilji/sumji/dilcu) is still resolved in-engine. Opt-in — engines that do
-    /// not call this leave external compute unregistered (`set_compute_dispatch`
-    /// isolation preserved). The address is stored per-thread; in the
+    /// engine's compute dispatch, so registered external predicates (for
+    /// example `exponential`/`logarithm`) are evaluated by the backend; valid
+    /// numeric built-in arithmetic (`product`/`sum`/`quotient`) is still
+    /// resolved in-engine. Opt-in — engines that do not call this leave the
+    /// dispatch hook unwired (`set_compute_dispatch` isolation preserved). The
+    /// address is stored per-thread; in the
     /// multithreaded server each `spawn_blocking` worker connects lazily and
-    /// reuses its connection. Register the external predicate names separately
-    /// via `register_compute_predicate`. Trust boundary: this stock client is
+    /// reuses its connection. Register a corpus-resolvable text predicate
+    /// separately via [`Self::register_compute_predicate`]. An arbitrary raw
+    /// [`EngineLogicNode::ComputeNode`] query reaches this same dispatcher
+    /// without text registration. Trust boundary: this stock client is
     /// deliberately plaintext and unauthenticated, with no identity, integrity,
     /// request binding, freshness/replay, revocation, version, or audit metadata.
     /// Use `set_compute_dispatch` (or a custom component host) when a deployment
@@ -243,24 +247,33 @@ impl NibliEngine {
     /// This is intentionally compile-only: CountNode and ComputeNode are valid
     /// query IR even though `assert_text` will reject them as query-only (and
     /// the reference external compute names are rejected there registered or
-    /// not). Use `assert_text` for text assertion admission; raw-buffer callers
-    /// can run `KnowledgeBase::validate_assertion` before `assert_fact`.
+    /// not). Compile-only does not mean vocabulary-free: unknown text names and
+    /// wrong corpus arities still fail. Use `assert_text` for text assertion
+    /// admission; raw-buffer callers can run
+    /// `KnowledgeBase::validate_assertion` before `assert_fact`.
     pub fn validate(&self, text: &str) -> Result<(), String> {
         self.compile_text(text)
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
 
-    /// Register a predicate name for external compute dispatch. Refused while
-    /// live stored statements reference the name — see
+    /// Route a committed-corpus predicate to external compute dispatch.
+    ///
+    /// This does not declare KR vocabulary or infer arity. Unknown names are
+    /// rejected here and remain text compile errors. Surface aliases and
+    /// committed compounds normalize to the canonical relation emitted in IR;
+    /// the registry/backend use that canonical name. Arbitrary names require a
+    /// caller-built raw [`EngineLogicNode::ComputeNode`] queried through
+    /// [`Self::kb`], or a future explicit vocabulary/schema extension. Refused
+    /// while live stored statements reference the canonical relation — see
     /// `CoreSession::register_compute_predicate`.
     pub fn register_compute_predicate(&mut self, name: String) -> Result<(), EngineError> {
         self.core.register_compute_predicate(name)
     }
 
-    /// The session's compute-predicate names, sorted (the built-in arithmetic
-    /// names are pre-registered and included). Backs the bare `:compute`
-    /// report.
+    /// The session's canonical compiled compute-relation names, sorted (the
+    /// built-in arithmetic names are pre-registered and included). Backs the
+    /// bare `:compute` report.
     pub fn compute_predicates(&self) -> Vec<String> {
         let mut names: Vec<String> = self.core.compute_predicates().iter().cloned().collect();
         names.sort();
@@ -407,7 +420,9 @@ impl NibliEngine {
         self.core.query_text_with_proof(text)
     }
 
-    /// Evaluate a KR query against the KB and return the typed query result.
+    /// Evaluate a corpus-resolvable KR query against the KB and return the typed
+    /// query result. Compute registration changes routing after compilation; it
+    /// does not make an unknown text predicate compile.
     pub fn query_holds(&self, text: &str) -> Result<EngineQueryResult, EngineError> {
         self.core.query_text(text)
     }
@@ -443,7 +458,9 @@ impl NibliEngine {
         self.core.aggregate_text(text, variable, op)
     }
 
-    /// Compile KR text to the typed FOL `LogicBuffer` without asserting.
+    /// Compile corpus-resolvable KR text to the typed FOL `LogicBuffer` without
+    /// asserting. This is compile-only, not an assertion-admission check; it
+    /// still enforces fail-closed vocabulary and corpus arity.
     ///
     /// Returns the IR directly — the caller renders it (e.g. via
     /// `nibli_render::render_logic_tree` / `render_logic_buffer`). No

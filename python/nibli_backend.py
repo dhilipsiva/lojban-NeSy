@@ -16,7 +16,10 @@ Usage:
   python3 python/nibli_backend.py --port 9000      # custom port
   python3 python/nibli_backend.py --host 0.0.0.0   # listen on all interfaces
 
-Extend by adding entries to the HANDLERS dict.
+Extend evaluation by adding entries to the HANDLERS dict. A new handler alone
+does not add nibli KR vocabulary: text calls need an existing corpus relation;
+arbitrary names are reachable only from native caller-built raw ComputeNode IR
+until an explicit vocabulary/schema extension exists.
 
 Security: this reference server has no authentication, encryption, request
 binding, or replay protection. Its loopback default is deliberate. Binding it

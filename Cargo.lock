@@ -3070,6 +3070,7 @@ name = "nibli-session"
 version = "0.1.0"
 dependencies = [
  "nibli-kr",
+ "nibli-lexicon",
  "nibli-reason",
  "nibli-semantics",
  "nibli-types",

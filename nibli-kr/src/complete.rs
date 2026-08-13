@@ -110,7 +110,7 @@ pub const REPL_COMMANDS: &[(&str, &str)] = &[
     (":facts", "list active facts"),
     (":retract", "retract a fact by id"),
     (":debug", "compile to logic without asserting"),
-    (":compute", "show or register compute predicates"),
+    (":compute", "show or route corpus predicates to compute"),
     (":assert", "assert a ground fact directly"),
     (":backend", "show/set compute backend address"),
     (":fuel", "show/set WASM fuel budget"),

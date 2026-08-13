@@ -363,9 +363,8 @@ interface logic-types {
 /// policy before returning, but the current proof schema does not carry that
 /// policy's metadata.
 ///
-/// Supports single evaluation, batch evaluation (amortises WASM boundary
-/// crossings and TCP round trips), and membership queries (for ∀/∃ over
-/// computed predicates).
+/// Supports single evaluation and batch evaluation (amortises WASM boundary
+/// crossings and TCP round trips).
 interface compute-backend {
     use logic-types.{logical-term};
     use error-types.{nibli-error};
@@ -424,7 +423,9 @@ interface engine {
         /// unregistered; this API does not install cardinality constraints or
         /// computed premises.
         assert-text: func(input: string) -> result<list<tuple<fact-id, logic-buffer>>, nibli-error>;
-        /// Query whether KR text is entailed.
+        /// Query whether corpus-resolvable KR text is entailed. Compute
+        /// registration changes routing after compilation; it does not make an
+        /// unknown text name compile or provide an arity.
         query-text: func(input: string) -> result<query-result, nibli-error>;
         /// Query KR text with proof trace.
         query-text-with-proof: func(input: string) -> result<tuple<query-result, proof-trace>, nibli-error>;
@@ -432,28 +433,37 @@ interface engine {
         /// variables. A successful list is complete; if any evaluated candidate
         /// leaf is non-definitive, returns nibli-error instead of partial rows.
         query-find-text: func(input: string) -> result<list<list<witness-binding>>, nibli-error>;
-        /// Debug: compile text to the typed logic buffer without asserting or
-        /// checking assertion admission.
+        /// Debug: compile corpus-resolvable text to the typed logic buffer
+        /// without asserting or checking assertion admission. Unknown names and
+        /// wrong corpus arities still fail at this compile-only boundary.
         /// The host renders it (structural tree + English gloss); no S-expression
         /// string crosses the boundary.
         compile-debug: func(input: string) -> result<logic-buffer, nibli-error>;
         /// Reset the session's KB to fresh state.
         reset-kb: func() -> result<_, nibli-error>;
-        /// Register a predicate name for external computation dispatch.
+        /// Route a committed-corpus predicate to external computation dispatch.
+        /// Registration is post-compile routing metadata: it does not declare
+        /// KR vocabulary or infer arity, and an unknown name is refused. Corpus
+        /// surface aliases and committed compounds normalize to the canonical
+        /// relation emitted in logic IR; the registry and backend see that name.
+        /// Arbitrary compute names require caller-built raw compute-node IR or a
+        /// future explicit vocabulary/schema extension. This component exports
+        /// no raw-buffer query method, so its current text query methods can
+        /// dispatch only corpus-resolvable relations.
         /// Refused (`reasoning` error) while any LIVE stored fact or rule
         /// references `name` (role spellings collapse onto their anchor on
         /// both sides of the scan); the message names the blocking fact ids —
         /// retract them first, then re-register. Role-shaped names
-        /// (`eats-x1` — register the anchor) and the engine-special relations
+        /// (`eats_x1` — register the anchor) and the engine-special relations
         /// (identity, the numeric comparisons) are refused outright. The
         /// reference external names (`exponential`, `logarithm`) are
         /// additionally query-only at assertion ingress whether or not they
         /// are registered, so registration order can never strand a stored
         /// fact.
         register-compute-predicate: func(name: string) -> result<_, nibli-error>;
-        /// The session's compute-predicate names, sorted (the built-in
-        /// arithmetic names are pre-registered and included). Backs the bare
-        /// `:compute` report.
+        /// The session's canonical compiled compute-relation names, sorted (the
+        /// built-in arithmetic names are pre-registered and included). Backs
+        /// the bare `:compute` report.
         compute-predicates: func() -> list<string>;
         /// Assert a ground fact directly into the KB (bypasses text parsing).
         /// A relation already registered for compute is marked and rejected as

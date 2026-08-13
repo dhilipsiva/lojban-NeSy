@@ -55,10 +55,12 @@ pub fn compile_query_unmarked(text: &str) -> Result<LogicBuffer, NibliError> {
     compile_unmarked(text)
 }
 
-/// THE compile chain: parse + semantic compile + compute-marking against the
-/// given predicate set. Free-fn form for per-call-set users (nibli-ui builds
-/// its set fresh each query); [`CoreSession::compile_text`] is the
-/// session-owned form.
+/// THE compile chain: fail-closed corpus parse + semantic compile, followed by
+/// compute-marking against the given set of already-compiled relation names.
+/// The set is routing metadata, not a vocabulary or arity source: an unknown
+/// text predicate fails before marking. Free-fn form for per-call-set users
+/// (nibli-ui builds its set fresh each query); [`CoreSession::compile_text`] is
+/// the session-owned form.
 pub fn compile_text(
     text: &str,
     compute_predicates: &HashSet<String>,
@@ -75,6 +77,19 @@ pub fn compile_query_text(
     compute_predicates: &HashSet<String>,
 ) -> Result<LogicBuffer, NibliError> {
     compile_text(text, compute_predicates)
+}
+
+/// Resolve a corpus surface spelling (including a converted alias or committed
+/// `a+b` compound) or an already-canonical compound relation to the exact
+/// relation name nibli-semantics emits into the logic buffer.
+fn canonical_corpus_relation(name: &str) -> Option<&'static str> {
+    if let Some(entry) = nibli_lexicon::alias(name) {
+        return Some(entry.swap.map_or(entry.name, |swap| swap.base));
+    }
+    if let Some(entry) = nibli_lexicon::compound(name) {
+        return Some(entry.relation);
+    }
+    nibli_lexicon::compound_by_relation(name).map(|entry| entry.relation)
 }
 
 /// The shared session: a [`nibli_reason::KnowledgeBase`] + the compute-predicate
@@ -116,42 +131,52 @@ impl CoreSession {
         &self.kb
     }
 
-    /// The current compute-predicate set (the marking input).
+    /// The current canonical compiled compute-relation set (the marking input).
     pub fn compute_predicates(&self) -> &HashSet<String> {
         &self.compute_predicates
     }
 
-    /// Register a predicate name for external compute dispatch.
+    /// Register a committed-corpus predicate for external compute dispatch.
+    ///
+    /// Registration is routing metadata applied **after** KR compilation. It
+    /// neither declares text vocabulary nor guesses arity: unknown names remain
+    /// fail-closed compile errors. A corpus surface spelling is normalized to
+    /// the exact compiled relation (`owned` → `owns`, `computer+user` →
+    /// `computer_user`); the registry and backend see that canonical name.
+    /// Arbitrary compute names instead require a caller-built raw
+    /// [`nibli_types::logic::LogicNode::ComputeNode`] queried through the native
+    /// [`nibli_reason::KnowledgeBase`] API, or a future explicit KR schema
+    /// extension. The shipping component currently exposes no raw-buffer query.
     ///
     /// Fallible (decided 2026-08-09): registration flips how future compiled
-    /// statements SPELL the name (`Predicate` → `ComputeNode`), so it is
-    /// refused while LIVE stored statements (facts or rules, NAF bodies
-    /// included) reference it — otherwise those rows become
+    /// statements spell the canonical relation (`Predicate` → `ComputeNode`),
+    /// so it is refused while LIVE stored statements (facts or rules, NAF
+    /// bodies included) reference it — otherwise those rows become
     /// unreachable-but-listed the moment the query side starts dispatching
     /// (the assert-then-register divergence). Also refused: role spellings
     /// (`eats_x1` — register the anchor) and the engine-special relations
     /// (identity, numeric comparisons), whose built-in query semantics
-    /// ComputeNode marking would silently replace. Idempotent for names
-    /// already registered (the built-in arithmetic set lands here); no
-    /// partial state on `Err`. The reference external names (`exponential`,
-    /// `logarithm`) can never acquire live references — assertion ingress
-    /// refuses them statically — so their registration is vacuously never
-    /// blocked.
+    /// ComputeNode marking would silently replace. Idempotent for names already
+    /// registered (the built-in arithmetic set lands here); no partial state on
+    /// `Err`. The reference external names (`exponential`, `logarithm`) can
+    /// never acquire live references — assertion ingress refuses them
+    /// statically — so their registration is vacuously never blocked.
     pub fn register_compute_predicate(&mut self, name: String) -> Result<(), NibliError> {
         // A role spelling would strand its anchor: `transform_compute_nodes`
         // matches EXACT names, so registering `eats_x1` marks exactly the role
         // conjunct every stored/future `eats` statement carries, while the
         // anchor-collapsed reference scan below would have found no blockers.
         let collapsed = nibli_reason::role_collapsed_relation(&name);
-        if collapsed != name {
+        if collapsed != name && canonical_corpus_relation(&collapsed).is_some() {
             return Err(NibliError::Reasoning(format!(
                 "cannot register `{name}` for external compute: role spellings collapse \
                  onto their anchor relation — register `{collapsed}` instead."
             )));
         }
-        // Engine-special relations have built-in query semantics (identity
-        // feeds union-find; comparisons evaluate exactly and keep a relational
-        // reading) that ComputeNode marking would silently replace.
+        // `equals` is an infix-only engine relation rather than an atomic KR
+        // corpus spelling, so protect engine-special names before requiring a
+        // corpus resolution. Repeat after canonicalization for any future
+        // surface alias whose compiled relation is special.
         if nibli_types::relations::is_identity(&name)
             || nibli_types::relations::is_numeric_comparison(&name)
         {
@@ -161,12 +186,35 @@ impl CoreSession {
                  would silently replace them."
             )));
         }
+        let Some(canonical) = canonical_corpus_relation(&name) else {
+            return Err(NibliError::Reasoning(format!(
+                "cannot register `{name}` for external compute: not a corpus-resolvable \
+                 nibli KR predicate. Compute registration selects dispatch for existing \
+                 vocabulary; it does not declare a name or infer arity. Arbitrary compute \
+                 names require an explicit raw ComputeNode through the native KnowledgeBase \
+                 API, or a future explicit vocabulary/schema extension."
+            )));
+        };
+        let canonical = canonical.to_string();
+        // Engine-special relations have built-in query semantics (identity
+        // feeds union-find; comparisons evaluate exactly and keep a relational
+        // reading) that ComputeNode marking would silently replace.
+        if nibli_types::relations::is_identity(&canonical)
+            || nibli_types::relations::is_numeric_comparison(&canonical)
+        {
+            return Err(NibliError::Reasoning(format!(
+                "cannot register `{name}` for external compute: `{canonical}` is an \
+                 engine-special \
+                 relation whose query semantics are built in — marking it as compute \
+                 would silently replace them."
+            )));
+        }
         // The scan runs even for an already-registered name, so the invariant
         // "a registered name has no live references" is enforced rather than
         // assumed: a raw sub-session ingress (`KnowledgeBase::assert_fact` on a
         // hand-built unmarked buffer) that violated it surfaces on the next
         // registration instead of returning Ok forever.
-        let blocking = self.kb.stored_statement_ids_referencing(&name);
+        let blocking = self.kb.stored_statement_ids_referencing(&canonical);
         if !blocking.is_empty() {
             const SHOWN: usize = 8;
             let shown: Vec<String> = blocking
@@ -181,8 +229,9 @@ impl CoreSession {
                 String::new()
             };
             return Err(NibliError::Reasoning(format!(
-                "cannot register `{name}` for external compute: {n} live stored \
-                 statement(s) reference it ({ids}{tail}). A registered name is \
+                "cannot register `{name}` for external compute: canonical relation \
+                 `{canonical}` is referenced by {n} live stored statement(s) \
+                 ({ids}{tail}). A registered name is \
                  computed by the backend at query time, so its stored extension \
                  would become unreachable — retract the listed statements (or \
                  reset) first, then register, then re-ask them as queries.",
@@ -190,10 +239,10 @@ impl CoreSession {
                 ids = shown.join(", "),
             )));
         }
-        if self.compute_predicates.contains(&name) {
+        if self.compute_predicates.contains(&canonical) {
             return Ok(()); // Idempotent re-registration (the builtins land here).
         }
-        self.compute_predicates.insert(name);
+        self.compute_predicates.insert(canonical);
         // Registration is not a KB content mutation, so the content-path
         // invalidations never fire; drop the saturation so
         // `materialization_report` cannot keep presenting the name as a
@@ -250,7 +299,9 @@ impl CoreSession {
         self.kb.materialization_report()
     }
 
-    /// THE compile chain against this session's compute-predicate set.
+    /// THE fail-closed corpus compile chain against this session's canonical
+    /// compute-relation set. Registration cannot make an unknown text name
+    /// compile or supply an arity.
     pub fn compile_text(&self, text: &str) -> Result<LogicBuffer, NibliError> {
         compile_text(text, &self.compute_predicates)
     }
@@ -348,7 +399,9 @@ impl CoreSession {
             .map_err(NibliError::Reasoning)
     }
 
-    /// Compile a KR query and run the entailment check.
+    /// Compile a corpus-resolvable KR query and run the entailment check.
+    /// Arbitrary raw compute names use `KnowledgeBase::query_entailment` with a
+    /// caller-built `ComputeNode`; they do not pass through this text method.
     pub fn query_text(&self, text: &str) -> Result<QueryResult, NibliError> {
         let buf = self.compile_query_text(text)?;
         self.kb.query_entailment(buf)
@@ -414,6 +467,25 @@ impl CoreSession {
 mod tests {
     use super::*;
     use nibli_types::logic::LogicNode;
+
+    fn canonical_route_eval(rel: &str, args: &[LogicalTerm]) -> Result<bool, String> {
+        Ok(rel == "owns"
+            && args
+                == [
+                    LogicalTerm::Constant("holder".to_string()),
+                    LogicalTerm::Constant("item".to_string()),
+                    LogicalTerm::Constant("context".to_string()),
+                ])
+    }
+
+    fn canonical_route_batch(
+        requests: &[nibli_reason::ComputeRequest],
+    ) -> Vec<Result<bool, String>> {
+        requests
+            .iter()
+            .map(|request| canonical_route_eval(&request.relation, &request.args))
+            .collect()
+    }
 
     fn children(node: &LogicNode) -> Vec<u32> {
         match node {
@@ -584,6 +656,101 @@ mod tests {
     }
 
     // ─── Fallible compute registration (assert-then-register closure) ───────
+
+    #[test]
+    fn registration_does_not_declare_text_vocabulary_or_infer_arity() {
+        let mut session = CoreSession::new();
+        let error = session
+            .register_compute_predicate("external_probe".to_string())
+            .expect_err("an unknown name is not a schema declaration");
+        let message = error.to_string();
+        assert!(message.contains("not a corpus-resolvable"), "{message}");
+        assert!(message.contains("does not declare"), "{message}");
+        assert!(message.contains("infer arity"), "{message}");
+        assert!(!session.compute_predicates().contains("external_probe"));
+
+        let compile_error = session
+            .query_text("external_probe(Sample).")
+            .expect_err("registration refusal must not open the text vocabulary");
+        assert!(
+            compile_error
+                .to_string()
+                .contains("unknown predicate \"external_probe\""),
+            "{compile_error}"
+        );
+
+        let role_shaped_error = session
+            .register_compute_predicate("external_probe_x1".to_string())
+            .expect_err("an unknown role-shaped spelling must not imply a legal anchor");
+        let role_shaped_message = role_shaped_error.to_string();
+        assert!(
+            role_shaped_message.contains("not a corpus-resolvable"),
+            "{role_shaped_message}"
+        );
+        assert!(
+            !role_shaped_message.contains("register `external_probe` instead"),
+            "{role_shaped_message}"
+        );
+    }
+
+    #[test]
+    fn registration_normalizes_surface_aliases_and_compounds_to_compiled_relations() {
+        let mut session = CoreSession::new();
+        session
+            .register_compute_predicate("owned".to_string())
+            .expect("a converted corpus spelling is resolvable");
+        session
+            .register_compute_predicate("computer+user".to_string())
+            .expect("a committed compound spelling is resolvable");
+        assert!(session.compute_predicates().contains("owns"));
+        assert!(session.compute_predicates().contains("computer_user"));
+        assert!(!session.compute_predicates().contains("owned"));
+        assert!(!session.compute_predicates().contains("computer+user"));
+
+        session.set_compute_dispatch(canonical_route_eval, canonical_route_batch);
+        assert_eq!(
+            session.query_text("owned(Item, Holder, Context).").unwrap(),
+            QueryResult::True,
+            "converted-alias registration must dispatch the canonical relation with swapped args"
+        );
+
+        for (text, canonical) in [
+            ("owned(Item, Holder, Context).", "owns"),
+            ("computer+user(Actor, Device, Purpose).", "computer_user"),
+        ] {
+            let buffer = session.compile_text(text).unwrap();
+            assert!(
+                buffer.nodes.iter().any(
+                    |node| matches!(node, LogicNode::ComputeNode((relation, _)) if relation == canonical)
+                ),
+                "{text} must mark canonical relation {canonical}: {buffer:#?}"
+            );
+        }
+
+        for (statement, registration, canonical) in [
+            ("owned(Item, Holder, Context).", "owned", "owns"),
+            ("owned(Item, Holder, Context).", "owns", "owns"),
+            (
+                "computer+user(Actor, Device, Purpose).",
+                "computer+user",
+                "computer_user",
+            ),
+            (
+                "computer+user(Actor, Device, Purpose).",
+                "computer_user",
+                "computer_user",
+            ),
+        ] {
+            let mut blocked = CoreSession::new();
+            blocked.assert_text(statement).unwrap();
+            let error = blocked
+                .register_compute_predicate(registration.to_string())
+                .expect_err("canonical live references must block either registration spelling");
+            let message = error.to_string();
+            assert!(message.contains(&format!("canonical relation `{canonical}`")));
+            assert!(message.contains("(#0)"), "{message}");
+        }
+    }
 
     #[test]
     fn registering_a_referenced_name_is_refused_with_the_blocking_ids() {

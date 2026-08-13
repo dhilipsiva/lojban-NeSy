@@ -173,14 +173,28 @@ contract, not accident:
 
 ### Compute predicates
 
-The front-end never emits `ComputeNode` — it always emits `Predicate`. The rewrite
-`nibli_reason::transform_compute_nodes(&mut buf, &preds)` converts `Predicate` → `ComputeNode` (same
-payload) for every relation name in the set; `nibli_reason::default_compute_predicates()` is
-`{product, sum, quotient}` (×, +, ÷ — the pre-flip gismu names were `pilji`/`sumji`/`dilcu`).
-Every first-party embedder runs this immediately after
-compilation. **If you build buffers yourself and want compute dispatch, you must run it too** —
-`assert_fact`/`query_entailment` do not call it internally, and a compute relation left as a
-plain `Predicate` is treated as an ordinary fact predicate. A `ComputeNode` result is
+The front-end never emits `ComputeNode` — it always emits `Predicate`. Fail-closed KR
+name and arity resolution happens first; only after semantic compilation does
+`nibli_reason::transform_compute_nodes(&mut buf, &preds)` convert `Predicate` →
+`ComputeNode` (same payload) for every exact compiled relation name in the set.
+`nibli_reason::default_compute_predicates()` is `{product, sum, quotient}` (×, +, ÷ —
+the pre-flip gismu names were `pilji`/`sumji`/`dilcu`). Every first-party embedder runs
+this post-compile rewrite.
+
+The session registry is routing metadata, not a vocabulary or arity declaration.
+`register_compute_predicate` accepts a committed-corpus surface spelling or canonical
+relation and normalizes converted aliases and committed compounds to the relation emitted
+in IR. An unknown registration is refused and the same name remains a KR compile error.
+For an arbitrary compute name, a native BYO-IR caller constructs a `ComputeNode` directly;
+its explicit argument vector supplies the raw shape, and no text registration is needed.
+Alternatively, a producer that built plain `Predicate` nodes may call
+`transform_compute_nodes` with its own exact IR-name set. `assert_fact` and
+`query_entailment` never perform that rewrite internally, so a relation left as a plain
+`Predicate` retains ordinary fact-store semantics. The shipping WIT component exports no
+raw-buffer query or vocabulary/schema method, so implementing its `compute-backend` import
+alone cannot make an arbitrary name usable by its text query methods.
+
+A `ComputeNode` result is
 proof-local: built-in evaluation or an external reply decides that node in the current
 derivation but is never inserted into the typed fact store or assertion registry. It has no
 fact id, domain, persistence, replay, retraction, or forward-chaining effect. Executable
@@ -205,7 +219,8 @@ zero-hallucination means here". The IR is transport-neutral: the stock host/nati
 JSONL/TCP client is deliberately unauthenticated, while a custom native dispatcher or
 component host may enforce admission before returning a Boolean. No backend identity,
 version, timestamp/nonce, or admission receipt is represented in `ComputeNode` or the
-current proof schema. Compiled KR and hand-built flat buffers share this contract.
+current proof schema. Compiled KR and hand-built flat `ComputeNode` buffers share this
+query-only lifecycle; they do not share a text-vocabulary admission path.
 
 ### What `NotNode` means
 
@@ -269,7 +284,9 @@ fragment filter scans source tokens for exactly this reason). Scope details live
 native (`nibli_engine::NibliEngine::compile_debug`) and the WIT session
 (`compile-debug: func(input: string) -> result<logic-buffer, nibli-error>`) — or directly via
 `nibli_semantics::compile_from_ast` (remember `transform_compute_nodes` afterward; the browser
-`Session` does not export a compile-only method). For programmatic single facts,
+`Session` does not export a compile-only method). Every text entry point resolves names and
+arities through the committed corpus before compute marking; registration cannot make an
+unknown name compile. For programmatic single facts,
 prefer `CoreSession::assert_fact_direct` or `NibliEngine::assert_fact_direct`:
 they event-decompose and arity-pad like surface text, then apply the live compute
 registry so registered compute is rejected as query-only. The lower-level
@@ -284,7 +301,8 @@ flat-`equals` exception).
 `set_compute_dispatch(eval, batch_eval)` for wiring a compute backend. `CountNode`
 and executable `ComputeNode` formulas are accepted by the query methods and
 rejected by `assert_fact` and `with_assumptions`; opaque abstraction content
-remains quoted.
+remains quoted. An arbitrary compute name is therefore expressible here as an explicit
+`ComputeNode` query without registration; the caller owns its argument shape.
 
 **The three packaged surfaces**, for integrators who want "does this KB entail that claim"
 without touching the IR:
@@ -293,7 +311,7 @@ without touching the IR:
 |---|---|---|
 | `nibli_engine::NibliEngine` (native Rust) | `assert_text -> Vec<u64>`, `query_text_with_proof`, `query_find_text`, `retract_fact`, `compile_debug`, optional redb persistence | Splits roots: a multi-statement text becomes N independent facts |
 | `nibli-wasm` `Session` (browser JS) | `assert_text -> Vec<u64>`, `query_with_proof -> JSON string`, `list_facts -> JSON`, `retract_fact`, `reset` | The query JSON has keys `status`, `detail`, `naf_dependent`, `cwa_false`, `proof_text`, `why`, `proof` (the full `ProofTrace`) |
-| `nibli-pipeline` WASM component (WIT world `nibli-pipeline`) | `assert-text -> list<(fact-id, logic-buffer)>`, `assert-buffer-with-id` (recompile-free replay), `query-text-with-proof -> (query-result, proof-trace)`, `compile-debug -> logic-buffer`, `assert-fact`, `set-strict`, … | Imports `compute-backend` from the host. Splits roots like the native surfaces; each pair carries the root's compiled buffer so a persisting host (nibli-host) stores the FACT itself. (The legacy `assert-text-with-id` text-replay path was removed at `nibli:engine@0.5.0` with store schema v3 — `assert-buffer-with-id` is the one replay primitive) |
+| `nibli-pipeline` WASM component (WIT world `nibli-pipeline`) | `assert-text -> list<(fact-id, logic-buffer)>`, `assert-buffer-with-id` (recompile-free replay), `query-text-with-proof -> (query-result, proof-trace)`, `compile-debug -> logic-buffer`, `assert-fact`, `set-strict`, … | Imports `compute-backend` from the host, but exports no raw-buffer query or schema method: its compute-capable text queries remain limited to corpus-resolvable registered relations. Splits roots like the native surfaces; each pair carries the root's compiled buffer so a persisting host (nibli-host) stores the FACT itself. (The legacy `assert-text-with-id` text-replay path was removed at `nibli:engine@0.5.0` with store schema v3 — `assert-buffer-with-id` is the one replay primitive) |
 
 Verdicts everywhere are `QueryResult`: `True`, `False`, `Unknown(reason)` (cycle-cut /
 incomplete-knowledge / naf-dependent / backend-unavailable / non-finite), or

@@ -36,7 +36,10 @@ pub struct AuthSession {
     inner: RefCell<nibli_auth::Authorizer>,
 }
 
-/// A user-facing session wrapping the full nibli-kr → nibli-semantics → nibli-reason pipeline.
+/// A user-facing session wrapping the full nibli-kr → nibli-semantics →
+/// nibli-reason pipeline. Its query exports accept fail-closed KR text; the
+/// shipping WIT interface has no raw-buffer query method, so compute
+/// registration can route only a committed-corpus relation on this surface.
 pub struct Session {
     /// The SHARED compile/assert/query core (nibli-session) — the same
     /// CoreSession nibli-engine wraps natively, so native and WASM agree BY

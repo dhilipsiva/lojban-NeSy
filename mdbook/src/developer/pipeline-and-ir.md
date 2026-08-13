@@ -45,6 +45,10 @@ nibli-pipeline (WASM component), nibli-wasm and nibli-ui (browser) — wraps it
 with only boundary conversion, so native↔WASM agreement holds **by
 construction**. Per-surface policy (error conversion, lint notes, env reads,
 persistence, compute-dispatch wiring) deliberately stays outside the core.
+The ordering is contractual: corpus name/arity resolution completes before
+compute marking. Registration is post-compile routing metadata for a
+corpus-resolvable relation, not a vocabulary or arity declaration; converted
+aliases and committed compounds normalize to their canonical IR relation.
 
 ## AstBuffer (internal interchange)
 
@@ -132,8 +136,10 @@ These shapes are contract, not accident — pinned by the seam-conformance gate
   `believe(me, fact { P })` never makes bare `P` true.
 - **Compute transform.** The front-end never emits `ComputeNode`;
   `nibli_reason::transform_compute_nodes` rewrites marked `Predicate`s after
-  compilation. BYO-buffer users must run it themselves — a compute relation
-  left as a plain `Predicate` is treated as an ordinary fact.
+  fail-closed corpus compilation. The registry cannot make an unknown text name
+  compile or supply its arity. A BYO-buffer producer may run the transform over
+  its own exact IR-name set, or construct a raw `ComputeNode` directly; a compute
+  relation left as a plain `Predicate` is treated as an ordinary fact.
 
 `NotNode` is structurally plain ¬ — the closed-world reading is a *reasoner*
 property, carried on the verdict side by `ProofTrace.naf_dependent` and
@@ -143,10 +149,10 @@ property, carried on the verdict side by `ProofTrace.naf_dependent` and
 
 | You want | Use |
 |----------|-----|
-| Text → IR | `NibliEngine::compile_debug` / compile-only `NibliEngine::validate` (native), `compile-debug` (WIT), or `nibli_semantics::compile_from_ast` (+ `transform_compute_nodes`). These do not check assertion admission; use `assert_text` for that boundary |
+| Text → IR | `NibliEngine::compile_debug` / compile-only `NibliEngine::validate` (native), `compile-debug` (WIT), or `nibli_semantics::compile_from_ast` (+ `transform_compute_nodes`). These enforce corpus vocabulary and arity but do not check assertion admission; use `assert_text` for that boundary. Compute registration changes routing only after compilation |
 | A programmatic ground fact | `CoreSession::assert_fact_direct` or `NibliEngine::assert_fact_direct` — decomposes and pads exactly like surface text, applies the live compute registry, and rejects registered compute — and the reference external names regardless of registration — as query-only. The lower-level compiler is `nibli_semantics::compile_injected_fact(relation, args)` |
-| Reason over a buffer (BYO-IR) | `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact`. Witness enumeration returns complete rows/counts or the incomplete-enumeration error when any final candidate leaf is non-definitive; `aggregate` inherits that refusal before its separate numeric projection, which still filters missing or nonnumeric bindings. `CountNode` and executable `ComputeNode` formulas in asserted position are query-only; run `validate_assertion` as structural preflight and use `assert_fact` for admission, while opaque quoted content remains inert |
-| A packaged surface | `nibli_engine::NibliEngine` (native), the nibli-wasm `Session` (browser JS), or the `nibli-pipeline` component ([WIT surface](wit-surface.md)) |
+| Reason over a buffer (BYO-IR) | Native `nibli_reason::KnowledgeBase`: `assert_fact`, `query_entailment[_with_proof]`, `query_find`, `count_witnesses`, `aggregate`, `with_assumptions`, `retract_fact`. An arbitrary compute relation is an explicit raw `ComputeNode`; its argument vector supplies the shape and it needs no text registration. Witness enumeration returns complete rows/counts or the incomplete-enumeration error when any final candidate leaf is non-definitive; `aggregate` inherits that refusal before its separate numeric projection, which still filters missing or nonnumeric bindings. `CountNode` and executable `ComputeNode` formulas in asserted position are query-only; run `validate_assertion` as structural preflight and use `assert_fact` for admission, while opaque quoted content remains inert |
+| A packaged surface | `nibli_engine::NibliEngine` (native), the nibli-wasm `Session` (browser JS), or the `nibli-pipeline` component ([WIT surface](wit-surface.md)). The component currently has text-query methods only—no raw-buffer query or vocabulary/schema export—so a custom host import cannot add an arbitrary text name |
 
 The reasoner's fact store remains a set keyed only by `StoredFact`; origin is a
 separate structural support index. Every insertion records a direct assertion,

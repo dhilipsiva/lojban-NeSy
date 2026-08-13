@@ -17,9 +17,10 @@
 # greater/less/num_equal there is NO relational reading to protect — every
 # committed place is numeric (result/base/power; result/number/base) — so for
 # these two names the NAME is the operand test and nothing is collateral. And
-# registration itself is fallible: `register_compute_predicate` (any name, the
-# registry is open) is refused while live stored facts or rules reference the
-# name, the blocking fact ids in the message — retract first.
+# registration itself is fallible and corpus-scoped: it is routing metadata,
+# not a vocabulary/arity declaration, and is refused while live stored facts or
+# rules reference the canonical relation, with the blocking ids in the message
+# — retract first.
 #
 # DECIDED, NOT DEFERRED (2026-08-09). Accept-and-disclose was declined: a KB
 # whose facts silently stop being consulted halfway through a session is the

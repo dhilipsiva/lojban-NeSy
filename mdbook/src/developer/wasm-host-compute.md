@@ -17,8 +17,8 @@ the `engine` + `authorizer` interfaces ([WIT surface](wit-surface.md)).
 | Runtime | What runs | Compute dispatch |
 |---------|-----------|------------------|
 | `nibli-host` (Wasmtime, WASI P2) | loads `nibli.wasm`; the canonical operator REPL | The component registers dispatch at Session creation, bridging to the host's `compute-backend` implementation |
-| `nibli-engine` (native, in-process) | the same crates as plain Rust | Opt-in: `enable_compute_backend(addr)` wires the native TCP client; otherwise external compute stays unregistered |
-| `nibli-wasm` / `nibli-ui` (browser, wasm32-unknown-unknown) | the same crates via wasm-bindgen / Dioxus | External compute deliberately unregistered (no TCP in the browser); built-in arithmetic still resolves in-engine |
+| `nibli-engine` (native, in-process) | the same crates as plain Rust | Opt-in: `enable_compute_backend(addr)` wires the native TCP client; otherwise external dispatch stays unwired |
+| `nibli-wasm` / `nibli-ui` (browser, wasm32-unknown-unknown) | the same crates via wasm-bindgen / Dioxus | No external dispatch or registration surface (no TCP in the browser); built-in arithmetic still resolves in-engine |
 
 All four wrap the same `nibli_session::CoreSession`, so they agree by
 construction. The dispatch **hook** is per-KB-instance function pointers
@@ -85,9 +85,19 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   numeric arguments evaluate locally (the shared
   `nibli_types::eval_arithmetic`); a call whose arguments don't resolve to
   numbers falls through to the backend — which is why the reference server
-  implements all three too. Everything else registered via `:compute <name>`
-  forwards. Registration is refused while live stored facts or rules
-  reference the name (retract first); bare `:compute` reports the registry.
+  implements all three too. Any other corpus relation successfully registered
+  via `:compute <name>` forwards. Registration normalizes aliases and committed
+  compounds to their canonical compiled relation and is refused while live
+  stored facts or rules reference that relation (retract first); bare
+  `:compute` reports the canonical registry.
+- **Text name boundary:** registration runs after fail-closed KR compilation.
+  It does not declare vocabulary or infer arity, so an unknown name is refused
+  and remains an unknown text predicate. Native BYO-IR callers can query an
+  arbitrary relation by constructing `ComputeNode(name, args)` directly—its
+  argument vector supplies the raw shape and no registration is needed. The
+  shipping component exposes no raw-buffer query or vocabulary/schema method;
+  implementing `compute-backend` or adding a server handler alone cannot add a
+  component text predicate.
 - **Tolerant equality (disclosed):** arithmetic equality is `isclose` with
   `rel_tol 1e-9, abs_tol 0` — `0.3 = 0.1 + 0.2` is TRUE. The comparison
   predicate `num_equal` is exact `==`. Non-finite operands yield
@@ -124,7 +134,8 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   transport. The stock `nibli-host` has no admission plug-in—`:backend` and
   `NIBLI_COMPUTE_ADDR` select only an address. A rejected custom call becomes
   `UNKNOWN (backend-unavailable)`, and the current proof schema cannot carry an
-  identity, wire transcript, timestamp/nonce, or policy receipt.
+  identity, wire transcript, timestamp/nonce, or policy receipt. This is an
+  admission hook, not a guest vocabulary/schema hook.
 - **Proof-local lifecycle:** built-in and external results are never inserted
   into the typed fact store or assertion registry. They receive no fact id, do
   not appear in `:facts`, cannot be retracted, never change the quantifier
@@ -135,7 +146,8 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
   cannot strand a stored fact; opaque abstraction bodies remain quoted. Each top-level query recomputes or redispatches. Repeated identical
   external checks may share a transient within-query memo to keep the verdict
   and trace consistent; the memo never survives into another query. Compiled
-  KR and raw flat `ComputeNode` buffers follow the same rule.
+  KR and raw flat `ComputeNode` buffers follow the same lifecycle, although only
+  the native raw-IR path can name a relation outside the text corpus.
 - **No backend configured?** A registered external predicate answers
   `UNKNOWN (backend-unavailable)` — an outage is never a derived falsehood
   (pinned by the `smoke-host-backend-unavailable` gate). The result remains
@@ -156,8 +168,10 @@ Responses are `{"result": true|false}` or `{"error": "..."}`. Argument tags:
 
 The reference server is `python/nibli_backend.py` (`just backend`, port 5555):
 handlers `product`, `sum`, `quotient`, `exponential`, `logarithm` in a
-`HANDLERS` dict — extend by adding an entry. `just run-with-backend` wires
-host + backend together.
+`HANDLERS` dict. Adding a handler extends what the transport can answer; it does
+not add a KR text name. A new arbitrary name additionally requires a native raw
+`ComputeNode` query today, or a future explicit vocabulary/schema extension.
+`just run-with-backend` wires host + backend together.
 
 ## Browser surfaces
 

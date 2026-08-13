@@ -27,8 +27,10 @@ pub const NUMERIC_COMPARISONS: &[&str] = &["greater", "less", "num_equal"];
 
 /// External compute predicates the REFERENCE backend serves
 /// (`python/nibli_backend.py` HANDLERS — the mirror test below pins this).
-/// The dispatch mechanism itself is open: any unknown compute predicate
-/// forwards to whatever backend is configured.
+/// The raw-IR dispatch mechanism itself is open: any explicitly constructed
+/// `ComputeNode` relation forwards to whatever backend is configured. This is
+/// not a nibli KR vocabulary declaration; text remains corpus-resolved and
+/// fail-closed before compute marking.
 pub const REFERENCE_EXTERNAL_COMPUTE: &[&str] = &["exponential", "logarithm"];
 
 /// Is `rel` the flat identity relation?
