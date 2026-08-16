@@ -538,7 +538,7 @@ If an external predicate's backend is unreachable (or unconfigured), the query r
 - **Persistent fact store:** `FactStore` trait with in-memory (`InMemoryFactStore`) and redb (`RedbFactStore`) backends
 - **Iterative deepening:** shallowest-proof guarantee
 - **Tabling:** cached results with invalidation on mutations
-- **KB import/export:** RDF Turtle parser, OWL class mapping via the `nibli-import` crate and CLI (`just import <file.ttl>`, with `--raw`/`--export`/`--query` flags)
+- **KB import/export:** RDF Turtle parser, OWL class mapping, and fail-closed N-Triples export via the `nibli-import` crate and CLI (`just import <file.ttl>`, with `--raw`/`--export`/`--query` flags) — export emits real triples for the representable fragment and refuses everything else with a per-fact reason, pinned by an independent-parser round trip
 - **Failure traces:** `PredicateNotFound`, `RuleAttemptFailed`, `EqualitySubstitution` proof rule variants explain why derivations fail
 - **Argument-position indexing:** `(relation, position, value)` secondary index for efficient witness extraction
 - **Predicate signature validation:** arity checking from PHF dictionary with permissive warnings

@@ -45,9 +45,10 @@ pub fn import_triples_raw(engine: &NibliEngine, turtle_text: &str) -> Result<usi
     Ok(count)
 }
 
-/// Export all active KB facts as labeled lines.
-pub fn export_facts(engine: &NibliEngine) -> Result<String, String> {
-    export::export_fact_labels(engine)
+/// Export the engine's current truth store as fail-closed N-Triples: the
+/// document plus per-fact refusals (see [`export::export_ntriples`]).
+pub fn export_facts(engine: &NibliEngine) -> export::NTriplesExport {
+    export::export_ntriples(engine)
 }
 
 fn term_to_logical(term: &rdf::Term) -> nibli_engine::EngineLogicalTerm {
@@ -119,18 +120,143 @@ ex:adam ex:likes ex:bob .
     }
 
     #[test]
-    fn test_export_roundtrip() {
+    fn export_roundtrips_through_an_independent_parser_and_reimport() {
+        use rio_api::parser::TriplesParser;
         let engine = NibliEngine::new();
+        let c = |s: &str| nibli_engine::EngineLogicalTerm::Constant(s.to_string());
+        engine
+            .assert_fact_direct("likes".to_string(), vec![c("adam"), c("bob")])
+            .unwrap();
+        engine
+            .assert_fact_direct("knows".to_string(), vec![c("bob"), c("adam")])
+            .unwrap();
         engine
             .assert_fact_direct(
-                "likes".to_string(),
-                vec![
-                    nibli_engine::EngineLogicalTerm::Constant("adam".to_string()),
-                    nibli_engine::EngineLogicalTerm::Constant("bob".to_string()),
-                ],
+                "age".to_string(),
+                vec![c("adam"), nibli_engine::EngineLogicalTerm::Number(42.5)],
             )
             .unwrap();
-        let exported = export_facts(&engine).unwrap();
-        assert!(exported.contains("likes"));
+
+        let out = export_facts(&engine);
+        assert_eq!(
+            out.exported, 3,
+            "all three facts are in the exportable fragment"
+        );
+        assert!(
+            out.refused.is_empty(),
+            "nothing to refuse: {:?}",
+            out.refused
+        );
+
+        // Independent parser: the document must be VALID N-Triples to a
+        // foreign reader, not merely to our own rdf.rs.
+        let mut parsed = 0usize;
+        rio_turtle::NTriplesParser::new(out.document.as_bytes())
+            .parse_all(&mut |_| -> Result<(), rio_turtle::TurtleError> {
+                parsed += 1;
+                Ok(())
+            })
+            .expect("the export must be valid N-Triples to an independent parser");
+        assert_eq!(parsed, 3, "the independent parser must see every triple");
+
+        // Re-import identity: the document re-imports (raw mode strips the
+        // minted base back off) to exactly the exported facts — checked by
+        // re-exporting the fresh engine and comparing documents byte-for-byte
+        // (deterministic: sorted + deduplicated).
+        let fresh = NibliEngine::new();
+        let n = import_triples_raw(&fresh, &out.document).unwrap();
+        assert_eq!(n, 3);
+        let round = export_facts(&fresh);
+        assert!(round.refused.is_empty(), "{:?}", round.refused);
+        assert_eq!(
+            round.document, out.document,
+            "export -> re-import -> export must be the identity on the fragment \
+             (numbers included: 42.5 rides \"42.5\"^^xsd:double)"
+        );
+    }
+
+    #[test]
+    fn export_refuses_every_unrepresentable_shape_with_a_reason() {
+        use export::fact_to_triple;
+        use nibli_reason::kb::{GroundFact, GroundTerm, StoredFact};
+        let c = |s: &str| GroundTerm::Constant(s.to_string());
+        let cases: Vec<(StoredFact, &str)> = vec![
+            (
+                StoredFact::Past(GroundFact::new("likes", vec![c("adam"), c("bob")])),
+                "flavor",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new("dog", vec![c("adam")])),
+                "arity 1",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new(
+                    "gives",
+                    vec![c("adam"), c("bob"), c("ring")],
+                )),
+                "arity 3",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new("type", vec![c("adam"), c("dog")])),
+                "rdf:type/rdfs:subClassOf routing",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new("subClassOf", vec![c("dog"), c("animal")])),
+                "rdf:type/rdfs:subClassOf routing",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new(
+                    "age",
+                    vec![GroundTerm::from_f64(3.0), c("adam")],
+                )),
+                "no IRI form",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new(
+                    "likes",
+                    vec![c("adam"), GroundTerm::Unspecified],
+                )),
+                "engine-internal",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new("likes", vec![c("adam"), c("hello world")])),
+                "not IRI-local-name safe",
+            ),
+            (
+                StoredFact::Bare(GroundFact::new(
+                    "age",
+                    vec![c("adam"), GroundTerm::from_f64(f64::INFINITY)],
+                )),
+                "non-finite",
+            ),
+        ];
+        for (fact, needle) in cases {
+            let err =
+                fact_to_triple(&fact).expect_err(&format!("{fact:?} must have no triple form"));
+            assert!(
+                err.contains(needle),
+                "refusal for {fact:?} must name its class ({needle:?}), got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_refuses_event_decomposed_kr_facts_rather_than_mangling_them() {
+        // A KR-authored fact event-decomposes (`eats(Adam).` stores an event
+        // Skolem plus role facts). None of that has a faithful triple form —
+        // the export must refuse ALL of it loudly, never emit a mangled
+        // Skolem-bearing triple.
+        let engine = NibliEngine::new();
+        engine.assert_text("eats(Adam).").unwrap();
+        let out = export_facts(&engine);
+        assert_eq!(
+            out.exported, 0,
+            "no decomposed fact may leak into the document: {}",
+            out.document
+        );
+        assert!(
+            !out.refused.is_empty(),
+            "the refusals must say why the KB exported empty"
+        );
     }
 }

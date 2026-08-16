@@ -7,7 +7,8 @@
 //! Imports the Turtle file into a fresh engine KB and reports the count.
 //!   --raw     import every triple as a 2-arg fact (skip OWL class handling:
 //!             rdfs:subClassOf -> subsort, rdf:type -> entity sort)
-//!   --export  print the KB export after import (round-trip view)
+//!   --export  print the KB as fail-closed N-Triples after import (document on
+//!             stdout; per-fact refusals with reasons on stderr)
 //!   --query   run a KR query against the imported KB (repeatable)
 //!
 //! Note: `--query` reaches only relation names the KR front-end can SPELL:
@@ -105,12 +106,15 @@ fn main() -> ExitCode {
     }
 
     if export {
-        match nibli_import::export_facts(&engine) {
-            Ok(text) => print!("{text}"),
-            Err(e) => {
-                eprintln!("[Export Error] {e}");
-                return ExitCode::FAILURE;
-            }
+        let out = nibli_import::export_facts(&engine);
+        print!("{}", out.document);
+        eprintln!(
+            "[Export] {} triple(s) exported; {} fact(s) refused (no faithful triple form).",
+            out.exported,
+            out.refused.len()
+        );
+        for (fact, reason) in &out.refused {
+            eprintln!("[Export]   {fact}: {reason}");
         }
     }
 

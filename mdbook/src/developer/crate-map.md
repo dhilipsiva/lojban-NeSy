@@ -130,7 +130,7 @@ GitHub Release / site / repo only.
 | `nibli-store` | lib (+ a v2-fixture seed bin) | Persistent redb store: ACID, postcard-serialized, tombstone retraction | A (parenthesized) |
 | `nibli-engine` | lib | Native in-process embedding — no WASM, full stack traces; the anchor of the publish order | **A** |
 | `nibli-formalize` | lib | The agentic English→KR formalizer engine (LLM behind real compile gates); UI shell lives in nibli-ui | A (optional) |
-| `nibli-import` | lib | RDF Turtle / OWL import + fact export (the `nibli-import` *binary* lives in the `nibli` crate) | A (optional) |
+| `nibli-import` | lib | RDF Turtle / OWL import + fail-closed N-Triples export (refuses unrepresentable facts with reasons; independent-parser round-trip pinned; the `nibli-import` *binary* lives in the `nibli` crate) | A (optional) |
 | `nibli` | bin ×6 | Dev tooling: native REPL, `nibli-validate`, `nibli-import` CLI, `nibli-pin`, two bench bins | A (optional) |
 | `nibli-pipeline` | cdylib+lib | **The** WASM component: chains kr → semantics → reason as internal crate deps; the only crate with WIT bindings | Z |
 | `nibli-host` | bin | Native Wasmtime WASI P2 host + REPL; provides the `compute-backend` import | Z |

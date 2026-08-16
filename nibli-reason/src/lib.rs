@@ -1648,6 +1648,20 @@ impl KnowledgeBase {
     }
 
     /// List all active (non-retracted) facts with their IDs and labels.
+    /// Snapshot of every fact currently in the truth store — asserted AND
+    /// eagerly derived (forward chaining inserts conclusions here), in
+    /// unspecified order. The TYPED read surface for exporters
+    /// (nibli-import's N-Triples emitter): labels are display, these are the
+    /// facts. Rules are not facts and are not included.
+    pub fn active_typed_facts(&self) -> Vec<kb::StoredFact> {
+        self.inner
+            .borrow()
+            .fact_store
+            .all_facts()
+            .cloned()
+            .collect()
+    }
+
     pub fn list_facts(&self) -> Result<Vec<FactSummary>, NibliError> {
         self.list_facts_inner().map_err(NibliError::Reasoning)
     }

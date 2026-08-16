@@ -81,30 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **Settle the RDF export contract.** *(effort: high; narrow-to-fact-label-dump
-  exit: low)* `nibli-import/src/export.rs`:1-18 (the whole
-  file, byte-stable through the sweep) calls its output N-Triples (:1) but the sole
-  emitter (:15) writes `# fact:<id> <label>` — a valid but EMPTY N-Triples document,
-  all comment lines. Its doc comment still describes labels as "Lojban source or
-  `:assert` form" (:6) and points at "the original Lojban text (the canonical source of
-  truth for the KB)" (:8-10), wording that is doubly stale since gismu stopped
-  resolving at the committed-corpus milestone. The labels it reaches are not
-  round-trippable either: importing `ex:Rex a ex:dog .` and running
-  `nibli-import <f>.ttl --export` emits `# fact:0 :assert a` (the `a` keyword is never
-  expanded to rdf:type — `rdf.rs`:181-204 → `owl.rs`:36/:46-52 — and the label is
-  minted as `:assert {relation}` at `nibli-session/src/lib.rs`:350 /
-  `nibli-engine/src/lib.rs`:397; CLI routing `nibli/src/bin/import.rs`:40, :107-108).
-  This is neither RDF nor a typed round-trip, while Chapter 21 advertises Turtle import
-  and export. Either implement valid Turtle/N-Triples export from typed facts
-  (`list_facts`, not labels) with tested IRI/literal mapping, or rename the module and
-  feature to a fact-label dump and remove the RDF-export claims. Note for the typed
-  design: since 07734c8 an RDF predicate locally named `exponential`/`logarithm`
-  refuses at import ingress (query-only reference compute names), so an export/import
-  round trip must account for that refusal class. **Exit:** real RDF takes an export ->
-  independent parser -> re-import round trip with identity/literal/alias tests; a
-  narrowed dump gets an exact-format contract and stale comments removed. Synchronize
-  Chapters 16/21, CLI help, README, and the reference gate.
-
 ---
 
 ## Chain — verdict rendering (do 1 before or with 2)
@@ -481,6 +457,19 @@ Blocked followers:
   documented hardware and rewrite the prose to the one-path story. Run the book
   validator, reference checker, capture checker, and two byte-idempotence passes
   before removing this residual with the `book-todo` workflow.
+
+- **Synchronize Chapters 16/21 with the real N-Triples export (engine done
+  2026-08-16; book-repo work only).** *(effort: low)* `nibli-import --export` now
+  emits valid, independently-parsed N-Triples for the representable fragment
+  (arity-2 surface tuples over IRI-safe constants/finite numbers, re-projected
+  from the store's event decomposition under the minted `http://nibli.dev/kb#`
+  base) and REFUSES everything else with per-fact reasons on stderr — the old
+  `# fact:<id> <label>` comment-line dump and its stale Lojban wording are gone.
+  Update Chapter 21's Turtle import/export exposition (and Chapter 16 if it
+  quotes the old dump) to the fragment-plus-refusals contract; re-capture any
+  transcripts. Run the book validator, reference checker, capture checker, and
+  two byte-idempotence passes before removing this residual with the
+  `book-todo` workflow.
 
 - **Wire `dhilipsiva.dev/docs/nibli/`** *(effort: low)* in the external `dhilipsiva/dhilipsiva.dev`
   repo, on the `nibli-updated` dispatch this repo already fires: checkout nibli →

@@ -10,4 +10,11 @@ homepage.workspace = true
 
 [dependencies]
 nibli-engine = { workspace = true }
+nibli-reason = { workspace = true }
 nibli-types = { workspace = true }
+
+[dev-dependencies]
+# Independent N-Triples parser for the export round-trip gate — deliberately
+# NOT our own rdf.rs, so the exporter is checked against a foreign reader.
+rio_api = "0.8"
+rio_turtle = "0.8"
