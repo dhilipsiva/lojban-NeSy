@@ -1342,6 +1342,20 @@ impl KnowledgeBase {
             .map_or(0, |m| m.work.tuple_bind_attempts(relation))
     }
 
+    /// How many times the live saturation was folded forward incrementally
+    /// instead of recomputed (test-only). Zero after a mutation means the
+    /// fixpoint was rebuilt from scratch — the discriminator no verdict test
+    /// can provide, since both paths answer identically.
+    #[cfg(test)]
+    pub(crate) fn materialization_resumes(&self) -> usize {
+        self.inner
+            .borrow()
+            .materialized
+            .borrow()
+            .as_ref()
+            .map_or(0, |m| m.work.resumes())
+    }
+
     /// The KB's STRATIFICATION as machine-readable data: every predicate with its
     /// stratum, whether it is base (EDB) or derived (IDB), and its outgoing dependency
     /// edges marked positive or negative.

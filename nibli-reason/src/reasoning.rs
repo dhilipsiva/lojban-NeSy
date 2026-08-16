@@ -2031,17 +2031,32 @@ pub(super) fn clear_typed_pred_cache(inner: &KnowledgeBaseInner) {
 /// registration, retraction, reset, profile switch), keeps the unconditional
 /// drop via [`invalidate_materialization`].
 pub(super) fn invalidate_materialization_for_insert(inner: &KnowledgeBaseInner, fact: &StoredFact) {
-    let relevant = {
-        let m = inner.materialized.borrow();
-        match m.as_ref() {
-            None => return,
-            Some(m) => m
-                .cone
-                .contains(crate::materialize::surface_relation(fact.relation())),
-        }
+    let surface = crate::materialize::surface_relation(fact.relation()).to_string();
+    // DECIDE under a shared borrow, ACT after releasing it: the two mutating
+    // arms below each re-borrow, and a `RefMut` held across them panics.
+    enum Fate {
+        /// Outside the cone — nothing here can depend on it.
+        Untouched,
+        /// Growth through a negated condition SHRINKS the model, so the
+        /// extensions cannot be repaired incrementally.
+        Drop,
+        /// In-cone and monotone: fold it in at the next query.
+        Grow,
+    }
+    let fate = match inner.materialized.borrow().as_ref() {
+        None => return,
+        Some(m) if !m.cone.contains(&surface) => Fate::Untouched,
+        Some(m) if m.negatively_read.contains(&surface) => Fate::Drop,
+        Some(_) => Fate::Grow,
     };
-    if relevant {
-        invalidate_materialization(inner);
+    match fate {
+        Fate::Untouched => {}
+        Fate::Drop => *inner.materialized.borrow_mut() = None,
+        Fate::Grow => {
+            if let Some(m) = inner.materialized.borrow_mut().as_mut() {
+                m.grew.insert(surface);
+            }
+        }
     }
 }
 

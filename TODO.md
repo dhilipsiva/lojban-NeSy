@@ -79,54 +79,31 @@ a concrete need.
 
 ---
 
-## Materialisation: incremental re-saturation (C3) + the mutants re-cut
+## The mutants re-cut
 
-(Three pieces landed 2026-08-16. The semi-naive join is INDEXED on statically
-bound positions (`LevelIndex`; transitive closure 1.19 s -> 72 ms at |R|=100).
-A REFUSED assertion no longer drops the saturation (`rollback_inner`; 254 ms ->
-7.9 ms on a refuse-interleaved loop). And an insert OUTSIDE the saturation's
-dependency cone no longer drops it either
-(`invalidate_materialization_for_insert`; 87.6 ms -> 0.54 ms on an
-out-of-cone-interleaved loop, ~161x). The ON/OFF differential now INTERLEAVES --
-each generated case defers a suffix of its ground facts, asserts them after a
-first battery run, and re-runs the battery -- so every "the saturation may
-outlive a mutation" optimisation is gated at scale rather than by unit tests
-alone. Gate any further step with `cargo mutants --in-diff`, and pin the WORK,
-not just the verdict: a degraded optimisation still answers correctly by
-falling back, so verdict tests cannot see it.)
+(C3 CLOSED 2026-08-16, in four steps: the semi-naive join indexed on statically
+bound positions (`LevelIndex`; transitive closure 1.19 s -> 72 ms at |R|=100);
+a refused assertion no longer dropping the saturation (`rollback_inner`;
+254 ms -> 7.9 ms); an insert outside the dependency cone no longer dropping it
+(`invalidate_materialization_for_insert`; 87.6 ms -> 0.54 ms); and finally the
+IN-CONE DELTA RESUME (`resume_with_delta`; 84.3 ms -> 5.5 ms), which folds new
+stored tuples into the existing extensions by re-entering the semi-naive
+fixpoint from a delta instead of recomputing it. The resume refuses -- falling
+back to a full recompute -- on equality classes, any relation read under
+NEGATION (growth through a negated condition shrinks the model, so it is not
+monotone), a relation that can no longer be seeded, an arity disagreement, or a
+budget overflow. In debug builds it verifies itself against a full recompute on
+every fold, which makes the whole test suite and the interleaved ON/OFF
+differential gates on the incremental path.
 
-- **Materialisation: incremental re-saturation (C3) - the IN-CONE delta resume.**
-  *(effort: high)* What remains is the case the cone filter cannot help: an
-  insert INSIDE the queried cone still drops the whole saturation and pays a
-  full recompute at the next query (measured above: 95 ms per
-  assert-then-query round against 0.5 ms for an out-of-cone one). Datalog is
-  monotone in its POSITIVE fragment, so such an insert can only GROW the model:
-  a three-state flag (`Clean` / `GrewBy(Vec<StoredFact>)` / `Invalid`) could
-  resume the semi-naive loop from a one-tuple delta -- `eval_rule`'s `delta_pos`
-  marker is already a delta-driven round, and the per-stratum fixpoint in
-  `saturate` would need factoring so it can be re-entered with an initial delta
-  instead of a fresh seed.
-
-  **The constraint the original entry missed, now established:** the saturated
-  program contains STRATIFIED NAF (`ProjectedRule::negative`), and growth
-  through a negated condition SHRINKS the model -- adding a tuple to a lower
-  stratum can falsify `~R(t)` above it and REMOVE derived tuples. So a resume
-  must refuse whenever the delta's relation is read under negation anywhere in
-  the eligible program, not merely stratify it. (Today's cone filter is safe on
-  this point by construction: the cone closure includes negated deps, so a
-  negatively-read relation is always IN the cone and always invalidates --
-  pinned by `an_insert_under_a_negation_invalidates_and_the_verdict_follows`.)
-  `Invalid` also for retraction, rebuild, reset, rule registration, equality
-  merges, and any non-`Bare` insert.
-
-  **Also still open, from the rollback subset:** a refused assertion still
-  REPLAYS every surviving record to restore a state it never changed (the
-  residual 7.9 ms above). Skipping that replay needs a trustworthy "nothing was
-  mutated" signal, which the saturation's survival alone does not provide --
-  insert-only domain state (`known_entities`/`known_numbers`, the member caches)
-  is mutated by paths that do not all invalidate, the 2026-08-01
-  lingering-member class. Either extend the at-the-mutation-point discipline to
-  one logical-state epoch every mutation bumps, or leave the replay alone.
+One residual, recorded rather than left implicit: a refused assertion still
+REPLAYS every surviving record to restore a state it never changed (the 7.9 ms
+above). Skipping that replay needs a trustworthy "nothing was mutated" signal,
+which the saturation's survival alone does not provide -- insert-only domain
+state (`known_entities`/`known_numbers`, the member caches) is mutated by paths
+that do not all invalidate, the 2026-08-01 lingering-member class. Either extend
+the at-the-mutation-point discipline to one logical-state epoch every mutation
+bumps, or leave the replay alone.)
 
 **The mutation baseline is stale enough that `just mutants` fails on `main`** *(effort: high)* — and the
 chain above will widen the gap, so sequence the re-cut before it or immediately after.

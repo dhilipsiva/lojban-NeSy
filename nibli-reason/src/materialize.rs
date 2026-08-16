@@ -792,6 +792,14 @@ pub(super) type Extensions = HashMap<String, HashSet<Vec<GroundTerm>>>;
 pub(super) struct MaterializationWork {
     #[cfg(test)]
     tuple_bind_attempts: HashMap<String, usize>,
+    /// How many times this saturation was folded forward incrementally rather
+    /// than recomputed. Resets with the `Materialized` it lives in, so a value
+    /// of zero after a mutation means the fixpoint was rebuilt from scratch.
+    /// The only observable that separates "resumed" from "recomputed" — both
+    /// answer identically, which is exactly why a verdict test cannot see the
+    /// difference and this counter has to exist.
+    #[cfg(test)]
+    resumes: usize,
 }
 
 impl MaterializationWork {
@@ -804,6 +812,19 @@ impl MaterializationWork {
                 .entry(head.relation.clone())
                 .or_default() += 1;
         }
+    }
+
+    #[inline]
+    fn note_resume(&mut self) {
+        #[cfg(test)]
+        {
+            self.resumes += 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn resumes(&self) -> usize {
+        self.resumes
     }
 
     #[cfg(test)]
@@ -844,6 +865,14 @@ pub(super) struct Materialized {
     /// (`invalidate_materialization_for_insert`). `complete` is always a subset,
     /// so a relation outside the cone also carries no completeness claim.
     pub(super) cone: HashSet<String>,
+    /// Relations read under NEGATION by any eligible rule. Growth through a
+    /// negated condition SHRINKS the model, so an insert into one of these can
+    /// never be folded in incrementally — it invalidates outright.
+    pub(super) negatively_read: HashSet<String>,
+    /// In-cone relations whose stored extension may have gained tuples since
+    /// this saturation was built. Empty = clean; non-empty means the next query
+    /// must fold the delta in (`resume_with_delta`) before reading it.
+    pub(super) grew: HashSet<String>,
     pub(super) work: MaterializationWork,
 }
 
@@ -856,6 +885,8 @@ impl Materialized {
             arity: HashMap::new(),
             requested: HashSet::new(),
             cone: HashSet::new(),
+            negatively_read: HashSet::new(),
+            grew: HashSet::new(),
             work: MaterializationWork::default(),
         }
     }
@@ -1321,6 +1352,233 @@ fn eval_rule(
 /// This is the whole point of the module: when it returns, every relation in
 /// `complete` has its FULL extension in `ext`, so `~p(x)` is answered by asking whether
 /// a tuple is in a set — no proof attempt, no depth bound, no domain cartesian.
+/// One stratum's semi-naive fixpoint, shared by the full [`saturate`] and the
+/// incremental [`resume_with_delta`].
+///
+/// `initial_delta` EMPTY means "compute this stratum from scratch": round 0
+/// evaluates every rule against the full extensions (which already hold the EDB
+/// seed plus every completed lower stratum), and later rounds join each rule once
+/// per positive position against the previous round's delta, so a tuple
+/// combination is only revisited when one of its inputs is new.
+///
+/// A NON-EMPTY `initial_delta` means "this stratum's inputs just grew by exactly
+/// these tuples": the round-0 full evaluation — the expensive part, and the whole
+/// reason a recompute costs what it does — is SKIPPED, and the loop starts at the
+/// delta rounds. That is sound only for monotone growth, which is why the caller
+/// must have excluded every relation read under negation before getting here.
+///
+/// Returns everything newly derived (so a caller can carry it to higher strata),
+/// or `None` if the tuple budget was exhausted.
+fn semi_naive_stratum(
+    stratum_rules: &[&std::sync::Arc<ProjectedRule>],
+    ext: &mut Extensions,
+    initial_delta: Extensions,
+    budget: &mut usize,
+    work: &mut MaterializationWork,
+) -> Option<Extensions> {
+    let resuming = initial_delta.values().any(|s| !s.is_empty());
+    let mut delta = initial_delta;
+    let mut round = if resuming { 1usize } else { 0 };
+    let mut all_derived: Extensions = Extensions::new();
+    loop {
+        let mut produced: Vec<(String, Vec<GroundTerm>)> = Vec::new();
+        for pr in stratum_rules {
+            if round == 0 {
+                eval_rule(pr, ext, &delta, None, &mut produced, work);
+            } else {
+                for pos in 0..pr.positive.len() {
+                    // Skip positions whose relation gained nothing last round —
+                    // the join would be over an empty delta.
+                    if delta
+                        .get(&pr.positive[pos].relation)
+                        .is_none_or(HashSet::is_empty)
+                    {
+                        continue;
+                    }
+                    eval_rule(pr, ext, &delta, Some(pos), &mut produced, work);
+                }
+            }
+        }
+        let mut next: Extensions = Extensions::new();
+        let mut overflowed = false;
+        for (rel, tuple) in produced {
+            if ext.get(&rel).is_some_and(|s| s.contains(&tuple)) {
+                continue;
+            }
+            if *budget == 0 {
+                overflowed = true;
+                break;
+            }
+            if next.entry(rel).or_default().insert(tuple) {
+                *budget -= 1;
+            }
+        }
+        if overflowed {
+            return None;
+        }
+        let grew = next.values().any(|s| !s.is_empty());
+        for (rel, set) in &next {
+            ext.entry(rel.clone())
+                .or_default()
+                .extend(set.iter().cloned());
+            all_derived
+                .entry(rel.clone())
+                .or_default()
+                .extend(set.iter().cloned());
+        }
+        delta = next;
+        if !grew {
+            return Some(all_derived);
+        }
+        round += 1;
+    }
+}
+
+/// INCREMENTAL RE-SATURATION: fold the stored tuples that arrived since this
+/// saturation was built into it, instead of recomputing the whole fixpoint.
+///
+/// Returns `false` when anything at all looks unlike plain monotone growth, and
+/// the caller then drops the cache and recomputes — every refusal below is a
+/// fall-back to today's behaviour, never a weakened claim:
+///
+/// * a `du` equivalence exists (the global equality guard),
+/// * a delta relation is read under NEGATION anywhere in the program — growth
+///   through a negated condition SHRINKS the model, so it is not monotone,
+/// * a relation this saturation completed can no longer be seeded (a `past`
+///   fact, a role gap, an arity clash arrived with the delta),
+/// * a delta tuple's arity disagrees with the projected arity, or
+/// * the fixpoint exhausts its tuple budget.
+///
+/// In debug builds the result is verified against a full recompute — see the
+/// `debug_assert` at the end, which makes every test in the suite a check of
+/// this function.
+fn resume_with_delta(
+    inner: &KnowledgeBaseInner,
+    elig: &Eligibility,
+    strata: &Strata,
+    m: &mut Materialized,
+) -> bool {
+    if !inner.equivalence_parent.is_empty() {
+        return false;
+    }
+    // Re-seed from the store. This is O(store) and cheap next to the fixpoint —
+    // which is the part being skipped.
+    let (seed, unseedable) = seed_edb(inner);
+    for rel in &m.complete {
+        if unseedable.contains_key(rel) {
+            return false;
+        }
+    }
+
+    // The delta: stored tuples this saturation has never seen.
+    let mut delta: Extensions = Extensions::new();
+    for (rel, tuples) in &seed {
+        if !m.cone.contains(rel) {
+            continue;
+        }
+        for tuple in tuples {
+            if m.ext.get(rel).is_some_and(|s| s.contains(tuple)) {
+                continue;
+            }
+            if m.negatively_read.contains(rel) {
+                return false;
+            }
+            if m.arity.get(rel).is_some_and(|a| *a != tuple.len()) {
+                return false;
+            }
+            delta.entry(rel.clone()).or_default().insert(tuple.clone());
+        }
+    }
+    if delta.values().all(HashSet::is_empty) {
+        // Nothing actually new (a duplicate assertion, or a fact the rules had
+        // already derived): the extensions stand as they are.
+        m.grew.clear();
+        m.work.note_resume();
+        return true;
+    }
+    for (rel, tuples) in &delta {
+        m.ext
+            .entry(rel.clone())
+            .or_default()
+            .extend(tuples.iter().cloned());
+    }
+
+    // Walk the strata that can see the delta, carrying each level's derivations
+    // upward. Levels below the lowest changed one cannot be affected: their rules
+    // read only strictly lower strata, which did not move.
+    let lowest = delta
+        .keys()
+        .map(|rel| strata.get(rel).copied().unwrap_or(0))
+        .min()
+        .unwrap_or(0);
+    let mut by_stratum: Vec<(usize, &String)> = m
+        .complete
+        .iter()
+        .map(|rel| (strata.get(rel).copied().unwrap_or(0), rel))
+        .filter(|(level, _)| *level >= lowest)
+        .collect();
+    by_stratum.sort();
+
+    let mut budget = MAX_MATERIALIZED_TUPLES;
+    let mut carried = delta;
+    let mut idx = 0usize;
+    while idx < by_stratum.len() {
+        let level = by_stratum[idx].0;
+        let mut rels: Vec<&String> = Vec::new();
+        while idx < by_stratum.len() && by_stratum[idx].0 == level {
+            rels.push(by_stratum[idx].1);
+            idx += 1;
+        }
+        let mut stratum_rules: Vec<&std::sync::Arc<ProjectedRule>> = Vec::new();
+        let mut seen: HashSet<*const ProjectedRule> = HashSet::new();
+        for rel in &rels {
+            for pr in elig.rules.get(*rel).into_iter().flatten() {
+                if seen.insert(std::sync::Arc::as_ptr(pr)) {
+                    stratum_rules.push(pr);
+                }
+            }
+        }
+        if stratum_rules.is_empty() {
+            continue;
+        }
+        let Some(derived) = semi_naive_stratum(
+            &stratum_rules,
+            &mut m.ext,
+            carried.clone(),
+            &mut budget,
+            &mut m.work,
+        ) else {
+            return false;
+        };
+        for (rel, tuples) in derived {
+            carried.entry(rel).or_default().extend(tuples);
+        }
+    }
+    m.grew.clear();
+    m.work.note_resume();
+
+    // The metamorphic property this whole function must satisfy, checked on every
+    // debug-build query: resuming from a delta agrees with recomputing from
+    // scratch. Cheap to state, and it turns the entire test suite — plus the
+    // interleaved ON/OFF differential — into a gate on the incremental path.
+    #[cfg(debug_assertions)]
+    {
+        let fresh = saturate(inner, elig, strata, &m.requested);
+        debug_assert_eq!(
+            m.complete, fresh.complete,
+            "resumed completeness disagrees with a full recompute"
+        );
+        for rel in &fresh.complete {
+            debug_assert_eq!(
+                m.ext.get(rel),
+                fresh.ext.get(rel),
+                "resumed extension for '{rel}' disagrees with a full recompute"
+            );
+        }
+    }
+    true
+}
+
 pub(super) fn saturate(
     inner: &KnowledgeBaseInner,
     elig: &Eligibility,
@@ -1354,6 +1612,8 @@ pub(super) fn saturate(
             // The equality guard saturates nothing, so no insert is ever
             // irrelevant to it — an empty cone keeps every insert invalidating.
             cone: HashSet::new(),
+            negatively_read: HashSet::new(),
+            grew: HashSet::new(),
             work: MaterializationWork::default(),
         };
     }
@@ -1478,62 +1738,16 @@ pub(super) fn saturate(
             continue;
         }
 
-        // Semi-naive fixpoint for this stratum.
-        //
-        // Round 0 evaluates every rule against the full extensions (which already hold
-        // the EDB seed plus every completed lower stratum). Later rounds join each rule
-        // once per positive position against the PREVIOUS round's delta, so a tuple
-        // combination is only revisited when one of its inputs is new.
-        let mut delta: Extensions = Extensions::new();
-        let mut round = 0usize;
-        let mut overflowed = false;
-        loop {
-            let mut produced: Vec<(String, Vec<GroundTerm>)> = Vec::new();
-            for pr in &stratum_rules {
-                if round == 0 {
-                    eval_rule(pr, &ext, &delta, None, &mut produced, &mut work);
-                } else {
-                    for pos in 0..pr.positive.len() {
-                        // Skip positions whose relation gained nothing last round —
-                        // the join would be over an empty delta.
-                        if delta
-                            .get(&pr.positive[pos].relation)
-                            .is_none_or(HashSet::is_empty)
-                        {
-                            continue;
-                        }
-                        eval_rule(pr, &ext, &delta, Some(pos), &mut produced, &mut work);
-                    }
-                }
-            }
-            let mut next: Extensions = Extensions::new();
-            for (rel, tuple) in produced {
-                if ext.get(&rel).is_some_and(|s| s.contains(&tuple)) {
-                    continue;
-                }
-                if budget == 0 {
-                    overflowed = true;
-                    break;
-                }
-                if next.entry(rel).or_default().insert(tuple) {
-                    budget -= 1;
-                }
-            }
-            if overflowed {
-                break;
-            }
-            let grew = next.values().any(|s| !s.is_empty());
-            for (rel, set) in &next {
-                ext.entry(rel.clone())
-                    .or_default()
-                    .extend(set.iter().cloned());
-            }
-            delta = next;
-            if !grew {
-                break;
-            }
-            round += 1;
-        }
+        // Semi-naive fixpoint for this stratum, seeded with an EMPTY delta so it
+        // opens with the full round-0 evaluation (see `semi_naive_stratum`).
+        let derived = semi_naive_stratum(
+            &stratum_rules,
+            &mut ext,
+            Extensions::new(),
+            &mut budget,
+            &mut work,
+        );
+        let overflowed = derived.is_none();
 
         if overflowed {
             // Stop-loss. Leave this stratum's relations INCOMPLETE — and every later
@@ -1590,6 +1804,17 @@ pub(super) fn saturate(
             .or_insert_with(|| Ineligible::Flavoured(format!("mixed arities for '{rel}'")));
     }
 
+    // Every relation any eligible rule reads under `~`. An insert into one of
+    // these is NOT monotone growth, so `resume_with_delta` must refuse it.
+    let mut negatively_read: HashSet<String> = HashSet::new();
+    for rules in elig.rules.values() {
+        for pr in rules {
+            for n in &pr.negative {
+                negatively_read.insert(n.relation.clone());
+            }
+        }
+    }
+
     Materialized {
         ext,
         complete,
@@ -1600,6 +1825,8 @@ pub(super) fn saturate(
         // pushed above), which is exactly what an insert has to fall outside of
         // to be irrelevant to these extensions.
         cone: wanted,
+        negatively_read,
+        grew: HashSet::new(),
         work,
     }
 }
@@ -1768,6 +1995,30 @@ pub(super) fn ensure_materialized_targets(
     if !inner.materialization {
         return false;
     }
+
+    // Fold any pending in-cone growth in FIRST, before anything reads these
+    // extensions — including the `targets.is_subset` fast path below, which
+    // would otherwise serve a cache that is missing the newest tuples. A resume
+    // that refuses drops the cache, and the recompute below rebuilds it.
+    let dirty = inner
+        .materialized
+        .borrow()
+        .as_ref()
+        .is_some_and(|m| !m.grew.is_empty());
+    if dirty {
+        let eligibility = eligible_relations(inner);
+        let strata = compute_strata(&inner.pred_dep_graph);
+        // Taken OUT for the duration: `resume_with_delta`'s debug verification
+        // recomputes through `saturate`, and nothing may read a half-folded cache.
+        let mut taken = inner.materialized.borrow_mut().take();
+        let resumed = taken
+            .as_mut()
+            .is_some_and(|m| resume_with_delta(inner, &eligibility, &strata, m));
+        if resumed {
+            *inner.materialized.borrow_mut() = taken;
+        }
+    }
+
     if targets.is_empty() {
         if inner.materialized.borrow().is_none() {
             *inner.materialized.borrow_mut() = Some(Materialized::empty());
@@ -1775,13 +2026,15 @@ pub(super) fn ensure_materialized_targets(
         return false;
     }
 
+    // Re-read AFTER the resume attempt: a refused resume left `None` here, and
+    // must fall through to the recompute rather than report a cache hit.
     let previous_targets = inner
         .materialized
         .borrow()
         .as_ref()
         .map(|materialized| materialized.requested.clone())
         .unwrap_or_default();
-    if targets.is_subset(&previous_targets) {
+    if inner.materialized.borrow().is_some() && targets.is_subset(&previous_targets) {
         return false;
     }
 

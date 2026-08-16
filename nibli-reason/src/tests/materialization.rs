@@ -779,9 +779,15 @@ fn an_opaque_query_does_no_work_for_an_unrelated_binary_transitive_relation() {
     );
     let (complete, _) = kb.materialization_report();
     assert!(complete.iter().any(|r| r == "earlier"));
-    assert!(
-        !complete.iter().any(|r| r == "later"),
-        "mutation must clear the prior target union: complete={complete:?}"
+    // `later` may now STAY complete across the mutation — an in-cone insert is
+    // folded in incrementally (`resume_with_delta`) instead of dropping the
+    // cache. What must never happen is a STALE extension being served, so the
+    // requirement is pinned on the verdict: the newly asserted tuple has to be
+    // visible through the materialised `later` extension.
+    assert_eq!(
+        query_result(&kb, compile_surface("~later(MomentD, MomentE).")),
+        QueryResult::False,
+        "the delta must be folded in; a stale `later` extension would answer TRUE"
     );
 }
 
@@ -1711,11 +1717,14 @@ fn a_refused_assertion_preserves_the_saturation() {
         "a non-mutating rollback must leave the saturation intact"
     );
 
-    // Control: a real mutation still drops it.
+    // Control: a real IN-CONE mutation is not ignored. It no longer drops the
+    // cache (it is folded in at the next query), so the requirement is pinned
+    // where it belongs — on the verdict.
     assert_buf(&kb, compile_surface("dog(Bel)."));
-    assert!(
-        kb.materialization_report().0.is_empty(),
-        "a successful assertion must still invalidate the saturation"
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::False,
+        "a successful in-cone assertion must be visible at the next query"
     );
 }
 
@@ -1796,12 +1805,12 @@ fn a_refused_assertion_still_clears_and_disables_the_predicate_cache() {
     );
 }
 
-/// SELF-LIMITING: a rollback that DID mutate (an earlier root of a multi-root
-/// assertion landed before a later root was refused) must still drop the
-/// saturation — the mutation point's own `invalidate_materialization` does the
-/// gating, so preservation can never outrun it.
+/// A rollback whose EARLIER root already mutated the store must still answer as
+/// if nothing happened. The insert marked the saturation grown rather than
+/// dropping it, and the replay then removed the tuple again — so the pending
+/// delta must resolve to nothing at the next query, not to a phantom fact.
 #[test]
-fn a_mutating_rollback_still_drops_the_saturation() {
+fn a_mutating_rollback_leaves_no_phantom_in_the_saturation() {
     let kb = kb_with_live_saturation();
     let multi = compile_surface("dog(Bel). fit(Bel).");
     assert!(
@@ -1810,9 +1819,18 @@ fn a_mutating_rollback_still_drops_the_saturation() {
     );
     kb.assert_fact_inner(multi, String::new())
         .expect_err("the derived_only root must refuse the whole assertion");
-    assert!(
-        kb.materialization_report().0.is_empty(),
-        "a rollback whose earlier root mutated the store must drop the saturation"
+
+    // The rolled-back `dog(Bel)` must NOT have reached the extensions.
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::True,
+        "the refused assertion's earlier root must leave no phantom derivation"
+    );
+    // And a KB that never saw it agrees.
+    let fresh = kb_with_live_saturation();
+    assert_eq!(
+        query_result(&fresh, compile_surface("~animal(Bel).")),
+        query_result(&kb, compile_surface("~animal(Bel).")),
     );
 }
 
@@ -1831,10 +1849,13 @@ fn an_out_of_cone_insert_preserves_the_saturation() {
         "an insert about an unrelated relation must leave the saturation standing"
     );
 
+    // An insert INSIDE the cone is folded in rather than dropped — pinned on the
+    // verdict, which is what "not ignored" actually means.
     assert_buf(&kb, compile_surface("dog(Bel)."));
-    assert!(
-        kb.materialization_report().0.is_empty(),
-        "an insert INSIDE the cone must still invalidate"
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::False,
+        "an in-cone insert must reach the extensions at the next query"
     );
 }
 
@@ -1924,5 +1945,222 @@ fn an_equality_merge_invalidates_even_though_it_is_out_of_cone() {
         query_result(&kb, compile_surface("~animal(Bel).")),
         QueryResult::False,
         "Bel is now Rex, hence an animal; a stale extension would still say TRUE"
+    );
+}
+
+// ─── The IN-CONE delta resume ────────────────────────────────────────────
+
+/// A delta must PROPAGATE up every stratum above it, not merely land in its own
+/// relation. Four-level chain, saturated by a NAF query, then one new base fact:
+/// the top of the chain must follow. (In debug builds `resume_with_delta` also
+/// verifies itself against a full recompute, so this additionally exercises that
+/// equality on a multi-stratum program.)
+#[test]
+fn a_delta_propagates_up_every_stratum() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Rex)."));
+    assert_buf(&kb, compile_surface("animal(every dog)."));
+    assert_buf(&kb, compile_surface("alive(every animal)."));
+    assert_buf(&kb, compile_surface("beautiful(every alive)."));
+
+    assert_eq!(
+        query_result(&kb, compile_surface("~beautiful(Bel).")),
+        QueryResult::True,
+        "Bel is nothing yet; this saturates the whole chain"
+    );
+    assert!(
+        kb.materialization_report()
+            .0
+            .iter()
+            .any(|r| r == "beautiful"),
+        "fixture must complete the top of the chain"
+    );
+
+    // One new BASE fact, three strata below the top.
+    assert_buf(&kb, compile_surface("dog(Bel)."));
+    for (q, expected) in [
+        ("animal(Bel).", QueryResult::True),
+        ("alive(Bel).", QueryResult::True),
+        ("beautiful(Bel).", QueryResult::True),
+        ("~beautiful(Bel).", QueryResult::False),
+    ] {
+        assert_eq!(
+            query_result(&kb, compile_surface(q)),
+            expected,
+            "{q} must follow from the folded delta"
+        );
+    }
+}
+
+/// A delta landing in the MIDDLE of a chain propagates upward from there, and
+/// leaves the strata below it alone.
+#[test]
+fn a_mid_chain_delta_propagates_upward_only() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Rex)."));
+    assert_buf(&kb, compile_surface("animal(every dog)."));
+    assert_buf(&kb, compile_surface("alive(every animal)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~alive(Cyan).")),
+        QueryResult::True
+    );
+
+    assert_buf(&kb, compile_surface("animal(Cyan)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("alive(Cyan).")),
+        QueryResult::True,
+        "the mid-chain delta must reach the stratum above it"
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("dog(Cyan).")),
+        QueryResult::False,
+        "…and must not manufacture anything BELOW it"
+    );
+}
+
+/// Repeated deltas accumulate correctly: several asserts between queries, and a
+/// duplicate assert (which adds no tuple) must leave the extensions right.
+#[test]
+fn repeated_and_duplicate_deltas_accumulate_correctly() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Rex)."));
+    assert_buf(&kb, compile_surface("animal(every dog)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::True
+    );
+
+    assert_buf(&kb, compile_surface("dog(Bel)."));
+    assert_buf(&kb, compile_surface("dog(Cyan)."));
+    assert_buf(&kb, compile_surface("dog(Bel).")); // duplicate — no new tuple
+    for who in ["Rex", "Bel", "Cyan"] {
+        assert_eq!(
+            query_result(&kb, compile_surface(&format!("animal({who})."))),
+            QueryResult::True,
+            "{who} must be an animal after the accumulated deltas"
+        );
+    }
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Dana).")),
+        QueryResult::True,
+        "and nobody else may be invented"
+    );
+}
+
+/// The incremental path must actually RUN. Refusing to resume is always
+/// correct — it falls back to a full recompute — so no verdict test can tell
+/// the two apart; this pins the mechanism itself. An in-cone insert must be
+/// FOLDED (a resume), and an out-of-cone one must not even attempt it.
+#[test]
+fn an_in_cone_insert_is_folded_and_an_out_of_cone_one_is_not() {
+    let kb = kb_with_live_saturation(); // cone = {animal, dog}
+    assert_eq!(
+        kb.materialization_resumes(),
+        0,
+        "a fresh saturation has folded nothing yet"
+    );
+
+    // OUT of cone: no growth is recorded, so the next query folds nothing.
+    assert_buf(&kb, compile_surface("cat(Bel)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::True
+    );
+    assert_eq!(
+        kb.materialization_resumes(),
+        0,
+        "an out-of-cone insert must not even attempt a fold"
+    );
+
+    // IN cone: the next query must fold the delta in, NOT recompute (a
+    // recompute would install a fresh cache whose counter reads zero).
+    assert_buf(&kb, compile_surface("dog(Bel)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::False
+    );
+    assert_eq!(
+        kb.materialization_resumes(),
+        1,
+        "an in-cone insert must be folded into the existing saturation"
+    );
+
+    // And folds accumulate rather than resetting.
+    assert_buf(&kb, compile_surface("dog(Cyan)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("animal(Cyan).")),
+        QueryResult::True
+    );
+    assert_eq!(kb.materialization_resumes(), 2, "folds must accumulate");
+}
+
+/// A relation read under NEGATION must never be folded: it invalidates, so the
+/// next query REBUILDS (fold count back to zero on the fresh cache).
+#[test]
+fn a_negated_relation_insert_is_never_folded() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Rex)."));
+    assert_buf(&kb, compile_surface("fit(every dog where ~cat)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~fit(Bel).")),
+        QueryResult::True
+    );
+
+    assert_buf(&kb, compile_surface("cat(Rex)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("fit(Rex).")),
+        QueryResult::False,
+        "the new cat blocks the derivation"
+    );
+    assert_eq!(
+        kb.materialization_resumes(),
+        0,
+        "a negatively-read relation must force a rebuild, never a fold"
+    );
+}
+
+/// A fold must do DELTA work, not re-derive the stratum. Several mutations of
+/// `semi_naive_stratum` (mis-detecting the resume, or never advancing the round
+/// counter) leave every answer correct while quietly reverting to a full
+/// evaluation per round — invisible to verdicts, so the work is pinned instead.
+#[test]
+fn a_fold_costs_delta_work_not_a_full_re_evaluation() {
+    let kb = new_kb();
+    for i in 0..12 {
+        assert_buf(
+            &kb,
+            compile_surface(&format!("earlier(E{}, E{}).", i, i + 1)),
+        );
+    }
+    assert_buf(
+        &kb,
+        compile_surface(
+            "all $a: all $b: all $c: earlier($a, $b) & earlier($b, $c) -> earlier($a, $c).",
+        ),
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("~earlier(E12, E0).")),
+        QueryResult::True
+    );
+    let after_build = kb.materialization_tuple_bind_attempts("earlier");
+    assert!(after_build > 0, "the fixture must saturate a real closure");
+
+    // One new edge, then a query: the fold must join it against the closure,
+    // not rebuild the closure.
+    assert_buf(&kb, compile_surface("earlier(E12, E13)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("earlier(E0, E13).")),
+        QueryResult::True,
+        "the new edge must extend the closure"
+    );
+    assert_eq!(kb.materialization_resumes(), 1, "it must be a fold");
+    let fold_cost = kb.materialization_tuple_bind_attempts("earlier") - after_build;
+    // Measured at pinning time: build 618, fold 261. A fold that reverted to
+    // full round-0 evaluations (a mis-detected resume, or a round counter that
+    // never advances) re-derives the closure instead of joining against it.
+    assert!(
+        fold_cost < 400,
+        "a fold must cost DELTA work, not a re-evaluation: fold={fold_cost} \
+         (build was {after_build}; measured fold at pinning time was 261)"
     );
 }
