@@ -50,6 +50,15 @@ pub struct PredicateSignature {
 // INTEGRITY CONSTRAINTS
 // ═══════════════════════════════════════════════════════════════════
 
+/// A per-conclusion-predicate execution override recorded by
+/// `set_rule_forward` / `set_rule_priority`. `None` means "never set" —
+/// the rule's own registration default applies.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct RuleExecOverride {
+    pub(super) forward: Option<bool>,
+    pub(super) priority: Option<u32>,
+}
+
 /// An integrity constraint: a set of conjuncts that must NOT all hold simultaneously.
 /// If every conjunct is satisfied in the KB, the constraint is violated.
 #[derive(Clone, Debug)]
@@ -1727,6 +1736,14 @@ pub(super) struct KnowledgeBaseInner {
     /// Used for incremental retraction: when a fact that compiled rules is retracted,
     /// the corresponding rules can be removed without full rebuild.
     pub(super) rule_source_map: HashMap<u64, Vec<String>>,
+    /// Rule execution overrides (`set_rule_forward` / `set_rule_priority`),
+    /// keyed by conclusion predicate — SESSION CONFIGURATION, like `strict`:
+    /// consulted at every rule registration (`register_rule`'s bucket push), so
+    /// the rebuild a retraction performs reapplies them by construction when
+    /// replay re-registers the surviving rules. Deliberately absent from
+    /// `rebuild_inner`'s clear list; cleared by `reset()` (the rules they
+    /// configure die with the KB content).
+    pub(super) rule_exec_overrides: HashMap<String, RuleExecOverride>,
     /// The current assertion's fact_registry ID (set during process_assertion).
     /// Used by compile_forall_to_rule to record rule sources.
     pub(super) current_assertion_id: Option<u64>,
@@ -1979,6 +1996,7 @@ impl Clone for KnowledgeBaseInner {
             integrity_constraints: self.integrity_constraints.clone(),
             arg_position_index: self.arg_position_index.clone(),
             rule_source_map: self.rule_source_map.clone(),
+            rule_exec_overrides: self.rule_exec_overrides.clone(),
             current_assertion_id: None,
             current_rule_ordinal: 0,
             forward_depth: 0,
@@ -2040,6 +2058,7 @@ impl KnowledgeBaseInner {
             integrity_constraints: Vec::new(),
             arg_position_index: HashMap::new(),
             rule_source_map: HashMap::new(),
+            rule_exec_overrides: HashMap::new(),
             current_assertion_id: None,
             current_rule_ordinal: 0,
             forward_depth: 0,
@@ -2101,6 +2120,9 @@ impl KnowledgeBaseInner {
         self.predicate_registry.clear();
         self.arg_position_index.clear();
         self.rule_source_map.clear();
+        // Session-configured execution overrides die with the rules they
+        // configure (reset() drops KB content; a fresh KB starts unconfigured).
+        self.rule_exec_overrides.clear();
         self.current_assertion_id = None;
         self.current_rule_ordinal = 0;
         self.forward_depth = 0;

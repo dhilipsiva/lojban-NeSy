@@ -1674,8 +1674,23 @@ impl KnowledgeBase {
     /// forward-derived conclusion would never be retracted when a later assertion
     /// makes the negated dependency true. Positive (negation-free) rules enable
     /// normally; `forward = false` (disabling) always applies.
+    ///
+    /// SESSION CONFIGURATION (like `strict`): the setting is recorded per
+    /// conclusion predicate and consulted at every rule REGISTRATION, so it
+    /// applies to rules registered later and SURVIVES the rebuild a retraction
+    /// (or rollback, or profile switch) performs — replay re-registers every
+    /// surviving rule under the recorded overrides, re-checking the NAF refusal
+    /// per rule. Enabling never fires retroactively: eager derivation happens on
+    /// subsequent triggering insertions, and verdicts are unaffected either way
+    /// (backward chaining derives the same conclusions at query time). Cleared
+    /// by `reset()`.
     pub fn set_rule_forward(&self, conclusion_predicate: &str, forward: bool) {
         let mut inner = self.inner.borrow_mut();
+        inner
+            .rule_exec_overrides
+            .entry(conclusion_predicate.to_string())
+            .or_default()
+            .forward = Some(forward);
         let rebuilding = inner.rebuilding;
         if let Some(rules) = inner.universal_rules.get_mut(conclusion_predicate) {
             for rule in rules.iter_mut() {
@@ -1710,8 +1725,17 @@ impl KnowledgeBase {
     /// Higher priority = tried first during backward/forward chaining.
     /// Default is 0. Rules with higher priority override lower-priority ones
     /// (defeasible reasoning / exception hierarchies).
+    ///
+    /// SESSION CONFIGURATION: recorded per conclusion predicate, consulted at
+    /// every rule registration, survives rebuild (see [`Self::set_rule_forward`]).
+    /// Cleared by `reset()`.
     pub fn set_rule_priority(&self, conclusion_predicate: &str, priority: u32) {
         let mut inner = self.inner.borrow_mut();
+        inner
+            .rule_exec_overrides
+            .entry(conclusion_predicate.to_string())
+            .or_default()
+            .priority = Some(priority);
         if let Some(rules) = inner.universal_rules.get_mut(conclusion_predicate) {
             for rule in rules.iter_mut() {
                 if let Some(r) = Arc::get_mut(rule) {
@@ -1726,6 +1750,26 @@ impl KnowledgeBase {
             // path relies on (`matching_rules_typed` borrows the bucket as-is).
             sort_rule_bucket(rules);
         }
+    }
+
+    /// The live execution settings of every rule concluding
+    /// `conclusion_predicate`: `(label, forward, priority)` per bucket member,
+    /// in bucket order (descending priority). Programmatic read twin of
+    /// [`Self::set_rule_forward`] / [`Self::set_rule_priority`] — what the
+    /// retraction differential compares across rebuilds. Empty when no rule
+    /// concludes the predicate.
+    pub fn rule_execution_settings(&self, conclusion_predicate: &str) -> Vec<(String, bool, u32)> {
+        self.inner
+            .borrow()
+            .universal_rules
+            .get(conclusion_predicate)
+            .map(|rules| {
+                rules
+                    .iter()
+                    .map(|r| (r.label.clone(), r.forward, r.priority))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Declare that an entity belongs to a sort.

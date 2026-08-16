@@ -963,14 +963,18 @@ fn test_priority_set_and_query() {
 fn matching_rules_bucket_stays_descending_after_late_registration() {
     // INVARIANT: universal_rules buckets are kept sorted by descending priority
     // at mutation time, so the backward-chain read path (matching_rules_typed)
-    // can borrow a pre-sorted slice without cloning or re-sorting. A
-    // low-priority rule registered AFTER a high-priority rule for the same
-    // conclusion must land AFTER it. (The suite-wide debug_assert in
-    // matching_rules_typed is the broader net; this pins one explicit case.)
+    // can borrow a pre-sorted slice without cloning or re-sorting. Since rule
+    // execution settings became SESSION CONFIGURATION (consulted at every
+    // registration), a rule registered AFTER `set_rule_priority` INHERITS the
+    // predicate-wide priority: the bucket stays uniform and sorted, and the old
+    // late-registration asymmetry — a late rule silently at priority 0 inside a
+    // priority-10 bucket, exactly the settings-loss class the rebuild also had —
+    // is gone. (The suite-wide debug_assert in matching_rules_typed remains the
+    // broader sortedness net.)
     let kb = new_kb();
     assert_buf(&kb, make_universal("gerku", "danlu"));
     kb.set_rule_priority("danlu", 10); // the dog→danlu rule now has priority 10
-    assert_buf(&kb, make_universal("mlatu", "danlu")); // new rule, default priority 0
+    assert_buf(&kb, make_universal("mlatu", "danlu")); // late rule INHERITS 10
     let inner = kb.inner.borrow();
     let bucket = inner
         .universal_rules
@@ -986,8 +990,11 @@ fn matching_rules_bucket_stays_descending_after_late_registration() {
         "bucket must stay descending-sorted: {:?}",
         bucket.iter().map(|r| r.priority).collect::<Vec<_>>()
     );
-    assert_eq!(bucket[0].priority, 10, "high-priority rule comes first");
-    assert_eq!(bucket[1].priority, 0, "late low-priority rule comes last");
+    assert_eq!(bucket[0].priority, 10, "configured rule keeps its priority");
+    assert_eq!(
+        bucket[1].priority, 10,
+        "a late registration inherits the predicate-wide session override"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -81,27 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **Preserve or explicitly invalidate rule execution settings across rebuild.** *(effort: high)*
-  `set_rule_forward` (`nibli-reason/src/lib.rs`:1669-1699) and `set_rule_priority`
-  (:1705-1721) mutate compiled `UniversalRuleRecord`s (`forward` at `kb.rs`:1584,
-  `priority` at :1587 — the record's own doc at :1564-1565 says "mutable execution
-  settings are not identity boundaries"), but those settings are not part of
-  `FactRecord` (`kb.rs`:1592-1597). `rebuild_inner` (`lib.rs`:475-576; `universal_rules`
-  cleared at :507, `rebuilding` set/cleared at :540/:549) replays every surviving record
-  through `register_rule` call sites that hardcode `forward=false`
-  (`rules.rs`:1416-1426, :1893-1903), the record is built with a literal `priority: 0`
-  (`rules.rs`:641-651, the zero at :650), and forward firing is suppressed while
-  `rebuilding` is true (`rules.rs`:1086-1088). (The previous citation
-  `rules.rs:599-607,985-988` was wrong even at the 2026-08-08 sweep — those lines are
-  the negated-group dep-edge block and sort-warning code.) An unrelated retraction
-  therefore changes rule configuration and fact-store/proof shape even when definitive
-  query answers remain backward-derivable. Either persist/reapply the settings as
-  session configuration or make the setters explicitly ephemeral and remove claims of
-  replay equivalence that include them. **Exit:** set forward/priority, retract an
-  unrelated id, rebuild/reopen, and assert the documented configuration, eager facts,
-  proof origin, and verdict; add this case to the retraction differential
-  (`retract_diff.rs` has no reference to either setter today — positive-controlled).
-
 - **Make aggregation fail closed instead of returning a partial numeric result.** *(effort: medium)*
   `KnowledgeBase::aggregate` (`nibli-reason/src/lib.rs`:1559-1593) uses `filter_map`
   over witness bindings (:1572), silently dropping a witness when the requested variable

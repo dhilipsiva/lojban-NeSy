@@ -651,15 +651,39 @@ pub(super) fn register_rule(
     };
     let rc = Arc::new(rule);
     for concl in &rc.typed_conclusions {
-        let bucket = inner
-            .universal_rules
-            .entry(concl.relation().to_string())
-            .or_default();
-        bucket.push(Arc::clone(&rc));
+        let concl_rel = concl.relation().to_string();
+        // Session-configured execution overrides (`set_rule_forward` /
+        // `set_rule_priority`) apply at REGISTRATION, per bucket — the same
+        // clone-on-write divergence a live setter call produces — which is
+        // what lets them survive the rebuild a retraction performs: replay
+        // re-registers every surviving rule through this path. NAF-bearing
+        // rules refuse a `forward` override exactly like the live setter
+        // (silently here — the setter already reported at set time, and
+        // `trigger_forward_rules` re-checks the invariant regardless).
+        let mut member = Arc::clone(&rc);
+        if let Some(ov) = inner.rule_exec_overrides.get(&concl_rel) {
+            let forward = match ov.forward {
+                Some(true) => {
+                    rc.negated_condition_indices.is_empty() && rc.negated_exists_groups.is_empty()
+                }
+                Some(false) => false,
+                None => rc.forward,
+            };
+            let priority = ov.priority.unwrap_or(rc.priority);
+            if forward != rc.forward || priority != rc.priority {
+                let mut cloned = (*rc).clone();
+                cloned.forward = forward;
+                cloned.priority = priority;
+                member = Arc::new(cloned);
+            }
+        }
+        let bucket = inner.universal_rules.entry(concl_rel).or_default();
+        bucket.push(member);
         // Keep the bucket descending-sorted by priority so the backward-chain
         // read path (`matching_rules_typed`) can borrow it without re-sorting.
-        // (A new rule has priority 0, the minimum, so this is order-preserving
-        // today; the explicit sort makes the invariant robust to future changes.)
+        // (An unconfigured new rule has priority 0, the minimum, so this is
+        // order-preserving; an override can assign any priority, which makes
+        // the sort load-bearing, not just robustness.)
         sort_rule_bucket(bucket);
     }
 

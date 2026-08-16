@@ -179,9 +179,23 @@ fn is_complex(line: &str) -> bool {
 /// Run one sequence: apply ops in order on the incremental engine; after every
 /// retraction, compare the battery against a fresh engine replaying only the
 /// surviving asserts (original order).
+/// Session-configured rule execution settings ride the differential: applied
+/// identically on both engines (override-at-registration makes call order
+/// irrelevant), they must survive every rebuild a retraction performs —
+/// retract ≡ never-asserted extends to the configuration. Heads from the
+/// rule-head pool exercise both the positive-enable and the per-rule
+/// NAF-refusal paths (generated NAF rules head `animal`/`alive` too).
+fn apply_exec_settings(e: &nibli_engine::NibliEngine) {
+    let kb = e.kb();
+    kb.set_rule_forward("animal", true);
+    kb.set_rule_priority("animal", 3);
+    kb.set_rule_forward("alive", true);
+}
+
 pub fn run_retract_case(case: &RetractCase) -> RetractOutcome {
     let name = case.name.clone();
     let engine = crate::kr_engine();
+    apply_exec_settings(&engine);
 
     // (line, engine fact ids, alive) per executed assert, in original order.
     // A line is N independent facts (one per bare `.i` sentence).
@@ -226,6 +240,7 @@ pub fn run_retract_case(case: &RetractCase) -> RetractOutcome {
 
                 // Fresh replay of the survivors, then the battery on both engines.
                 let fresh = crate::kr_engine();
+                apply_exec_settings(&fresh);
                 for (l, _, alive) in &asserts {
                     if *alive {
                         if let Err(e) = fresh.assert_text(l) {
@@ -278,6 +293,25 @@ pub fn run_retract_case(case: &RetractCase) -> RetractOutcome {
                                 error: format!("battery '{q}' errored: {a:?} / {b:?}"),
                             };
                         }
+                    }
+                }
+                // The settings themselves are part of the metamorphic
+                // property: after the rebuild this retraction performed, the
+                // incremental engine's per-predicate rule execution settings
+                // must equal the fresh engine's (which applied the same
+                // setter calls and then asserted only the survivors).
+                for p in PREDS {
+                    let a = engine.kb().rule_execution_settings(p);
+                    let b = fresh.kb().rule_execution_settings(p);
+                    if a != b {
+                        return RetractOutcome::Diverge {
+                            name,
+                            after_op: op_idx,
+                            retracted_line: line,
+                            query: format!("rule_execution_settings({p})"),
+                            incremental: format!("{a:?}"),
+                            fresh: format!("{b:?}"),
+                        };
                     }
                 }
             }

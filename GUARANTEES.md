@@ -146,6 +146,8 @@ The proofs are model-level (the perfect model is *characterized* by axioms, not 
 
 **Public rebuild:** `KnowledgeBase::rebuild()` forces a full rebuild — available as a consistency check or recovery mechanism.
 
+**Rule execution settings survive rebuild:** `set_rule_forward` / `set_rule_priority` are SESSION CONFIGURATION (like `strict`), recorded per conclusion predicate and consulted at every rule REGISTRATION — so they apply uniformly to rules registered before or after the setter call, and the rebuild a retraction (or rollback, or profile switch) performs reapplies them by construction when replay re-registers the surviving rules. The NAF refusal (forward chaining + negation has no truth maintenance) is re-checked per rule at every application, so a rebuild can never resurrect forward firing where it is unsound. Enabling never fires retroactively: eager derivation happens on subsequent triggering insertions, and verdicts are identical either way (backward chaining derives the same conclusions at query time) — eager facts derived before a rebuild are re-derived lazily, not resurrected. Cleared by `reset()` with the KB content they configure. Read back via `rule_execution_settings(predicate)`; the retraction differential (`retract_diff.rs`) applies the setters on both engines and compares the per-predicate settings after every retraction — retract ≡ never-asserted extends to the configuration.
+
 ## Query Result Contract
 
 Every query returns exactly one of four results:

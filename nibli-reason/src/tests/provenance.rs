@@ -860,3 +860,127 @@ fn test_conjunction_introduction_cross_position() {
         "Cross-position entity sharing should allow conjunction query"
     );
 }
+
+// ─── Rule execution settings are session configuration ───────────────────
+
+/// `set_rule_forward` / `set_rule_priority` survive the rebuild an UNRELATED
+/// retraction performs: replay re-registers the surviving rules under the
+/// recorded overrides. Configuration, eager firing, and the verdict must all
+/// come back; eager facts derived BEFORE the rebuild are re-derived lazily
+/// (enabling never retro-fires — the documented contract), so the conclusion
+/// stays backward-derivable throughout.
+#[test]
+fn rule_execution_settings_survive_unrelated_retraction() {
+    let kb = new_kb();
+    assert_id(&kb, make_universal("gerku", "danlu"), "dogs are animals");
+    kb.set_rule_forward("danlu", true);
+    kb.set_rule_priority("danlu", 7);
+    let unrelated = assert_id(&kb, make_assertion("bob", "mlatu"), "unrelated cat");
+    assert_id(&kb, make_assertion("alis", "gerku"), "Alice is a dog");
+
+    let eager = |who: &str| {
+        StoredFact::Bare(GroundFact::new(
+            "danlu",
+            vec![GroundTerm::Constant(who.into()), GroundTerm::Unspecified],
+        ))
+    };
+    assert!(
+        kb.inner.borrow().fact_store.contains(&eager("alis")),
+        "sanity: forward rule fires eagerly before the retraction"
+    );
+
+    kb.retract_fact(unrelated).expect("retraction must succeed");
+
+    assert_eq!(
+        kb.rule_execution_settings("danlu"),
+        vec![("gerku → danlu".to_string(), true, 7)],
+        "forward/priority must survive the unrelated retraction's rebuild"
+    );
+    // Enabling never retro-fires: the pre-rebuild eager fact is re-derived
+    // lazily, not resurrected into the store by the rebuild itself.
+    assert!(
+        !kb.inner.borrow().fact_store.contains(&eager("alis")),
+        "documented no-retro-fire contract: rebuild replay does not re-fire"
+    );
+    // …but the verdict is unaffected (backward chaining derives it),
+    let (result, _) = query_with_proof(&kb, make_query("alis", "danlu"));
+    assert!(result, "the conclusion stays backward-derivable");
+    // …and eager firing works for NEW triggering insertions.
+    assert_id(&kb, make_assertion("cyan", "gerku"), "Cyan is a dog");
+    assert!(
+        kb.inner.borrow().fact_store.contains(&eager("cyan")),
+        "the surviving forward setting must fire on a post-rebuild insertion"
+    );
+}
+
+/// The overrides are configuration by CONCLUSION PREDICATE, not per-rule
+/// mutation: a setter call made BEFORE the rule exists applies at that rule's
+/// registration — the same uniform semantics that make rebuild reapplication
+/// correct by construction.
+#[test]
+fn rule_execution_override_applies_to_later_registered_rules() {
+    let kb = new_kb();
+    kb.set_rule_forward("danlu", true);
+    assert_id(&kb, make_universal("gerku", "danlu"), "dogs are animals");
+    assert_eq!(
+        kb.rule_execution_settings("danlu"),
+        vec![("gerku → danlu".to_string(), true, 0)],
+        "an override recorded before registration must apply at registration"
+    );
+    assert_id(&kb, make_assertion("alis", "gerku"), "Alice is a dog");
+    let derived = StoredFact::Bare(GroundFact::new(
+        "danlu",
+        vec![GroundTerm::Constant("alis".into()), GroundTerm::Unspecified],
+    ));
+    assert!(
+        kb.inner.borrow().fact_store.contains(&derived),
+        "the registration-applied override must actually forward-fire"
+    );
+}
+
+/// The NAF refusal is re-checked per rule at every application: a forward
+/// override on a NAF-bearing rule's conclusion is refused live AND at every
+/// rebuild re-registration — an unrelated retraction cannot resurrect forward
+/// firing on a rule where it is unsound.
+#[test]
+fn naf_rule_stays_backward_only_across_rebuild_despite_forward_override() {
+    let kb = new_kb();
+    assert_id(
+        &kb,
+        compile_surface("eats(every cat where ~awake)."),
+        "naf rule",
+    );
+    kb.set_rule_forward("eats", true);
+    let settings = kb.rule_execution_settings("eats");
+    assert_eq!(settings.len(), 1);
+    assert!(
+        !settings[0].1,
+        "live NAF refusal: the rule must stay backward-only"
+    );
+
+    let unrelated = assert_id(&kb, make_assertion("bob", "mlatu"), "unrelated");
+    kb.retract_fact(unrelated).expect("retraction must succeed");
+
+    let settings = kb.rule_execution_settings("eats");
+    assert_eq!(settings.len(), 1);
+    assert!(
+        !settings[0].1,
+        "rebuild reapplication must re-refuse forward on a NAF rule"
+    );
+}
+
+/// `reset()` clears the overrides with the KB content they configure: a rule
+/// registered after reset gets registration defaults.
+#[test]
+fn reset_clears_rule_execution_overrides() {
+    let kb = new_kb();
+    kb.set_rule_forward("danlu", true);
+    kb.set_rule_priority("danlu", 5);
+    kb.reset();
+    assert_id(&kb, make_universal("gerku", "danlu"), "dogs are animals");
+    assert_eq!(
+        kb.rule_execution_settings("danlu"),
+        vec![("gerku → danlu".to_string(), false, 0)],
+        "reset must drop the session overrides"
+    );
+}
