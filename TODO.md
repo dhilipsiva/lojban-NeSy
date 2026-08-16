@@ -79,33 +79,6 @@ a concrete need.
 
 ---
 
-## Materialisation: the trace story (C2) — the proof chain's last step
-
-(The proof-certificate chain's other steps LANDED 2026-08-16: checked step
-indices with the typed overflow refusal, and the schema-versioned
-`ProofEnvelope` — verdict + trace + profile + lockstep version, bound and
-independently validatable, on every surface without a WIT change. C2 extends
-the certificate contract to materialised verdicts; whoever designs its proof
-shape starts from `ProofEnvelope` + `validate_envelope`, not from scratch.)
-
-- **Materialisation: the trace story (C2).** *(effort: extra; declining as a decision of record:
-  low)* Proof-traced queries keep the
-  backward-chaining path (`positive_lookup` lowered for their duration —
-  `nibli-reason/src/lib.rs`:1024, restored at :1052/:1072; the fast-path gates read it
-  at `reasoning.rs`:1003 and :2705) because a materialised verdict has no derivation
-  to record. To let them use the fast path, four things need answering:
-  `trace_predicate_provenance_typed` (reasoning.rs:3304) falls to a `holds:false`
-  `PredicateNotFound` (:3616-3620) for a TRUE reachable only by materialisation; a
-  materialised FALSE has no per-rule blocking premise, which `proofs/Trace.lean`'s
-  `Neg` constructor and `trace_soundness_conformance` both require; `ProofRule::
-  ExistsWitness` names a witness term the projection eliminated; and `naf_dependent`
-  can flip true→false when a positive lookup deletes the `Negation` steps beneath it
-  (a user-visible honesty marker moving because of an optimisation). Minimum-churn
-  option if pursued: `ProofRule::PredicateCheck { method: "materialized" }` — no WIT
-  change — plus a `validate_cert` arm and a `factAx`-analogue bridge against `m.ext`.
-
----
-
 ## Chain — materialisation performance (1 → 2; gate each step with `--in-diff`)
 
 Order: step 1 is the top measured cost and the smaller change; step 2's rollback subset

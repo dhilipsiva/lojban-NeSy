@@ -998,8 +998,10 @@ fn check_formula_holds_core<S: TraceSink>(
             // whole duration): a lookup has no derivation to record, and the trace contract
             // is built on there being one — `ProofRule::ExistsWitness` names the witness
             // term, which the projection eliminated, and `proofs/Trace.lean`'s certificates
-            // assume a rule-local blocking premise. Proof queries are the rare case, so
-            // they keep the backward-chaining path and stay exactly as sound.
+            // assume a rule-local blocking premise. DECIDED 2026-08-16 as permanent, not
+            // pending (GUARANTEES records the reasons and the re-open trigger — a
+            // mechanized saturation proof joining Track B): traced queries keep the
+            // backward-chaining path and stay exactly as sound, just slower.
             if inner.positive_lookup.get() && tense.is_none() && inner.materialization {
                 let hit = crate::materialize::probe_positive_group(buffer, *body, v, subs)
                     .and_then(|(rel, tuple)| {
