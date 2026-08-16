@@ -36,7 +36,10 @@ pub use proof::{
     render_proof_text_indented, trace_display,
 };
 pub use register::Register;
-pub use summary::{fact_to_english, summarize_proof, summarize_proof_with};
+pub use summary::{
+    VerdictKind, fact_to_english, summarize_proof, summarize_proof_with, summarize_verdict,
+    verdict_kind,
+};
 
 /// True for relations that are internal reasoning artifacts, not surface content —
 /// currently the opaque abstraction marker (`__abs_<id>`) nibli-semantics emits for

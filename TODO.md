@@ -83,47 +83,33 @@ a concrete need.
 
 ---
 
-## Chain — verdict rendering (do 1 before or with 2)
+## Independent (was: verdict-rendering chain — step 1 LANDED 2026-08-16)
 
-Order: step 1 defines the honest FALSE/UNKNOWN/resource sentences; step 2's Depth hint
-prints alongside them, and its repro exhibits exactly the false `[Why]` step 1 removes.
+The computed-FALSE/verdict rendering landed: `summarize_verdict` + `VerdictKind` in
+nibli-render drive the `[Why]` sentence by VERDICT CLASS (computed FALSE renders as a
+decision naming local/backend method; `cwa_false` selects the closed-world vs
+decided-FALSE fallback; UNKNOWN renders its reason — backend-unavailable and
+non-finite specifically; RESOURCE_EXCEEDED renders as a budget cutoff, never the CWA
+sentence). nibli-host maps the WIT verdict, nibli-wasm the typed verdict; the UI's
+trace-only panel inherits the class-aware FALSE logic. What remains here is the
+Depth-hint entry below.
 
-1. **Render computed FALSE as a decision, not closed-world non-derivability.** *(effort: high)* A query
-   such as `greater(3, 5)` carries a false `ComputeCheck` leaf, but `summarize_false`
-   (`nibli-render/src/summary.rs`:223-249) has arms only for `PredicateNotFound`,
-   `ForallCounterexample` and `ExistsFailed`, and otherwise returns the fallback at
-   :248, "This could not be derived from the known facts and rules." `summarize_true`
-   calls `collect_extras` (:475) at :85 and that is the ONLY place a `ComputeCheck`
-   becomes English (through `computed_extra_label`, :466); the FALSE path never calls
-   it. Observed through nibli-host: `? greater(3, 5).` prints that CWA sentence one
-   line above `⊢ greater  [computed (local)] -> FALSE`. The discriminator already
-   exists and already crosses the WIT boundary — `ProofTrace.cwa_false` — and
-   nibli-render already reads it at `collapse.rs`:221 and `proof.rs`:99, just never in
-   `summary.rs`, so the fix need not re-derive it from the steps. The same fallback
-   also fires under a `RESOURCE_EXCEEDED (depth)` verdict, so cover resource verdicts,
-   not only `ComputeCheck`. Handle local arithmetic/numeric FALSE and trusted-backend
-   FALSE explicitly, without a CWA caveat, while ordinary missing-fact FALSE keeps the
-   non-derivability explanation. **Exit:** renderer, host, UI, protocol and WASM tests
-   distinguish local computed FALSE, backend FALSE, backend unavailable, non-finite
-   UNKNOWN, resource-exceeded, and ordinary CWA FALSE; Chapter 17 is recaptured from
-   real bytes. (Surfaced by the book's 2026-07-26 review pass.)
-
-2. **`resource_hint`'s Depth arm is dead code.** *(effort: medium; drop-the-dead-arm exit: low)* `resource_hint`
-   (`nibli-host/src/main.rs`:587) has exactly one call site, :1846, inside the `Err(e)`
-   trap arm of `run_proof_query` (fn at :1798); an engine-returned Depth verdict takes
-   the `Ok(Ok(…))` arm at :1802 and never reaches it, and `classify_resource_trap`
-   (:566) cannot yield Depth — its own doc says so at :564-565, so dropping the arm
-   contradicts nothing already written. Reproduced: a 13-link `X(every Y).` chain at
-   the default `max_chain_depth` of 10 (`awake(every actual). … dark(every cyan).
-   actual(Rex).` then `? dark(Rex).`) prints `[Query] RESOURCE_EXCEEDED (depth)` with
-   no hint line — and with the same false `[Why] This could not be derived from the
-   known facts and rules.` that step 1 fixes. The unreachable hint text (:595)
-   recommends raising `max_chain_depth`, a knob no shipped surface exposes: the only
-   setter is the Rust API `KnowledgeBase::set_max_chain_depth`
-   (`nibli-reason/src/lib.rs`:603) — there is no `:depth` command and no `NIBLI_DEPTH`,
-   and GUARANTEES.md:133 states the shipped runtime surfaces keep the default. Wire a
-   real Depth hint into the verdict path (and something for it to recommend), or drop
-   the dead arm.
+- **`resource_hint`'s Depth arm is dead code.** *(effort: medium; drop-the-dead-arm exit: low)* `resource_hint`
+  (`nibli-host/src/main.rs`:587) has exactly one call site, :1846, inside the `Err(e)`
+  trap arm of `run_proof_query` (fn at :1798); an engine-returned Depth verdict takes
+  the `Ok(Ok(…))` arm at :1802 and never reaches it, and `classify_resource_trap`
+  (:566) cannot yield Depth — its own doc says so at :564-565, so dropping the arm
+  contradicts nothing already written. Reproduced: a 13-link `X(every Y).` chain at
+  the default `max_chain_depth` of 10 (`awake(every actual). … dark(every cyan).
+  actual(Rex).` then `? dark(Rex).`) prints `[Query] RESOURCE_EXCEEDED (depth)` with
+  no hint line — and with the same false `[Why] This could not be derived from the
+  known facts and rules.` that step 1 fixes. The unreachable hint text (:595)
+  recommends raising `max_chain_depth`, a knob no shipped surface exposes: the only
+  setter is the Rust API `KnowledgeBase::set_max_chain_depth`
+  (`nibli-reason/src/lib.rs`:603) — there is no `:depth` command and no `NIBLI_DEPTH`,
+  and GUARANTEES.md:133 states the shipped runtime surfaces keep the default. Wire a
+  real Depth hint into the verdict path (and something for it to recommend), or drop
+  the dead arm.
 
 ---
 
@@ -470,6 +456,16 @@ Blocked followers:
   transcripts. Run the book validator, reference checker, capture checker, and
   two byte-idempotence passes before removing this residual with the
   `book-todo` workflow.
+
+- **Recapture Chapter 17 from the new verdict-class `[Why]` renderer (engine done
+  2026-08-16; book-repo work only).** *(effort: low)* `[Why]` is now verdict-driven:
+  a computed FALSE prints "Decided by computation: … (computed locally / by the
+  trusted backend)" instead of the closed-world sentence, UNKNOWN prints a
+  per-reason "No verdict: …" line (backend-unavailable, non-finite), and
+  RESOURCE_EXCEEDED prints the budget-cutoff sentence. Chapter 17's transcripts
+  quote the old fallback under these verdicts — recapture from real bytes. Run the
+  book validator, reference checker, capture checker, and two byte-idempotence
+  passes before removing this residual with the `book-todo` workflow.
 
 - **Wire `dhilipsiva.dev/docs/nibli/`** *(effort: low)* in the external `dhilipsiva/dhilipsiva.dev`
   repo, on the `nibli-updated` dispatch this repo already fires: checkout nibli →

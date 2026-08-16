@@ -115,6 +115,29 @@ fn format_term(term: &EngineLogicalTerm) -> String {
     wit_term_to_types(term).trace_display()
 }
 
+/// Map the WIT verdict onto the renderer's verdict class, so the `[Why]`
+/// sentence matches the `[Query]` line (an UNKNOWN/RESOURCE_EXCEEDED must
+/// never read as closed-world non-derivability).
+fn verdict_kind_of(result: &EngineQueryResult) -> nibli_render::VerdictKind {
+    use nibli_render::VerdictKind as V;
+    match result {
+        EngineQueryResult::True => V::True,
+        EngineQueryResult::False => V::False,
+        EngineQueryResult::Unknown(reason) => V::Unknown(Some(match reason {
+            EngineUnknownReason::CycleCut => "cycle-cut",
+            EngineUnknownReason::IncompleteKnowledge => "incomplete-knowledge",
+            EngineUnknownReason::NafDependent => "naf-dependent",
+            EngineUnknownReason::BackendUnavailable => "backend-unavailable",
+            EngineUnknownReason::NonFinite => "non-finite",
+        })),
+        EngineQueryResult::ResourceExceeded(kind) => V::ResourceExceeded(Some(match kind {
+            EngineResourceKind::Depth => "depth",
+            EngineResourceKind::Fuel => "fuel",
+            EngineResourceKind::Memory => "memory",
+        })),
+    }
+}
+
 fn format_query_result(result: &EngineQueryResult) -> String {
     match result {
         EngineQueryResult::True => "TRUE".to_string(),
@@ -1802,10 +1825,14 @@ impl Repl {
             Ok(Ok((result, trace))) => {
                 println!("[Query] {}", format_query_result(&result));
                 let proto = trace_to_proto(&trace);
-                // Plain-English "why" summary above the proof.
-                if let Some(why) =
-                    nibli_render::summarize_proof(&proto, nibli_render::Register::Spec)
-                {
+                // Plain-English "why" summary above the proof — VERDICT-driven,
+                // so an UNKNOWN or RESOURCE_EXCEEDED renders as "no verdict"
+                // instead of the closed-world non-derivability sentence.
+                if let Some(why) = nibli_render::summarize_verdict(
+                    &verdict_kind_of(&result),
+                    &proto,
+                    nibli_render::Register::Spec,
+                ) {
                     println!("[Why] {why}");
                 }
                 if verbose {

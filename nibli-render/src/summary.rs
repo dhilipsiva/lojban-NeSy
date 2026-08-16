@@ -26,14 +26,88 @@ use crate::overlay::DomainGloss;
 use crate::register::Register;
 use crate::term::{humanize_skolem, is_event_skolem, is_event_skolem_arg, role_base, role_index};
 
+/// The verdict class driving the `[Why]` sentence. The trace alone cannot
+/// distinguish an UNKNOWN or RESOURCE_EXCEEDED query from an ordinary FALSE
+/// (its root simply fails to hold), so verdict-bearing surfaces pass the class
+/// in via [`summarize_verdict`] — otherwise a resource cutoff reads as the
+/// closed-world "could not be derived" sentence, which is false: no verdict
+/// about the facts was reached at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VerdictKind {
+    True,
+    False,
+    /// UNKNOWN, with the engine's reason label when one exists
+    /// (`"backend-unavailable"`, `"non-finite"`, `"cycle-cut"`, …).
+    Unknown(Option<&'static str>),
+    /// RESOURCE_EXCEEDED, with the kind label (`"depth"`, `"fuel"`, `"memory"`).
+    ResourceExceeded(Option<&'static str>),
+}
+
+/// Map the engine's typed verdict onto a [`VerdictKind`] (native surfaces;
+/// the WIT host maps its bindings enum itself).
+pub fn verdict_kind(result: &nibli_types::logic::QueryResult) -> VerdictKind {
+    use nibli_types::logic::QueryResult as Q;
+    match result {
+        Q::True => VerdictKind::True,
+        Q::False => VerdictKind::False,
+        Q::Unknown(_) => VerdictKind::Unknown(result.detail_label()),
+        Q::ResourceExceeded(_) => VerdictKind::ResourceExceeded(result.detail_label()),
+    }
+}
+
 /// Build a one-block plain-English "why" explanation of the trace, or `None` if
 /// there is nothing summarizable (callers then print nothing extra).
+///
+/// Verdict-less compatibility surface: the class is inferred from the root
+/// step (`holds` → TRUE, else FALSE). A caller that knows the verdict should
+/// use [`summarize_verdict`], which renders UNKNOWN and RESOURCE_EXCEEDED
+/// honestly instead of letting them fall into the FALSE arms.
 pub fn summarize_proof(trace: &ProofTrace, register: Register) -> Option<String> {
     let root = trace.steps.get(trace.root as usize)?;
     if root.holds {
         summarize_true(trace, register)
     } else {
         summarize_false(trace, register)
+    }
+}
+
+/// As [`summarize_proof`], but driven by the VERDICT: a computed FALSE renders
+/// as a decision, an UNKNOWN as the reason no verdict exists, and a
+/// RESOURCE_EXCEEDED as a budget cutoff — never the closed-world
+/// non-derivability sentence, which is only true of ordinary CWA FALSE.
+pub fn summarize_verdict(
+    kind: &VerdictKind,
+    trace: &ProofTrace,
+    register: Register,
+) -> Option<String> {
+    match kind {
+        VerdictKind::True => {
+            trace.steps.get(trace.root as usize)?;
+            summarize_true(trace, register)
+        }
+        VerdictKind::False => {
+            trace.steps.get(trace.root as usize)?;
+            summarize_false(trace, register)
+        }
+        VerdictKind::Unknown(reason) => Some(match *reason {
+            Some("backend-unavailable") => "No verdict: the external compute backend was \
+                 unavailable, so a required computation could not be evaluated."
+                .to_string(),
+            Some("non-finite") => "No verdict: a computation produced a non-finite value, \
+                 so the comparison could not be decided."
+                .to_string(),
+            Some(r) => format!("No verdict: the search could not decide this ({r})."),
+            None => "No verdict: the search could not decide this.".to_string(),
+        }),
+        VerdictKind::ResourceExceeded(kind) => Some(match *kind {
+            Some(k) => format!(
+                "No verdict: the search exhausted its {k} budget before reaching a \
+                 decision — a resource limit, not a statement about the facts."
+            ),
+            None => "No verdict: the search exhausted a resource budget before reaching \
+                 a decision — a resource limit, not a statement about the facts."
+                .to_string(),
+        }),
     }
 }
 
@@ -221,6 +295,22 @@ fn render_origin_facts(facts: &[String], register: Register) -> Vec<String> {
 }
 
 fn summarize_false(trace: &ProofTrace, register: Register) -> Option<String> {
+    // A FAILING compute check is a DECISION about the values, not closed-world
+    // non-derivability — render it first, without the CWA sentence. (The
+    // discriminator `trace.cwa_false` agrees: a numeric-decided FALSE carries
+    // `cwa_false: false`.)
+    for step in &trace.steps {
+        if let ProofRule::ComputeCheck { detail, method } = &step.rule
+            && !step.holds
+        {
+            return Some(format!(
+                "Decided by computation: {} is false ({}). This is a decision about \
+                 the values, not closed-world non-derivability.",
+                humanize_fact(detail),
+                computed_extra_label(method)
+            ));
+        }
+    }
     for step in &trace.steps {
         match &step.rule {
             ProofRule::PredicateNotFound { predicate } => {
@@ -245,7 +335,13 @@ fn summarize_false(trace: &ProofTrace, register: Register) -> Option<String> {
             _ => {}
         }
     }
-    Some("This could not be derived from the known facts and rules.".to_string())
+    if trace.cwa_false {
+        Some("This could not be derived from the known facts and rules.".to_string())
+    } else {
+        // A decided FALSE with no compute leaf and no counterexample arm —
+        // genuinely false, not an absence of derivation.
+        Some("This is false as a decided matter — not closed-world non-derivability.".to_string())
+    }
 }
 
 /// Key for an event group: (tense/deontic wrapper, base relation, event Skolem).
@@ -857,6 +953,153 @@ mod tests {
         assert_eq!(
             join_and(&["a".into(), "b".into(), "c".into()]),
             "a, b, and c"
+        );
+    }
+}
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::*;
+    use nibli_protocol::{ProofStep, ProofTrace};
+
+    fn false_trace(rule: ProofRule, cwa_false: bool) -> ProofTrace {
+        ProofTrace {
+            steps: vec![ProofStep {
+                rule,
+                holds: false,
+                children: vec![],
+            }],
+            root: 0,
+            naf_dependent: false,
+            cwa_false,
+        }
+    }
+
+    /// A failing compute check renders as a DECISION — no closed-world caveat —
+    /// with the local/backend method distinguished; a passing one inside a
+    /// FALSE trace does not trigger the arm.
+    #[test]
+    fn computed_false_is_a_decision_not_cwa() {
+        for (method, label) in [
+            ("arithmetic", "computed locally"),
+            ("numeric", "computed locally"),
+            ("backend", "computed by the trusted backend"),
+        ] {
+            let trace = false_trace(
+                ProofRule::ComputeCheck {
+                    detail: "greater(3, 5)".to_string(),
+                    method: method.to_string(),
+                },
+                false,
+            );
+            let why = summarize_proof(&trace, Register::Spec).unwrap();
+            assert!(
+                why.starts_with("Decided by computation:"),
+                "{method}: {why}"
+            );
+            assert!(why.contains(label), "{method}: {why}");
+            assert!(
+                !why.contains("could not be derived"),
+                "a computed FALSE must not carry the CWA sentence: {why}"
+            );
+        }
+        // Control: a TRUE compute check inside a FALSE trace is not the decider.
+        let mut trace = false_trace(
+            ProofRule::ComputeCheck {
+                detail: "greater(5, 3)".to_string(),
+                method: "arithmetic".to_string(),
+            },
+            true,
+        );
+        trace.steps[0].holds = true;
+        trace.steps.push(ProofStep {
+            rule: ProofRule::PredicateNotFound {
+                predicate: "dog_x1(sk_2, adam)".to_string(),
+            },
+            holds: false,
+            children: vec![],
+        });
+        trace.root = 1;
+        let why = summarize_proof(&trace, Register::Spec).unwrap();
+        assert!(
+            why.starts_with("Nothing known establishes"),
+            "a passing check must not hijack the FALSE summary: {why}"
+        );
+    }
+
+    /// Ordinary closed-world FALSE keeps the non-derivability sentence; a
+    /// decided FALSE with no arm and cwa_false = false gets the decided
+    /// sentence instead.
+    #[test]
+    fn cwa_flag_selects_the_false_fallback() {
+        let cwa = false_trace(ProofRule::Negation, true);
+        assert_eq!(
+            summarize_proof(&cwa, Register::Spec).unwrap(),
+            "This could not be derived from the known facts and rules."
+        );
+        let decided = false_trace(ProofRule::Negation, false);
+        assert_eq!(
+            summarize_proof(&decided, Register::Spec).unwrap(),
+            "This is false as a decided matter — not closed-world non-derivability."
+        );
+    }
+
+    /// The verdict-driven surface: UNKNOWN and RESOURCE_EXCEEDED never fall
+    /// into the FALSE arms — each class gets its own honest sentence.
+    #[test]
+    fn unknown_and_resource_verdicts_never_read_as_cwa() {
+        let trace = false_trace(ProofRule::Negation, true);
+        let cases: Vec<(VerdictKind, &str)> = vec![
+            (
+                VerdictKind::Unknown(Some("backend-unavailable")),
+                "external compute backend was",
+            ),
+            (VerdictKind::Unknown(Some("non-finite")), "non-finite value"),
+            (
+                VerdictKind::Unknown(Some("cycle-cut")),
+                "could not decide this (cycle-cut)",
+            ),
+            (VerdictKind::Unknown(None), "could not decide this."),
+            (
+                VerdictKind::ResourceExceeded(Some("depth")),
+                "exhausted its depth budget",
+            ),
+            (
+                VerdictKind::ResourceExceeded(Some("fuel")),
+                "exhausted its fuel budget",
+            ),
+        ];
+        for (kind, needle) in cases {
+            let why = summarize_verdict(&kind, &trace, Register::Spec).unwrap();
+            assert!(
+                why.starts_with("No verdict:"),
+                "{kind:?} must be a no-verdict sentence: {why}"
+            );
+            assert!(why.contains(needle), "{kind:?}: {why}");
+            assert!(
+                !why.contains("could not be derived"),
+                "{kind:?} must never read as CWA non-derivability: {why}"
+            );
+        }
+    }
+
+    /// The typed-verdict mapping feeds the same classes.
+    #[test]
+    fn verdict_kind_maps_the_typed_result() {
+        use nibli_types::logic::{QueryResult, ResourceKind, UnknownReason};
+        assert_eq!(verdict_kind(&QueryResult::True), VerdictKind::True);
+        assert_eq!(verdict_kind(&QueryResult::False), VerdictKind::False);
+        assert_eq!(
+            verdict_kind(&QueryResult::Unknown(UnknownReason::BackendUnavailable)),
+            VerdictKind::Unknown(Some("backend-unavailable"))
+        );
+        assert_eq!(
+            verdict_kind(&QueryResult::Unknown(UnknownReason::NonFinite)),
+            VerdictKind::Unknown(Some("non-finite"))
+        );
+        assert_eq!(
+            verdict_kind(&QueryResult::ResourceExceeded(ResourceKind::Depth)),
+            VerdictKind::ResourceExceeded(Some("depth"))
         );
     }
 }
