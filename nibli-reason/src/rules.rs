@@ -1050,8 +1050,10 @@ pub(super) fn assert_typed_fact_with_origin(
     clear_typed_pred_cache(inner);
     // Same reasoning one level up: the saturated extensions are a claim about the fact
     // store, which just changed. Structural invariant at the mutation point — this is
-    // the site that covers forward chaining and direct assertion.
-    invalidate_materialization(inner);
+    // the site that covers forward chaining and direct assertion. RELEVANCE-FILTERED:
+    // an insert outside the saturation's dependency cone cannot change it (see
+    // `invalidate_materialization_for_insert`); everything inside drops as before.
+    invalidate_materialization_for_insert(inner, &fact);
 
     // Check integrity constraints (permissive default: warn, don't reject;
     // STRICT MODE: roll the fact back out and record the violation).

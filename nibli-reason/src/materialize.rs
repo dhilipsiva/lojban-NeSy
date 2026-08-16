@@ -836,6 +836,14 @@ pub(super) struct Materialized {
     /// unions its missing roots and recomputes that cumulative cone; treating any
     /// partial cache as globally complete would strand the positive fast path.
     pub(super) requested: HashSet<String>,
+    /// Every SURFACE relation this saturation's extensions can depend on — the
+    /// dependency closure of `requested` over the eligible rules, positive AND
+    /// negated deps alike. A stored fact whose surface relation is outside this
+    /// set cannot change any extension here, which is what lets an insert about
+    /// an unrelated relation leave the saturation standing
+    /// (`invalidate_materialization_for_insert`). `complete` is always a subset,
+    /// so a relation outside the cone also carries no completeness claim.
+    pub(super) cone: HashSet<String>,
     pub(super) work: MaterializationWork,
 }
 
@@ -847,6 +855,7 @@ impl Materialized {
             refused: HashMap::new(),
             arity: HashMap::new(),
             requested: HashSet::new(),
+            cone: HashSet::new(),
             work: MaterializationWork::default(),
         }
     }
@@ -1342,6 +1351,9 @@ pub(super) fn saturate(
             refused,
             arity: HashMap::new(),
             requested: targets.clone(),
+            // The equality guard saturates nothing, so no insert is ever
+            // irrelevant to it — an empty cone keeps every insert invalidating.
+            cone: HashSet::new(),
             work: MaterializationWork::default(),
         };
     }
@@ -1584,6 +1596,10 @@ pub(super) fn saturate(
         refused,
         arity,
         requested: targets.clone(),
+        // `wanted` IS the dependency closure (positive and negated deps both
+        // pushed above), which is exactly what an insert has to fall outside of
+        // to be irrelevant to these extensions.
+        cone: wanted,
         work,
     }
 }

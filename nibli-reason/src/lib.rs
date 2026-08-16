@@ -380,7 +380,14 @@ impl KnowledgeBase {
                 retracted: false,
             },
         );
-        invalidate_pred_cache(&inner); // Tabling: KB mutated, clear cached derivations.
+        // Tabling: KB mutated, clear cached derivations. The SATURATION is not
+        // dropped here: every mutation this assertion performed already decided
+        // its fate at its own mutation point — a store insert through the
+        // cone-relevance filter, a rule registration and a `du` merge
+        // unconditionally — so an assertion that touched nothing the saturation
+        // depends on leaves it standing. That is the whole point of anchoring
+        // invalidation at the mutation point instead of at the caller.
+        invalidate_pred_cache_keeping_saturation(&inner);
         Ok(id)
     }
 

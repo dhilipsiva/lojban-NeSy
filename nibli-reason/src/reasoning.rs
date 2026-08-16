@@ -2015,6 +2015,36 @@ pub(super) fn clear_typed_pred_cache(inner: &KnowledgeBaseInner) {
 ///
 /// Getting this wrong is not a performance bug: a stale extension answers `~p(x)` TRUE
 /// for a `p` the new fact just made derivable.
+/// Invalidation for a STORE INSERT, filtered by relevance.
+///
+/// The saturated extensions are a claim about a dependency CONE — the closure of
+/// the query roots they were requested for. A stored fact whose surface relation
+/// lies outside that cone cannot change any extension in it: no completed
+/// relation reads it, positively or under negation (the cone is closed over
+/// both), and `complete` is a subset of the cone, so the relation carries no
+/// completeness claim of its own either. Such an insert therefore leaves the
+/// saturation standing instead of paying for a full recompute at the next query
+/// — the case that dominates a large KB, where each query cone is a small slice
+/// and most assertions land elsewhere.
+///
+/// Anything inside the cone, and every non-insert mutation (removal, rule
+/// registration, retraction, reset, profile switch), keeps the unconditional
+/// drop via [`invalidate_materialization`].
+pub(super) fn invalidate_materialization_for_insert(inner: &KnowledgeBaseInner, fact: &StoredFact) {
+    let relevant = {
+        let m = inner.materialized.borrow();
+        match m.as_ref() {
+            None => return,
+            Some(m) => m
+                .cone
+                .contains(crate::materialize::surface_relation(fact.relation())),
+        }
+    };
+    if relevant {
+        invalidate_materialization(inner);
+    }
+}
+
 pub(super) fn invalidate_materialization(inner: &KnowledgeBaseInner) {
     *inner.materialized.borrow_mut() = None;
 }

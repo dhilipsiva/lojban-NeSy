@@ -1815,3 +1815,114 @@ fn a_mutating_rollback_still_drops_the_saturation() {
         "a rollback whose earlier root mutated the store must drop the saturation"
     );
 }
+
+// ─── Insert invalidation is CONE-RELEVANCE filtered ──────────────────────
+
+/// An insert about a relation the saturation's cone does not contain cannot
+/// change any extension in it, so the saturation stands. The control — an
+/// insert INSIDE the cone — still drops it.
+#[test]
+fn an_out_of_cone_insert_preserves_the_saturation() {
+    let kb = kb_with_live_saturation(); // cone = {animal, dog}
+
+    assert_buf(&kb, compile_surface("cat(Bel)."));
+    assert!(
+        kb.materialization_report().0.iter().any(|r| r == "animal"),
+        "an insert about an unrelated relation must leave the saturation standing"
+    );
+
+    assert_buf(&kb, compile_surface("dog(Bel)."));
+    assert!(
+        kb.materialization_report().0.is_empty(),
+        "an insert INSIDE the cone must still invalidate"
+    );
+}
+
+/// THE non-monotone case. A relation read under NEGATION is in the cone, so
+/// inserting into it invalidates — growth through a negated condition REMOVES
+/// derived tuples, and a preserved extension would answer with a tuple the new
+/// fact just blocked. Pinned on the VERDICT, not merely the report.
+#[test]
+fn an_insert_under_a_negation_invalidates_and_the_verdict_follows() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Rex)."));
+    assert_buf(&kb, compile_surface("fit(every dog where ~cat)."));
+
+    assert_eq!(
+        query_result(&kb, compile_surface("fit(Rex).")),
+        QueryResult::True,
+        "Rex is a dog and no cat blocks it"
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("~fit(Bel).")),
+        QueryResult::True,
+        "the NAF query saturates the fit cone"
+    );
+    assert!(
+        !kb.materialization_report().0.is_empty(),
+        "fixture must leave a live saturation"
+    );
+
+    // `cat` is read under `~`, so it is IN the cone: this must invalidate.
+    assert_buf(&kb, compile_surface("cat(Rex)."));
+    assert!(
+        kb.materialization_report().0.is_empty(),
+        "a fact read under negation must invalidate — its growth SHRINKS the model"
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("fit(Rex).")),
+        QueryResult::False,
+        "the new cat must block the derivation; a stale extension would still say TRUE"
+    );
+}
+
+/// A relation outside the cone carries no completeness claim, so a later query
+/// ABOUT it recomputes rather than reading the preserved extensions.
+#[test]
+fn a_query_about_an_out_of_cone_relation_recomputes() {
+    let kb = kb_with_live_saturation();
+    assert_buf(&kb, compile_surface("cat(Bel).")); // preserved, out of cone
+
+    assert_eq!(
+        query_result(&kb, compile_surface("~cat(Rex).")),
+        QueryResult::True,
+        "Rex is not a cat"
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("~cat(Bel).")),
+        QueryResult::False,
+        "Bel IS a cat — the preserved saturation must not hide the new fact"
+    );
+}
+
+/// A `du` link is a GLOBAL guard, not a tuple in some cone: a saturation built
+/// before the merge must die even though `equals` is nowhere near the query's
+/// dependency closure. Pinned on the VERDICT — a seed carries no equivalence
+/// expansion, so a preserved extension would answer `~rotten(Ara)` TRUE where
+/// backward chaining correctly says FALSE.
+#[test]
+fn an_equality_merge_invalidates_even_though_it_is_out_of_cone() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("dog(Rex)."));
+    assert_buf(&kb, compile_surface("animal(every dog)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::True
+    );
+    assert!(
+        !kb.materialization_report().0.is_empty(),
+        "fixture must leave a live saturation"
+    );
+
+    assert_buf(&kb, compile_surface("Bel = Rex."));
+    assert!(
+        kb.materialization_report().0.is_empty(),
+        "an equality merge must invalidate: the equality guard runs at BUILD time, \
+         so a saturation built before it would never see the class"
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::False,
+        "Bel is now Rex, hence an animal; a stale extension would still say TRUE"
+    );
+}

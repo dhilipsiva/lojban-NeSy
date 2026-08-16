@@ -2379,6 +2379,16 @@ pub(super) fn union_terms(inner: &mut KnowledgeBaseInner, a: &GroundTerm, b: &Gr
         (root_b, root_a)
     };
 
+    // A `du` link is a GLOBAL guard on materialisation, not a tuple: `saturate`
+    // refuses the whole KB while an equivalence exists, because a seed carries no
+    // equivalence expansion (`Ara = Bel` + stored `rotten(Bel)` would leave
+    // `~rotten(Ara)` reading as "no witness" — a definitive wrong TRUE). That
+    // guard runs at BUILD time, so a saturation built before this merge must die
+    // NOW. Anchored here at the mutation point rather than left to the caller's
+    // `invalidate_pred_cache`, which the assert path no longer performs
+    // unconditionally.
+    crate::reasoning::invalidate_materialization(inner);
+
     // Point loser at winner.
     inner
         .equivalence_parent

@@ -69,6 +69,10 @@ pub struct MatCase {
     pub name: String,
     pub kb: Vec<String>,
     pub queries: Vec<String>,
+    /// Lines asserted AFTER the first battery run, so each case exercises the
+    /// query → mutate → query interleaving a saturation can outlive. Both sides
+    /// see the identical sequence.
+    pub deferred: Vec<String>,
 }
 
 /// Generate the case for `seed`. Deterministic: the same seed always yields the same
@@ -250,10 +254,34 @@ pub fn random_materialize_case(seed: u64) -> MatCase {
         }
     }
 
+    // ── Split off the DEFERRED ground facts ──
+    //
+    // A suffix of the plain ground facts is held back and asserted only after the
+    // first battery run, so every generated case exercises the
+    // query → mutate → query interleaving. Facts specifically (never rules): a
+    // rule registration invalidates the saturation unconditionally, so deferring
+    // one would gate nothing, while a fact insert is exactly what the
+    // relevance-filtered invalidation may now let a saturation survive.
+    let is_ground_fact =
+        |l: &String| !l.contains("every") && !l.contains("all ") && !l.contains("->");
+    let n_deferred = 1 + (seed as usize % 3);
+    let mut deferred: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
+    for line in kb.into_iter().rev() {
+        if deferred.len() < n_deferred && is_ground_fact(&line) {
+            deferred.push(line);
+        } else {
+            kept.push(line);
+        }
+    }
+    kept.reverse();
+    deferred.reverse();
+
     MatCase {
         name: format!("mat_seed{seed}"),
-        kb,
+        kb: kept,
         queries,
+        deferred,
     }
 }
 
@@ -313,11 +341,37 @@ fn run_side(case: &MatCase, on: bool) -> Result<Vec<String>, String> {
             return Err(format!("assert {line:?}: {e:?}"));
         }
     }
-    let mut out = Vec::with_capacity(case.queries.len());
+    let mut out = Vec::with_capacity(case.queries.len() * 2);
     for q in &case.queries {
         match engine.query_holds(q) {
             Ok(v) => out.push(format!("{v:?}")),
             Err(e) => return Err(format!("query {q:?}: {e:?}")),
+        }
+    }
+
+    // SECOND PASS — the interleaved half. The battery above has warmed a
+    // saturation; now assert the deferred lines and run the SAME battery again
+    // on the SAME engine, so the second pass reads whatever survived the
+    // mutations.
+    //
+    // This is the arm that gates every "the saturation may outlive an
+    // assertion" optimisation: the relevance-filtered insert invalidation and
+    // the rollback preservation both live here, and a first pass that only
+    // asserts-then-queries could never see them. A stale extension surviving a
+    // relevant insert shows up as a DECIDED verdict changing between the sides,
+    // which is the `Diverge` arm.
+    for line in &case.deferred {
+        // Deferred lines may legitimately be rejected (the generator can stumble
+        // into an arity clash); both sides must reject identically, which the
+        // comparison enforces because a rejection changes what the battery sees.
+        if let Err(e) = engine.assert_text(line) {
+            return Err(format!("deferred assert {line:?}: {e:?}"));
+        }
+    }
+    for q in &case.queries {
+        match engine.query_holds(q) {
+            Ok(v) => out.push(format!("{v:?}")),
+            Err(e) => return Err(format!("post-mutation query {q:?}: {e:?}")),
         }
     }
     Ok(out)
@@ -357,7 +411,10 @@ pub fn run_case(case: &MatCase) -> MatOutcome {
     }
 
     let mut gained = 0usize;
-    for ((q, a), b) in case.queries.iter().zip(&on).zip(&off) {
+    // The battery runs twice per side (pre- and post-deferred-assertions), so the
+    // query list is walked twice to line up with it.
+    let doubled = case.queries.iter().chain(case.queries.iter());
+    for ((q, a), b) in doubled.zip(&on).zip(&off) {
         if a == b {
             continue;
         }
@@ -399,6 +456,32 @@ mod tests {
             let b = random_materialize_case(seed);
             assert_eq!(a.kb, b.kb);
             assert_eq!(a.queries, b.queries);
+            assert_eq!(a.deferred, b.deferred);
+        }
+    }
+
+    /// Non-vacuity for the INTERLEAVING: every case must actually defer some
+    /// ground facts, or the second battery would be a duplicate of the first and
+    /// the query → mutate → query arm would gate nothing.
+    #[test]
+    fn every_case_defers_ground_facts_to_interleave() {
+        for seed in 0..200u64 {
+            let c = random_materialize_case(seed);
+            assert!(
+                !c.deferred.is_empty(),
+                "seed {seed} deferred nothing — the interleaved battery would be vacuous"
+            );
+            for line in &c.deferred {
+                assert!(
+                    !line.contains("every") && !line.contains("all ") && !line.contains("->"),
+                    "seed {seed} deferred a RULE ({line:?}); a rule registration \
+                     invalidates unconditionally, so deferring one gates nothing"
+                );
+            }
+            assert!(
+                !c.kb.is_empty(),
+                "seed {seed} deferred everything — the first battery would see an empty KB"
+            );
         }
     }
 
@@ -411,13 +494,18 @@ mod tests {
         let mut recursive = 0;
         for seed in 0..200u64 {
             let c = random_materialize_case(seed);
-            if c.kb.iter().any(|l| l.contains(" = ")) {
+            // Scan BOTH halves: the deferred split moved ground facts (the `du`
+            // links and `past` facts among them) out of `kb`, and a coverage
+            // count that looked only at `kb` would silently read zero — which is
+            // exactly how this guard caught the split.
+            let lines: Vec<&String> = c.kb.iter().chain(c.deferred.iter()).collect();
+            if lines.iter().any(|l| l.contains(" = ")) {
                 du += 1;
             }
-            if c.kb.iter().any(|l| l.starts_with("past ")) {
+            if lines.iter().any(|l| l.starts_with("past ")) {
                 tensed += 1;
             }
-            if c.kb.iter().any(|l| l.contains("-> judge(")) {
+            if lines.iter().any(|l| l.contains("-> judge(")) {
                 recursive += 1;
             }
         }

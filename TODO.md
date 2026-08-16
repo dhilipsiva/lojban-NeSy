@@ -81,50 +81,52 @@ a concrete need.
 
 ## Materialisation: incremental re-saturation (C3) + the mutants re-cut
 
-(Both landed pieces, 2026-08-16: the semi-naive join is INDEXED on statically
-bound positions — `LevelIndex` in `eval_rule`, a pure pre-filter, transitive
-closure 1.19 s → 72 ms at |R|=100 and 12.2 s → 620 ms at |R|=200 — and the
-ROLLBACK SUBSET below is done: a refused assertion no longer throws the
-saturation away. What remains is the delta machinery for GENUINE mutations.
-Gate any step with `cargo mutants --in-diff`, and note the work-shape lesson
-from the join index: a degraded index still answers correctly (it falls back to
-the sound full scan), so verdict tests cannot see it — pin the WORK, as
-`join_index_bounds_transitive_closure_bind_attempts` does.)
+(Three pieces landed 2026-08-16. The semi-naive join is INDEXED on statically
+bound positions (`LevelIndex`; transitive closure 1.19 s -> 72 ms at |R|=100).
+A REFUSED assertion no longer drops the saturation (`rollback_inner`; 254 ms ->
+7.9 ms on a refuse-interleaved loop). And an insert OUTSIDE the saturation's
+dependency cone no longer drops it either
+(`invalidate_materialization_for_insert`; 87.6 ms -> 0.54 ms on an
+out-of-cone-interleaved loop, ~161x). The ON/OFF differential now INTERLEAVES --
+each generated case defers a suffix of its ground facts, asserts them after a
+first battery run, and re-runs the battery -- so every "the saturation may
+outlive a mutation" optimisation is gated at scale rather than by unit tests
+alone. Gate any further step with `cargo mutants --in-diff`, and pin the WORK,
+not just the verdict: a degraded optimisation still answers correctly by
+falling back, so verdict tests cannot see it.)
 
-- **Materialisation: incremental re-saturation (C3) — the delta machinery.**
-  *(effort: high)* Every fact insert drops the saturation (`assert_typed_fact` →
-  `invalidate_materialization`; the invalidation itself is
-  `reasoning.rs`:2018, `*inner.materialized.borrow_mut() = None`), so an
-  interleaved `assert; query; assert; query` REPL session recomputes the next
-  requested query cone and its cumulative root union from scratch, and
-  `nibli-ui` re-asserts its whole tab per run by design. Datalog is monotone, so
-  a seed addition can only GROW the model: a three-state dirty flag (`Clean` /
-  `GrewBy(Vec<StoredFact>)` / `Invalid`) could resume the semi-naive loop from a
-  one-tuple delta rather than rebuild — `eval_rule`'s `delta_pos` marker is
-  already a delta-driven round. `Invalid` for retraction, rebuild, reset, rule
-  registration, and any non-`Bare` or `equals` insert (both can retroactively
-  disqualify a relation).
+- **Materialisation: incremental re-saturation (C3) - the IN-CONE delta resume.**
+  *(effort: high)* What remains is the case the cone filter cannot help: an
+  insert INSIDE the queried cone still drops the whole saturation and pays a
+  full recompute at the next query (measured above: 95 ms per
+  assert-then-query round against 0.5 ms for an out-of-cone one). Datalog is
+  monotone in its POSITIVE fragment, so such an insert can only GROW the model:
+  a three-state flag (`Clean` / `GrewBy(Vec<StoredFact>)` / `Invalid`) could
+  resume the semi-naive loop from a one-tuple delta -- `eval_rule`'s `delta_pos`
+  marker is already a delta-driven round, and the per-stratum fixpoint in
+  `saturate` would need factoring so it can be re-entered with an initial delta
+  instead of a fresh seed.
 
-  **What the rollback subset already took.** `rollback_inner`
-  (`nibli-reason/src/lib.rs`) stashes the saturation across a refused
-  assertion's replay and restores it when the replay succeeds; preservation is
-  SELF-LIMITING, because a saturation can only still be `Some` at that point if
-  no mutation site fired its own `invalidate_materialization`. Measured on the
-  entry's own pattern (20 queries each preceded by a refused assertion, 60-fact
-  transitive closure): **254 ms → 7.9 ms**, against 0.18 ms for the same 20
-  queries with no interleaving at all.
+  **The constraint the original entry missed, now established:** the saturated
+  program contains STRATIFIED NAF (`ProjectedRule::negative`), and growth
+  through a negated condition SHRINKS the model -- adding a tuple to a lower
+  stratum can falsify `~R(t)` above it and REMOVE derived tuples. So a resume
+  must refuse whenever the delta's relation is read under negation anywhere in
+  the eligible program, not merely stratify it. (Today's cone filter is safe on
+  this point by construction: the cone closure includes negated deps, so a
+  negatively-read relation is always IN the cone and always invalidates --
+  pinned by `an_insert_under_a_negation_invalidates_and_the_verdict_follows`.)
+  `Invalid` also for retraction, rebuild, reset, rule registration, equality
+  merges, and any non-`Bare` insert.
 
-  **The residual, measured.** Those remaining 7.9 ms are the ROLLBACK REPLAY
-  itself — a refused assertion still replays every surviving record to restore
-  a state it never changed. Skipping the replay outright when nothing was
-  mutated is a further small subset, but it needs a trustworthy "nothing was
-  mutated" signal: the saturation's own survival is not enough, because
+  **Also still open, from the rollback subset:** a refused assertion still
+  REPLAYS every surviving record to restore a state it never changed (the
+  residual 7.9 ms above). Skipping that replay needs a trustworthy "nothing was
+  mutated" signal, which the saturation's survival alone does not provide --
   insert-only domain state (`known_entities`/`known_numbers`, the member caches)
-  is mutated by paths that do not all invalidate the saturation, and leaving
-  that residue behind is exactly the 2026-08-01 lingering-member class the
-  retraction differential caught. Either extend the at-the-mutation-point
-  discipline to a single logical-state epoch that every mutation bumps, or
-  leave the replay alone.
+  is mutated by paths that do not all invalidate, the 2026-08-01
+  lingering-member class. Either extend the at-the-mutation-point discipline to
+  one logical-state epoch every mutation bumps, or leave the replay alone.
 
 **The mutation baseline is stale enough that `just mutants` fails on `main`** *(effort: high)* — and the
 chain above will widen the gap, so sequence the re-cut before it or immediately after.
