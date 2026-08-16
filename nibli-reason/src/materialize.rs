@@ -1453,7 +1453,9 @@ pub(super) fn saturate(
 /// Deliberately over-approximating: it collects every predicate reachable from any
 /// negation, not just the immediate ones. Naming a relation that turns out not to need
 /// saturating costs a little work; MISSING one only costs the optimisation, and neither
-/// can change a verdict.
+/// can change a verdict. The memo is keyed on `(node, polarity)` — a compiled buffer
+/// is a DAG (`<->`/`xor` share subtrees between both polarities), so a node first
+/// reached positively must still be re-walked when a negation reaches it later.
 pub(super) fn collect_negated_relations(
     buffer: &nibli_types::logic::LogicBuffer,
     out: &mut HashSet<String>,
@@ -1464,9 +1466,9 @@ pub(super) fn collect_negated_relations(
         id: u32,
         under_not: bool,
         out: &mut HashSet<String>,
-        seen: &mut HashSet<u32>,
+        seen: &mut HashSet<(u32, bool)>,
     ) {
-        if !seen.insert(id) {
+        if !seen.insert((id, under_not)) {
             return;
         }
         let Some(node) = buffer.nodes.get(id as usize) else {

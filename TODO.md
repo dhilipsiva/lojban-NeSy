@@ -81,20 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **`collect_negated_relations` misses the opposite-polarity visit of a shared
-  subtree.** *(effort: low)* The walker (`nibli-reason/src/materialize.rs`:1457, inner `walk`
-  :1462-1471) threads `under_not` as a parameter but keys its `seen` set on node id
-  ALONE (the insert check at :1469), so a node first reached positively is never
-  re-walked under a negation. A compiled buffer is a DAG — `<->` and `xor` share
-  subtrees between both polarities — so the set is in that case an UNDER-approximation,
-  which is precisely what the function's own doc comment (:1453-1456) says it is not
-  ("deliberately over-approximating … MISSING one only costs the optimisation"). The
-  per-root fresh `seen` at :1502-1506 covers cross-ROOT polarity, not this within-root
-  case. The second half of that sentence is true and is why this is low priority: a
-  missing target falls back to backward chaining and no verdict moves. Key `seen` on
-  `(id, under_not)`. **Exit:** a `<->`/`xor` case whose negative-polarity relation is
-  currently missed is pinned, and the doc comment matches what the code does.
-
 - **Preserve or explicitly invalidate rule execution settings across rebuild.** *(effort: high)*
   `set_rule_forward` (`nibli-reason/src/lib.rs`:1669-1699) and `set_rule_priority`
   (:1705-1721) mutate compiled `UniversalRuleRecord`s (`forward` at `kb.rs`:1584,

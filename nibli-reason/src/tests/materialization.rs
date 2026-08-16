@@ -1577,3 +1577,26 @@ person :: [Constant("bel")]
 reward :: [Constant("ara"), Unspecified, Unspecified, Unspecified]
 rotten :: [Constant("bel"), Unspecified]
 "#;
+
+/// A `<->` compiles to (¬a ∨ b) ∧ (¬b ∨ a) over a SHARED node arena, so each
+/// predicate is reachable both positively and under a negation. The negated-
+/// target collector must visit a shared subtree once PER POLARITY — a memo
+/// keyed on node id alone skips the second-polarity visit and silently drops
+/// a relation from the NAF target set, making its own "deliberately
+/// over-approximating" doc comment false.
+#[test]
+fn negated_relations_cover_both_polarities_of_a_shared_subtree() {
+    let mut out = std::collections::HashSet::new();
+    crate::materialize::collect_negated_relations(
+        &compile_surface("goes(me) <-> loves(you)."),
+        &mut out,
+    );
+    for rel in ["goes", "loves"] {
+        assert!(
+            out.contains(rel),
+            "`{rel}` occurs under a Not in the biconditional expansion and \
+             must be collected regardless of which polarity the walk reaches \
+             first: {out:?}"
+        );
+    }
+}
