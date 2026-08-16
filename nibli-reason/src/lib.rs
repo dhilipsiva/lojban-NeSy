@@ -362,8 +362,10 @@ impl KnowledgeBase {
             // orphaned (un-listable, un-retractable). The failed assertion has no
             // FactRecord, so rebuilding from the durable registry reproduces the
             // exact pre-assertion state, discarding the partial mutation.
-            let rb = Self::rebuild_inner(&mut inner);
-            invalidate_pred_cache(&inner);
+            // ROLLBACK, not an ordinary rebuild: the saturated extensions survive
+            // when nothing was mutated (see `rollback_inner`).
+            let rb = Self::rollback_inner(&mut inner);
+            invalidate_pred_cache_keeping_saturation(&inner);
             return match rb {
                 Ok(()) => Err(e),
                 Err(re) => Err(format!("{e} (additionally, rollback failed: {re})")),
@@ -412,8 +414,10 @@ impl KnowledgeBase {
         let result = process_assertion(&mut inner, &mut logic);
         inner.current_assertion_id = None;
         if let Err(e) = result {
-            let rb = Self::rebuild_inner(&mut inner);
-            invalidate_pred_cache(&inner);
+            // ROLLBACK, not an ordinary rebuild: the saturated extensions survive
+            // when nothing was mutated (see `rollback_inner`).
+            let rb = Self::rollback_inner(&mut inner);
+            invalidate_pred_cache_keeping_saturation(&inner);
             return match rb {
                 Ok(()) => Err(e),
                 Err(re) => Err(format!("{e} (additionally, rollback failed: {re})")),
@@ -473,6 +477,40 @@ impl KnowledgeBase {
     /// Rebuild the KB from all non-retracted facts.
     /// Preserves fact_registry and fact_counter; resets all derived state.
     fn rebuild_inner(inner: &mut KnowledgeBaseInner) -> Result<(), String> {
+        Self::rebuild_inner_impl(inner, false)
+    }
+
+    /// The ROLLBACK rebuild: identical replay, but the saturated extensions
+    /// SURVIVE it (C3's strictly-sound subset, 2026-08-16).
+    ///
+    /// Why this is sound, and why it is self-limiting: `invalidate_materialization`
+    /// is called AT EVERY MUTATION POINT by structural invariant (the store insert,
+    /// the store removal, and rule registration each carry their own call —
+    /// deliberately not left to caller discipline). So a saturation that is still
+    /// `Some` when a failed assertion rolls back is proof that the attempt mutated
+    /// NOTHING: the state the replay reproduces is the state the saturation was
+    /// built from. An attempt that did mutate — a strict-mode insert-then-eject,
+    /// say — has already dropped the saturation at that mutation, so there is
+    /// nothing to preserve and this behaves exactly as before. The gating is done
+    /// by the existing invalidation calls, not by a new bookkeeping flag that
+    /// could drift out of step with them.
+    ///
+    /// (The replay also drops eagerly forward-derived facts, which it never
+    /// re-fires. That cannot invalidate a preserved saturation: such a fact is
+    /// derivable by the very rules that produced it, so seeding with or without it
+    /// reaches the same fixpoint, and fewer seeds can only make `seed_edb` refuse
+    /// FEWER relations — never wrongly claim completeness for one.)
+    ///
+    /// A replay that ERRORS discards the saturation: the state it leaves is not
+    /// the state anything was computed from.
+    fn rollback_inner(inner: &mut KnowledgeBaseInner) -> Result<(), String> {
+        Self::rebuild_inner_impl(inner, true)
+    }
+
+    fn rebuild_inner_impl(
+        inner: &mut KnowledgeBaseInner,
+        preserve_saturation: bool,
+    ) -> Result<(), String> {
         // Preserve user-declared arg sorts (set via `set_predicate_sorts`): replay
         // only re-infers arity+source per predicate, never the sorts, so clearing
         // `predicate_registry` below would silently drop them.
@@ -519,7 +557,17 @@ impl KnowledgeBase {
         // `invalidate_pred_cache`, because `KnowledgeBase::rebuild` is the one rebuild
         // entry point that does NOT invalidate — a stale extension surviving it would
         // answer `~p(x)` from the pre-rebuild knowledge base.
-        *inner.materialized.borrow_mut() = None;
+        //
+        // TAKEN rather than dropped: `rollback_inner` restores it after a successful
+        // replay (see its doc for why a surviving saturation proves the attempt
+        // mutated nothing). Held OUTSIDE the KB for the duration, so the replay's own
+        // per-insert invalidations cannot interact with it.
+        let stashed_saturation = inner.materialized.borrow_mut().take();
+        let stashed_saturation = if preserve_saturation {
+            stashed_saturation
+        } else {
+            None
+        };
 
         // Collect non-retracted buffers + their ids ordered by ID (owned, to avoid
         // a borrow conflict with the mutable replay below).
@@ -563,6 +611,10 @@ impl KnowledgeBase {
         }
 
         if replay_errors.is_empty() {
+            // The replay reproduced the state the saturation was built from.
+            if let Some(saturation) = stashed_saturation {
+                *inner.materialized.borrow_mut() = Some(saturation);
+            }
             Ok(())
         } else {
             let detail = replay_errors

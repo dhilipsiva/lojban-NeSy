@@ -81,37 +81,50 @@ a concrete need.
 
 ## Materialisation: incremental re-saturation (C3) + the mutants re-cut
 
-(The chain's step 1 — indexing the semi-naive join on statically bound
-positions — LANDED 2026-08-16: `LevelIndex` in `eval_rule`, a pure pre-filter
-(`bind_tuple` re-checks everything), lazily built per level per call, level 0
-never indexed. Transitive closure: 1.19 s → 72 ms at |R|=100, 12.2 s → 620 ms
-at |R|=200, verdicts identical, ON/OFF differential green. C3 remains; gate it
-with `cargo mutants --in-diff` and see the baseline re-cut below.)
+(Both landed pieces, 2026-08-16: the semi-naive join is INDEXED on statically
+bound positions — `LevelIndex` in `eval_rule`, a pure pre-filter, transitive
+closure 1.19 s → 72 ms at |R|=100 and 12.2 s → 620 ms at |R|=200 — and the
+ROLLBACK SUBSET below is done: a refused assertion no longer throws the
+saturation away. What remains is the delta machinery for GENUINE mutations.
+Gate any step with `cargo mutants --in-diff`, and note the work-shape lesson
+from the join index: a degraded index still answers correctly (it falls back to
+the sound full scan), so verdict tests cannot see it — pin the WORK, as
+`join_index_bounds_transitive_closure_bind_attempts` does.)
 
-- **Materialisation: incremental re-saturation (C3) — rollback subset first.** *(effort: high; the rollback subset alone: medium)* Every
-  fact insert drops the saturation (`assert_typed_fact` → `invalidate_materialization`,
-  `rules.rs`:873 → :892 → :1044; the invalidation itself is `reasoning.rs`:2016-2018,
-  `*inner.materialized.borrow_mut() = None`), so an interleaved
-  `assert; query; assert; query` REPL session recomputes the next requested query cone
-  and its cumulative root union from scratch, and `nibli-ui` re-asserts its whole tab
-  per run by design. Datalog is monotone, so a seed addition can only GROW the model:
-  a three-state dirty flag (`Clean` / `GrewBy(Vec<StoredFact>)` / `Invalid`) could
-  resume the semi-naive loop from a one-tuple delta rather than rebuild —
-  `eval_rule`'s `delta_pos` marker is already a delta-driven round. `Invalid` for
-  retraction, rebuild, reset, rule registration, and any non-`Bare` or `equals` insert
-  (both can retroactively disqualify a relation).
+- **Materialisation: incremental re-saturation (C3) — the delta machinery.**
+  *(effort: high)* Every fact insert drops the saturation (`assert_typed_fact` →
+  `invalidate_materialization`; the invalidation itself is
+  `reasoning.rs`:2018, `*inner.materialized.borrow_mut() = None`), so an
+  interleaved `assert; query; assert; query` REPL session recomputes the next
+  requested query cone and its cumulative root union from scratch, and
+  `nibli-ui` re-asserts its whole tab per run by design. Datalog is monotone, so
+  a seed addition can only GROW the model: a three-state dirty flag (`Clean` /
+  `GrewBy(Vec<StoredFact>)` / `Invalid`) could resume the semi-naive loop from a
+  one-tuple delta rather than rebuild — `eval_rule`'s `delta_pos` marker is
+  already a delta-driven round. `Invalid` for retraction, rebuild, reset, rule
+  registration, and any non-`Bare` or `equals` insert (both can retroactively
+  disqualify a relation).
 
-  **Now the top materialisation cost, measured.** With the per-candidate binding clone
-  gone (`9671e2e`), a 555-pin run over a 2004-line constitution spends its time in
-  `eval_rule::walk` itself. The suite carries 66 KB-mutating directives interleaved
-  with 492 queries, and each one drops the saturation: 20 identical queries with no
-  mutation cost 0.13 s, the same 20 with a `:accept-scoped` between each cost 1.16 s
-  (~9x). A `:refuse` costs the same as a real mutation even though the KB ends
-  semantically identical — `rebuild_inner` (`nibli-reason/src/lib.rs`:475) nulls the
-  saturation unconditionally on the rollback (the `None` assignment at :523).
-  Preserving it across a rollback that restores the prior state is a smaller,
-  strictly-sound subset of C3 and would cover 36 of those 66 directives — do that
-  subset first.
+  **What the rollback subset already took.** `rollback_inner`
+  (`nibli-reason/src/lib.rs`) stashes the saturation across a refused
+  assertion's replay and restores it when the replay succeeds; preservation is
+  SELF-LIMITING, because a saturation can only still be `Some` at that point if
+  no mutation site fired its own `invalidate_materialization`. Measured on the
+  entry's own pattern (20 queries each preceded by a refused assertion, 60-fact
+  transitive closure): **254 ms → 7.9 ms**, against 0.18 ms for the same 20
+  queries with no interleaving at all.
+
+  **The residual, measured.** Those remaining 7.9 ms are the ROLLBACK REPLAY
+  itself — a refused assertion still replays every surviving record to restore
+  a state it never changed. Skipping the replay outright when nothing was
+  mutated is a further small subset, but it needs a trustworthy "nothing was
+  mutated" signal: the saturation's own survival is not enough, because
+  insert-only domain state (`known_entities`/`known_numbers`, the member caches)
+  is mutated by paths that do not all invalidate the saturation, and leaving
+  that residue behind is exactly the 2026-08-01 lingering-member class the
+  retraction differential caught. Either extend the at-the-mutation-point
+  discipline to a single logical-state epoch that every mutation bumps, or
+  leave the replay alone.
 
 **The mutation baseline is stale enough that `just mutants` fails on `main`** *(effort: high)* — and the
 chain above will widen the gap, so sequence the re-cut before it or immediately after.

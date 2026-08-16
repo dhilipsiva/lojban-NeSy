@@ -2610,6 +2610,18 @@ pub(super) fn enable_pred_cache(inner: &KnowledgeBaseInner) {
     inner.pred_cache_enabled.set(true);
 }
 
+/// Invalidate the predicate result cache WITHOUT touching the saturation.
+///
+/// For the ROLLBACK path only (`KnowledgeBase::rollback_inner`): a refused
+/// assertion leaves the logical state exactly as it was, so the derived
+/// predicate cache is cleared out of caution while the saturated extensions —
+/// which the rollback provably did not invalidate — survive. Every other
+/// mutation path must use [`invalidate_pred_cache`], which drops both.
+pub(super) fn invalidate_pred_cache_keeping_saturation(inner: &KnowledgeBaseInner) {
+    clear_typed_pred_cache(inner);
+    inner.pred_cache_enabled.set(false);
+}
+
 /// Invalidate the predicate result cache. Call after any KB mutation
 /// (assert, retract, reset) to prevent stale cached results.
 pub(super) fn invalidate_pred_cache(inner: &KnowledgeBaseInner) {

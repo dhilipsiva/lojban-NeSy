@@ -1674,3 +1674,144 @@ fn join_index_analysis_handles_non_leading_bound_positions() {
          analysis mis-keyed and degraded to a full scan"
     );
 }
+
+// ─── Rollback preserves the saturation (C3's strictly-sound subset) ──────
+
+/// Build a KB whose `animal` cone is saturated by a NAF query, and return it
+/// with the saturation live.
+fn kb_with_live_saturation() -> KnowledgeBase {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("derived_only(\"fit\")."));
+    assert_buf(&kb, compile_surface("dog(Rex)."));
+    assert_buf(&kb, compile_surface("all $x: dog($x) -> animal($x)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::True
+    );
+    assert!(
+        kb.materialization_report().0.iter().any(|r| r == "animal"),
+        "fixture must leave a live saturation of the animal cone"
+    );
+    kb
+}
+
+/// A REFUSED assertion that mutated nothing must not throw the saturation
+/// away: its rollback replay reproduces the very state the extensions were
+/// computed from. The control — a SUCCESSFUL assertion — must still drop it.
+#[test]
+fn a_refused_assertion_preserves_the_saturation() {
+    let kb = kb_with_live_saturation();
+
+    // `fit` is closed to direct assertion, so this is refused at ingress,
+    // before any store or rule mutation.
+    kb.assert_fact_inner(compile_surface("fit(Rex)."), String::new())
+        .expect_err("a derived_only relation must refuse direct assertion");
+    assert!(
+        kb.materialization_report().0.iter().any(|r| r == "animal"),
+        "a non-mutating rollback must leave the saturation intact"
+    );
+
+    // Control: a real mutation still drops it.
+    assert_buf(&kb, compile_surface("dog(Bel)."));
+    assert!(
+        kb.materialization_report().0.is_empty(),
+        "a successful assertion must still invalidate the saturation"
+    );
+}
+
+/// The preserved saturation must not strand a stale extension: verdicts after
+/// a refused assertion match a KB that never saw it, and the NEXT real
+/// assertion is visible immediately.
+#[test]
+fn preserved_saturation_answers_exactly_as_a_rebuilt_one() {
+    let kb = kb_with_live_saturation();
+    kb.assert_fact_inner(compile_surface("fit(Rex)."), String::new())
+        .expect_err("refused");
+
+    // Answers from the preserved extensions.
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::True,
+        "Bel is still not derivable"
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("animal(Rex).")),
+        QueryResult::True,
+        "Rex is still derivable"
+    );
+
+    // …and a genuine mutation is seen at once (no stale hold-over).
+    assert_buf(&kb, compile_surface("dog(Bel)."));
+    assert_eq!(
+        query_result(&kb, compile_surface("~animal(Bel).")),
+        QueryResult::False,
+        "the new dog must make Bel an animal — a preserved saturation must \
+         never survive a real mutation"
+    );
+
+    // Byte-for-byte agreement with a KB that never saw the refused statement.
+    let fresh = kb_with_live_saturation();
+    assert_buf(&fresh, compile_surface("dog(Bel)."));
+    assert_eq!(
+        query_result(&fresh, compile_surface("~animal(Bel).")),
+        query_result(&kb, compile_surface("~animal(Bel).")),
+    );
+}
+
+/// The rollback's cache hygiene is NOT relaxed along with the saturation: the
+/// derived predicate cache and its depth-cut table are still cleared and the
+/// cache still disabled, so nothing the failed attempt derived can outlive it.
+/// (Pins `invalidate_pred_cache_keeping_saturation` doing its two jobs — a
+/// gutted version leaves the saturation intact and is otherwise invisible.)
+#[test]
+fn a_refused_assertion_still_clears_and_disables_the_predicate_cache() {
+    let kb = kb_with_live_saturation();
+    {
+        // Warm the cache the way a query does, so the clear has something to do.
+        let inner = kb.inner.borrow();
+        clear_and_enable_pred_cache(&inner);
+    }
+    assert!(query(&kb, compile_surface("animal(Rex).")));
+
+    kb.assert_fact_inner(compile_surface("fit(Rex)."), String::new())
+        .expect_err("refused");
+
+    let inner = kb.inner.borrow();
+    assert!(
+        !inner.pred_cache_enabled.get(),
+        "the rollback must leave the predicate cache DISABLED"
+    );
+    assert!(
+        inner.pred_cache.borrow().is_empty(),
+        "the rollback must leave the predicate cache EMPTY"
+    );
+    assert!(
+        inner.depth_cut_table.borrow().is_empty(),
+        "the depth-cut table shares the cache lifecycle and must be cleared too"
+    );
+    drop(inner);
+    assert!(
+        kb.materialization_report().0.iter().any(|r| r == "animal"),
+        "…while the saturation still survives"
+    );
+}
+
+/// SELF-LIMITING: a rollback that DID mutate (an earlier root of a multi-root
+/// assertion landed before a later root was refused) must still drop the
+/// saturation — the mutation point's own `invalidate_materialization` does the
+/// gating, so preservation can never outrun it.
+#[test]
+fn a_mutating_rollback_still_drops_the_saturation() {
+    let kb = kb_with_live_saturation();
+    let multi = compile_surface("dog(Bel). fit(Bel).");
+    assert!(
+        multi.roots.len() > 1,
+        "fixture must be a multi-root buffer to mutate before failing"
+    );
+    kb.assert_fact_inner(multi, String::new())
+        .expect_err("the derived_only root must refuse the whole assertion");
+    assert!(
+        kb.materialization_report().0.is_empty(),
+        "a rollback whose earlier root mutated the store must drop the saturation"
+    );
+}
