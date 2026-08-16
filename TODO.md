@@ -81,16 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **README's REPL-commands table is missing entries** *(effort: low)* (README.md:359
-  `### REPL Commands`, header still `| Command | Description |`). The table omits the
-  host's `:dump` and `:export` (`nibli-host/src/main.rs`:1659, :1694), all six short
-  aliases (`:b :f :h :m :q :r`), and has no rows for `:quit`/`:help` themselves. NOT
-  missing (struck on earlier re-checks, re-confirmed 2026-08-16): the debug-REPL-only
-  commands (a paragraph below the table already separates that surface as different),
-  `:materialize`/`:db`/`:proof-verbose` (:378-380), and 5777ced's bare-`:compute`
-  report (already documented in the row at :372). A Surface column would still read
-  better than the prose caveat, but that is polish, not a defect.
-
 - **The component's import list is not gated.** *(effort: low)* Docs (book Ch 13/15/App C) state
   "no clock or filesystem imports" — true today (imports are the
   `wasi:cli`/`wasi:io` set + `wasi:random/insecure-seed`), but no CI check pins it and

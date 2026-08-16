@@ -368,16 +368,20 @@ rejected as scope-ambiguous; separate period-terminated statements are independe
 | `:retract <id>` | Retract a fact by ID and rebuild the KB |
 | `:facts` | List all active facts |
 | `:load <filepath>` | Batch-load a `.nibli` file |
-| `:reset` | Clear the entire knowledge base |
+| `:reset` (alias `:r`) | Clear the entire knowledge base |
 | `:compute [predicate]` | Show canonical compute relations (bare), or route an existing corpus predicate to external dispatch — this does not declare vocabulary or infer arity; registration is refused while live stored facts or rules reference the relation |
-| `:backend [host:port]` | Show or change the compute backend address |
-| `:fuel [amount]` | Show or set the WASM fuel limit |
-| `:memory [mb]` | Show or set the WASM memory limit |
+| `:backend [host:port]` (alias `:b`) | Show or change the compute backend address |
+| `:fuel [amount]` (alias `:f`) | Show or set the WASM fuel limit |
+| `:memory [mb]` (alias `:m`) | Show or set the WASM memory limit |
 | `:strict [on\|off]` | Show or set strict mode — reject arity/constraint violations instead of warn-and-insert (also `NIBLI_STRICT=1`) |
 | `:existential-import [on\|off]` | Show or set legacy xorlo witness minting (default OFF, clean-core) — explicit ON makes imported witnesses participate in ∃/∀/find/count/aggregate (also `NIBLI_EXISTENTIAL_IMPORT=1`) |
 | `:materialize [on\|off]` | Show or set stratum-ordered materialisation (default ON) and print the cumulative query-cone report since the last KB mutation — completed relations and refusal reasons; it may be empty when an exact positive proof needed no saturation (also `NIBLI_MATERIALIZE=0`) |
 | `:db` | Show the persistent store status (set `NIBLI_DB_PATH` to enable) |
+| `:dump <filepath>` | Write every active fact's source text (label) to a plain file, one statement per line — works with or without the persistent store |
+| `:export <redb-filepath>` | Export the persistent store to a redb file (requires `NIBLI_DB_PATH`) |
 | `:proof-verbose <statement>` | Query with the full role-level proof trace instead of the collapsed one |
+| `:help` (alias `:h`) | Show the command list |
+| `:quit` (alias `:q`) | Exit the REPL |
 
 Environment: `NIBLI_WASM_PATH` (component path), `NIBLI_FUEL`, `NIBLI_MEMORY_MB`,
 `NIBLI_COMPUTE_ADDR`, `NIBLI_DB_PATH`, `NIBLI_QUIET`, plus the mode flags above.
