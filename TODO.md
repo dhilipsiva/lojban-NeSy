@@ -81,14 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **`--allow-shell` has no test that it stays OFF for `pins/`.** *(effort: low)* The gate is what keeps
-  the pin language closed during `just ci`; nothing pins that `just verify-pins`
-  (Justfile:751-760 — runs `nibli-pin $files`, no flags) never passes it. The only
-  related test, `require_is_refused_without_the_flag` (`nibli/src/bin/pin.rs`:1676),
-  pins the BIN's refusal when the flag is absent — not the recipe's argv, which is
-  exactly the gap. A one-line grep guard in the Justfile, or a test asserting the
-  recipe's argv, would stop a future edit from quietly opening it.
-
 - **`register_constraint` takes raw `StoredFact` conjuncts and bypasses buffer
   preflight.** *(effort: medium; doc-disclosure exit: low)* Noted while closing the external-compute registration-order entry
   (2026-08-09): the integrity-constraint API (`nibli-reason/src/lib.rs`:1516) accepts

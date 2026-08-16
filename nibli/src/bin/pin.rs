@@ -1687,6 +1687,47 @@ mod tests {
     }
 
     #[test]
+    fn verify_pins_recipe_never_passes_allow_shell() {
+        // The bin-level refusal above is only half the gate: the pin language
+        // stays closed during `just ci` because the RECIPE never passes
+        // `--allow-shell`, and nothing pinned that — a one-word Justfile edit
+        // would have quietly opened shell execution to everything under pins/.
+        // include_str! so a moved Justfile is a compile error, never a
+        // silently green guard (the verify-grammar-parity precedent). This
+        // test runs on every `just ci` because the verify-pins recipe runs the
+        // bin self-tests before the pins.
+        const JUSTFILE: &str = include_str!("../../../Justfile");
+
+        let mut lines = JUSTFILE.lines();
+        assert!(
+            lines.any(|l| l == "verify-pins:"),
+            "the verify-pins recipe header vanished from the Justfile — \
+             re-point this guard at wherever CI invokes the pin runner"
+        );
+        // A recipe body is every indented (or blank) line after the header;
+        // the first non-indented non-empty line ends it (just's syntax).
+        let body: Vec<&str> = lines
+            .take_while(|l| l.is_empty() || l.starts_with(' ') || l.starts_with('\t'))
+            .collect();
+        // Positive controls: the body we scoped is the real recipe.
+        assert!(
+            !body.is_empty(),
+            "verify-pins recipe body came back empty — the extraction is broken"
+        );
+        assert!(
+            body.iter().any(|l| l.contains("./target/debug/nibli-pin")),
+            "verify-pins no longer invokes ./target/debug/nibli-pin — \
+             the guard is scanning the wrong recipe body: {body:?}"
+        );
+        // The pin: no spelling of the flag anywhere in the recipe's argv.
+        assert!(
+            !body.iter().any(|l| l.contains("allow-shell")),
+            "`just verify-pins` passes --allow-shell — the pin language must \
+             stay closed in CI (shell preconditions are opt-in, never default)"
+        );
+    }
+
+    #[test]
     fn require_met_and_unmet() {
         let met = run_file_with_kb("t", ":require true\n:expect-pins 1\n", &[], true);
         assert!(met.findings.is_empty() && met.harness.is_empty(), "{met:?}");
