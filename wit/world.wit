@@ -224,7 +224,8 @@ interface logic-types {
         sources: list<rule-citation>,
     }
     record proof-ref-rule {
-        /// The already-proved fact referenced (its full proof was shown at first occurrence).
+        /// The already-proved fact referenced. The step's `children` carries
+        /// exactly one index: the first-occurrence step holding the full proof.
         fact: string,
     }
     record equality-substitution-rule {
@@ -278,7 +279,10 @@ interface logic-types {
         /// Minted by the optional legacy existential-import profile.
         presupposed(presupposed-rule),
         /// Reference to an already-proved fact.
-        /// No children — the full proof was shown at its first occurrence.
+        /// Children: exactly one — the index of the step where the full proof
+        /// was shown at its first occurrence (the memo-hit back-reference).
+        /// Renderers differ deliberately: the verbose text renderer re-expands
+        /// the referenced step, the collapsed/UI renderings drop it.
         proof-ref(proof-ref-rule),
         /// Equality substitution.
         equality-substitution(equality-substitution-rule),

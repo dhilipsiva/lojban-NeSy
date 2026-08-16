@@ -81,24 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **`wit/world.wit`:281 `proof-ref` doc comment is wrong.** *(effort: low)* It claims "No children —
-  the full proof was shown at its first occurrence," but the memo-hit arm of
-  `trace_predicate_provenance_typed` (`nibli-reason/src/reasoning.rs`:3314-3326) always
-  pushes `children: vec![cached_idx]` (:3323), and nothing strips it: `children` lives
-  on `proof-step` (`wit/world.wit`:292-296), not on the rule variant, and
-  `nibli-pipeline/src/lib.rs`:202 clones it across the component boundary (map closure
-  :199-203; the `ProofRef` arm at :167-168 converts only the fact string). The verbose
-  text renderer re-expands that child while the collapsed/UI renderings drop it. So the
-  COMMENT is what is wrong, not the behaviour — the "decide whether that divergence is
-  intentional" step concerns only the renderers. The sibling field doc at
-  `world.wit`:227 ("its full proof was shown at first occurrence") is accurate as
-  written — keep the two consistent when fixing. If a test ships with the fix, note
-  that `nibli-reason/src/tests/memo_regressions.rs`:540
-  (`test_proof_ref_carries_cached_index`) is an `if let` inside a `for` with no "at
-  least one ProofRef was seen" assertion, so it passes vacuously on a trace containing
-  none. Ripple: the book's Appendix C reproduces `world.wit` in full and must be
-  updated together.
-
 - **Settle the RDF export contract.** *(effort: high; narrow-to-fact-label-dump
   exit: low)* `nibli-import/src/export.rs`:1-18 (the whole
   file, byte-stable through the sweep) calls its output N-Triples (:1) but the sole

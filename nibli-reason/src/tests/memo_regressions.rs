@@ -558,8 +558,11 @@ fn test_proof_ref_carries_cached_index() {
 
     // Every ProofRef step should have exactly one child pointing to the
     // original step, and its holds value should match the referenced step.
+    // Counted, so the test cannot pass vacuously on a trace with no ProofRef.
+    let mut proof_refs_seen = 0usize;
     for step in &trace.steps {
         if let ProofRule::ProofRef { .. } = &step.rule {
+            proof_refs_seen += 1;
             assert_eq!(
                 step.children.len(),
                 1,
@@ -578,6 +581,11 @@ fn test_proof_ref_carries_cached_index() {
             );
         }
     }
+    assert!(
+        proof_refs_seen > 0,
+        "this fixture must produce at least one ProofRef (memo hit) — a trace \
+         with none means the loop above asserted nothing"
+    );
 }
 
 // ─── Depth-cut table (sound tabling for the deep-chain cliff) ────────────
