@@ -79,28 +79,15 @@ a concrete need.
 
 ---
 
-## Chain — proof certificate (1 → 2 → 3)
+## Chain — proof certificate (1 → 2)
 
-Order: step 1 is a small self-contained fail-safe whose typed "cannot index this proof"
-outcome step 2's envelope should carry; step 2 defines the versioned contract; step 3
-extends that contract to materialised verdicts — design 2 knowing 3's needs, or the
-envelope bakes in the per-rule-derivation assumption C2 exists to relax.
+Order: step 1 defines the versioned contract (the index-cap refusal LANDED
+2026-08-16: `push_proof_step` is the one indexing point, overflow refuses the
+whole trace as a typed error — fold that outcome into the envelope); step 2
+extends the contract to materialised verdicts — design 1 knowing 2's needs, or
+the envelope bakes in the per-rule-derivation assumption C2 exists to relax.
 
-1. **Check proof indices instead of casting them.** *(effort: medium)* The display-string half of this
-   entry LANDED in `706bfb9`: the provenance tracer keys structurally on `StoredFact`
-   (`memo: &mut HashMap<StoredFact, u32>` — signature sites now
-   `nibli-reason/src/reasoning.rs`:596 and :3309, plus a THIRD site since the TraceSink
-   refactor, the `RecordingSink` field at :2893; read at :3314), so human rendering is
-   no longer an identity boundary and display stays at the render edge. What remains is
-   the index half: every step index is produced by an unchecked `steps.len() as u32` —
-   still exactly nine sites, now `reasoning.rs`:2898, :3319, :3343, :3389, :3411,
-   :3430, :3472, :3586, :3615 (no `try_from` anywhere in the file) — so a trace that
-   outgrows `u32` wraps into a valid-looking back-reference instead of failing. Fail
-   cleanly if a proof cannot be indexed. **Exit:** oversized/deep traces return a typed
-   resource/error outcome rather than a silently truncated index; the memo regression
-   suite and `just verify-proofs` remain green.
-
-2. **Bind proof traces to the full verdict and durable evidence.** *(effort: extra; narrow-the-public-contract
+1. **Bind proof traces to the full verdict and durable evidence.** *(effort: extra; narrow-the-public-contract
    exit: medium)* `ProofStep` exposes
    only `holds: bool`, while `ProofTrace` carries `naf_dependent` and `cwa_false` but
    not the root `QueryResult`, UNKNOWN reason, or RESOURCE_EXCEEDED kind
@@ -118,7 +105,7 @@ envelope bakes in the per-rule-derivation assumption C2 exists to relax.
    kind, NAF, equality, duplicate assertions, proof-local compute evidence, and replay;
    WIT/protocol/host/UI and Appendix C evolve together.
 
-3. **Materialisation: the trace story (C2).** *(effort: extra; declining as a decision of record:
+2. **Materialisation: the trace story (C2).** *(effort: extra; declining as a decision of record:
    low)* Proof-traced queries keep the
    backward-chaining path (`positive_lookup` lowered for their duration —
    `nibli-reason/src/lib.rs`:1024, restored at :1052/:1072; the fast-path gates read it

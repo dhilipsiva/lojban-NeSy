@@ -737,3 +737,62 @@ fn depth_cut_table_invalidated_by_assert() {
         "post-assert the chain must fire (a stale depth-cut table would block it)"
     );
 }
+
+// ─── Proof-step indices are checked, never wrapping casts ────────────────
+
+/// RAII cap override so a panic can never leak the tiny test cap into the
+/// rest of the single-threaded suite.
+struct ProofCapGuard;
+impl ProofCapGuard {
+    fn set(cap: usize) -> Self {
+        crate::reasoning::TEST_MAX_PROOF_STEPS.with(|c| c.set(Some(cap)));
+        ProofCapGuard
+    }
+}
+impl Drop for ProofCapGuard {
+    fn drop(&mut self) {
+        crate::reasoning::TEST_MAX_PROOF_STEPS.with(|c| c.set(None));
+    }
+}
+
+/// A trace that outgrows the index cap REFUSES as a whole (typed error, no
+/// trace escapes) instead of wrapping `as u32` into a valid-looking
+/// back-reference; the control run under the real cap certifies the same
+/// query with every child index in bounds and non-sentinel.
+#[test]
+fn proof_trace_overflow_refuses_instead_of_wrapping() {
+    let kb = new_kb();
+    assert_buf(&kb, make_universal("gerku", "danlu"));
+    assert_buf(&kb, make_assertion("alis", "gerku"));
+    {
+        let _cap = ProofCapGuard::set(1);
+        let err = kb
+            .query_entailment_with_proof_inner(make_query("alis", "danlu"))
+            .expect_err("a trace past the index cap must refuse, never wrap");
+        assert!(err.contains("indexable size"), "{err}");
+    }
+    // Control: with the real cap the same query certifies, with more steps
+    // than the tiny cap and every child index in bounds and non-sentinel.
+    let (result, trace) = kb
+        .query_entailment_with_proof_inner(make_query("alis", "danlu"))
+        .expect("the control query must certify under the real cap");
+    assert!(result.is_true());
+    assert!(
+        trace.steps.len() > 1,
+        "control must exceed the tiny cap to prove the refusal was the cap's: {}",
+        trace.steps.len()
+    );
+    for step in &trace.steps {
+        for &c in &step.children {
+            assert!(
+                (c as usize) < trace.steps.len(),
+                "child indices must stay in bounds"
+            );
+            assert_ne!(
+                c,
+                crate::reasoning::PROOF_STEP_SENTINEL,
+                "no poisoned index may escape in a certified trace"
+            );
+        }
+    }
+}

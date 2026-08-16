@@ -2841,6 +2841,54 @@ fn search_event_bindings(
     EventBindingSearch::Exhausted(pending)
 }
 
+/// Poisoned index returned by [`push_proof_step`] past the cap. Reserved:
+/// legal indices stop at `u32::MAX - 1`, so the sentinel can never collide
+/// with a real step.
+pub(super) const PROOF_STEP_SENTINEL: u32 = u32::MAX;
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only cap override, so a unit test can exercise the overflow
+    /// contract without allocating 2^32 steps (reasoning tests run
+    /// single-threaded; tests use an RAII reset so a panic cannot leak the cap).
+    pub(super) static TEST_MAX_PROOF_STEPS: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn max_proof_steps() -> usize {
+    #[cfg(test)]
+    if let Some(cap) = TEST_MAX_PROOF_STEPS.with(|c| c.get()) {
+        return cap;
+    }
+    u32::MAX as usize
+}
+
+/// The ONE place a proof step gains its index — every sink and tracer push
+/// routes here. `ProofStep.children` crosses the WIT boundary as `list<u32>`,
+/// so an index must fit in `u32`, and the former bare `as` cast on a larger
+/// length would WRAP into a valid-looking back-reference: a silently corrupt
+/// certificate, the worst failure a proof surface can have. Past the cap
+/// nothing is recorded and the sentinel returns; the single trace assembly
+/// site checks [`proof_steps_overflowed`] and refuses the WHOLE trace, so a
+/// poisoned index can never escape. In production the cap is unreachable (a
+/// four-billion-step trace exhausts memory first) — the guard exists so the
+/// CONTRACT fails closed rather than by accident of OOM.
+pub(super) fn push_proof_step(steps: &mut Vec<ProofStep>, step: ProofStep) -> u32 {
+    if steps.len() >= max_proof_steps() {
+        return PROOF_STEP_SENTINEL;
+    }
+    let idx = steps.len() as u32;
+    steps.push(step);
+    idx
+}
+
+/// Assembly-time overflow check: poisoned pushes never grow the vec, so a
+/// steps vec AT the cap either overflowed or filled it exactly — both refuse
+/// (one index of slack, since the sentinel reserves `u32::MAX`).
+pub(super) fn proof_steps_overflowed(steps: &[ProofStep]) -> bool {
+    steps.len() >= max_proof_steps()
+}
+
 /// Trace sink: a compile-time switch between the untraced verdict path
 /// (`NoOpSink`) and the proof-recording path (`RecordingSink`), so the single
 /// backward-chain core serves both. `RECORDING` MUST stay an associated `const`
@@ -2895,9 +2943,7 @@ struct RecordingSink<'a> {
 impl TraceSink for RecordingSink<'_> {
     const RECORDING: bool = true;
     fn push(&mut self, step: ProofStep) -> u32 {
-        let idx = self.steps.len() as u32;
-        self.steps.push(step);
-        idx
+        push_proof_step(self.steps, step)
     }
     fn trace_child(
         &mut self,
@@ -3316,12 +3362,15 @@ pub(super) fn trace_predicate_provenance_typed(
         // re-deriving the full proof sub-tree. The original derivation
         // lives at steps[cached_idx]. We store cached_idx in children
         // so consumers can follow the back-reference if needed.
-        let idx = steps.len() as u32;
-        steps.push(ProofStep {
-            rule: ProofRule::ProofRef { fact: display },
-            holds: steps[cached_idx as usize].holds,
-            children: vec![cached_idx],
-        });
+        let holds = steps[cached_idx as usize].holds;
+        let idx = push_proof_step(
+            steps,
+            ProofStep {
+                rule: ProofRule::ProofRef { fact: display },
+                holds,
+                children: vec![cached_idx],
+            },
+        );
         return idx;
     }
 
@@ -3340,15 +3389,17 @@ pub(super) fn trace_predicate_provenance_typed(
         );
 
         if !direct_sources.is_empty() {
-            let idx = steps.len() as u32;
-            steps.push(ProofStep {
-                rule: ProofRule::Asserted {
-                    fact: display.clone(),
-                    sources: direct_sources,
+            let idx = push_proof_step(
+                steps,
+                ProofStep {
+                    rule: ProofRule::Asserted {
+                        fact: display.clone(),
+                        sources: direct_sources,
+                    },
+                    holds: true,
+                    children: vec![],
                 },
-                holds: true,
-                children: vec![],
-            });
+            );
             memo.insert(fact.clone(), idx);
             return idx;
         }
@@ -3386,16 +3437,18 @@ pub(super) fn trace_predicate_provenance_typed(
                 let label = rule_label(inner, identity.as_ref())
                     .or_else(|| sources.first().map(|source| source.assertion_label.clone()))
                     .unwrap_or_else(|| "forward derivation".to_string());
-                let idx = steps.len() as u32;
-                steps.push(ProofStep {
-                    rule: ProofRule::Derived {
-                        label,
-                        fact: display.clone(),
-                        sources,
+                let idx = push_proof_step(
+                    steps,
+                    ProofStep {
+                        rule: ProofRule::Derived {
+                            label,
+                            fact: display.clone(),
+                            sources,
+                        },
+                        holds: true,
+                        children,
                     },
-                    holds: true,
-                    children,
-                });
+                );
                 memo.insert(fact.clone(), idx);
                 return idx;
             }
@@ -3408,16 +3461,18 @@ pub(super) fn trace_predicate_provenance_typed(
                             .map(|citation| citation.assertion_label.clone())
                     })
                     .unwrap_or_else(|| "existential import".to_string());
-                let idx = steps.len() as u32;
-                steps.push(ProofStep {
-                    rule: ProofRule::Presupposed {
-                        label,
-                        fact: display.clone(),
-                        sources,
+                let idx = push_proof_step(
+                    steps,
+                    ProofStep {
+                        rule: ProofRule::Presupposed {
+                            label,
+                            fact: display.clone(),
+                            sources,
+                        },
+                        holds: true,
+                        children: vec![],
                     },
-                    holds: true,
-                    children: vec![],
-                });
+                );
                 memo.insert(fact.clone(), idx);
                 return idx;
             }
@@ -3427,15 +3482,17 @@ pub(super) fn trace_predicate_provenance_typed(
         // Defensive/internal fallback. A content fact with no attributable
         // active origin may still occur in in-crate support code, but it is not
         // a user assertion and must never be serialized as one.
-        let idx = steps.len() as u32;
-        steps.push(ProofStep {
-            rule: ProofRule::PredicateCheck {
-                method: "internal-store".to_string(),
-                detail: display.clone(),
+        let idx = push_proof_step(
+            steps,
+            ProofStep {
+                rule: ProofRule::PredicateCheck {
+                    method: "internal-store".to_string(),
+                    detail: display.clone(),
+                },
+                holds: true,
+                children: vec![],
             },
-            holds: true,
-            children: vec![],
-        });
+        );
         memo.insert(fact.clone(), idx);
         return idx;
     }
@@ -3469,16 +3526,18 @@ pub(super) fn trace_predicate_provenance_typed(
                         &mut HashSet::new(),
                     )
                 }));
-                let idx = steps.len() as u32;
-                steps.push(ProofStep {
-                    rule: ProofRule::EqualitySubstitution {
-                        original: display.clone(),
-                        equality_facts: equals_note,
-                        substituted,
+                let idx = push_proof_step(
+                    steps,
+                    ProofStep {
+                        rule: ProofRule::EqualitySubstitution {
+                            original: display.clone(),
+                            equality_facts: equals_note,
+                            substituted,
+                        },
+                        holds: true,
+                        children,
                     },
-                    holds: true,
-                    children,
-                });
+                );
                 memo.insert(fact.clone(), idx);
                 return idx;
             }
@@ -3583,16 +3642,18 @@ pub(super) fn trace_predicate_provenance_typed(
                             &mut HashSet::new(),
                         )
                     }));
-                    let idx = steps.len() as u32;
-                    steps.push(ProofStep {
-                        rule: ProofRule::EqualitySubstitution {
-                            original: display.clone(),
-                            equality_facts: equals_note,
-                            substituted,
+                    let idx = push_proof_step(
+                        steps,
+                        ProofStep {
+                            rule: ProofRule::EqualitySubstitution {
+                                original: display.clone(),
+                                equality_facts: equals_note,
+                                substituted,
+                            },
+                            holds: true,
+                            children,
                         },
-                        holds: true,
-                        children,
-                    });
+                    );
                     memo.insert(fact.clone(), idx);
                     return idx;
                 }
@@ -3612,12 +3673,14 @@ pub(super) fn trace_predicate_provenance_typed(
     // Re-emitting a fresh leaf each time is strictly honest; the only cost is a few extra
     // leaves in pathological traces. With this omitted, every memo entry — and therefore
     // every `ProofRef` — points at a `holds:true` derivation.
-    let idx = steps.len() as u32;
-    steps.push(ProofStep {
-        rule: ProofRule::PredicateNotFound { predicate: display },
-        holds: false,
-        children: vec![],
-    });
+    let idx = push_proof_step(
+        steps,
+        ProofStep {
+            rule: ProofRule::PredicateNotFound { predicate: display },
+            holds: false,
+            children: vec![],
+        },
+    );
     idx
 }
 

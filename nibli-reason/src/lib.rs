@@ -974,13 +974,14 @@ impl KnowledgeBase {
         let root = if root_children.len() == 1 {
             root_children[0]
         } else {
-            let idx = steps.len() as u32;
-            steps.push(ProofStep {
-                rule: ProofRule::Conjunction,
-                holds: overall.is_true(),
-                children: root_children,
-            });
-            idx
+            reasoning::push_proof_step(
+                &mut steps,
+                ProofStep {
+                    rule: ProofRule::Conjunction,
+                    holds: overall.is_true(),
+                    children: root_children,
+                },
+            )
         };
         let naf_dependent = steps
             .iter()
@@ -991,6 +992,16 @@ impl KnowledgeBase {
         // Conversely, an unrelated failed compute check cannot launder an
         // absence-driven disjunction into a non-CWA result.
         let cwa_false = overall.is_false() && proof_false_depends_on_closed_world(&steps, root);
+        // The overflow refusal: past the u32 cap, pushes were poisoned (nothing
+        // recorded, sentinel index) — the steps are not a certificate and must
+        // not escape as one.
+        if reasoning::proof_steps_overflowed(&steps) {
+            return Err(
+                "proof trace exceeded the indexable size (u32 step indices): the \
+                 derivation cannot be certified — simplify the query or knowledge base"
+                    .to_string(),
+            );
+        }
         Ok((
             overall,
             ProofTrace {
