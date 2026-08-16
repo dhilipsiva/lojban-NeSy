@@ -380,6 +380,7 @@ rejected as scope-ambiguous; separate period-terminated statements are independe
 | `:dump <filepath>` | Write every active fact's source text (label) to a plain file, one statement per line — works with or without the persistent store |
 | `:export <redb-filepath>` | Export the persistent store to a redb file (requires `NIBLI_DB_PATH`) |
 | `:proof-verbose <statement>` | Query with the full role-level proof trace instead of the collapsed one |
+| `:certify <statement>` | Query and print the JSON `ProofEnvelope` — verdict (UNKNOWN reason / resource kind included), proof trace, session profile, and the lockstep engine version, bound into one independently-validatable certificate (document on stdout, validator verdict on stderr) |
 | `:help` (alias `:h`) | Show the command list |
 | `:quit` (alias `:q`) | Exit the REPL |
 

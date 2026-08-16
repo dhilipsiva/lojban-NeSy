@@ -138,6 +138,28 @@ fn verdict_kind_of(result: &EngineQueryResult) -> nibli_render::VerdictKind {
     }
 }
 
+/// Map the WIT verdict onto the canonical typed `QueryResult` for envelope
+/// assembly (total match — a new WIT variant fails compilation here).
+fn wit_result_to_typed(result: &EngineQueryResult) -> nibli_types::logic::QueryResult {
+    use nibli_types::logic as t;
+    match result {
+        EngineQueryResult::True => t::QueryResult::True,
+        EngineQueryResult::False => t::QueryResult::False,
+        EngineQueryResult::Unknown(reason) => t::QueryResult::Unknown(match reason {
+            EngineUnknownReason::CycleCut => t::UnknownReason::CycleCut,
+            EngineUnknownReason::IncompleteKnowledge => t::UnknownReason::IncompleteKnowledge,
+            EngineUnknownReason::NafDependent => t::UnknownReason::NafDependent,
+            EngineUnknownReason::BackendUnavailable => t::UnknownReason::BackendUnavailable,
+            EngineUnknownReason::NonFinite => t::UnknownReason::NonFinite,
+        }),
+        EngineQueryResult::ResourceExceeded(kind) => t::QueryResult::ResourceExceeded(match kind {
+            EngineResourceKind::Depth => t::ResourceKind::Depth,
+            EngineResourceKind::Fuel => t::ResourceKind::Fuel,
+            EngineResourceKind::Memory => t::ResourceKind::Memory,
+        }),
+    }
+}
+
 fn format_query_result(result: &EngineQueryResult) -> String {
     match result {
         EngineQueryResult::True => "TRUE".to_string(),
@@ -1278,6 +1300,10 @@ impl Repl {
                 println!("  ? <text>            Query (collapsed macro-logical proof)");
                 println!("    exactly N / no are query-only; use the ? route");
                 println!("  :proof-verbose <text> Query (full role-level proof trace)");
+                println!(
+                    "  :certify <text>     Query and print the JSON proof envelope \
+                     (verdict + trace + profile + version, bound)"
+                );
                 println!("  ?? <text>           Find witnesses (answer variables)");
                 println!("  :debug <text>       Show compiled logic tree");
                 println!("  :load <filepath>    Load a .nibli file (assert each line)");
@@ -1737,6 +1763,13 @@ impl Repl {
                     Err(e) => println!("[Export] Error: {}", e),
                 },
             }
+        } else if let Some(certify_query) = input.strip_prefix(":certify ") {
+            let text = certify_query.trim();
+            if text.is_empty() {
+                println!("[Host] Usage: :certify <query>");
+                return false;
+            }
+            self.run_certify(text);
         } else if let Some(verbose_query) = input.strip_prefix(":proof-verbose ") {
             let text = verbose_query.trim();
             if text.is_empty() {
@@ -1818,6 +1851,44 @@ impl Repl {
             }
         }
         false
+    }
+
+    /// Certify a query: run it with a proof through the component, then bind
+    /// verdict + trace + this host's session profile + the lockstep workspace
+    /// version into a `ProofEnvelope` (host-side assembly is sound because
+    /// every crate and binary shares ONE version — `release-check` enforces
+    /// it — and the host tracks the profile flags it forwards to the guest).
+    /// Prints the JSON envelope on stdout and the independent validator's
+    /// verdict on stderr, so piping stdout captures a pure certificate.
+    fn run_certify(&mut self, text: &str) {
+        self.prepare_session();
+        let session = self.pipeline.nibli_engine_engine().session();
+        match session.call_query_text_with_proof(&mut self.store, self.session_handle, text) {
+            Ok(Ok((result, trace))) => {
+                let envelope = nibli_types::logic::ProofEnvelope::bind(
+                    text,
+                    wit_result_to_typed(&result),
+                    trace_to_proto(&trace),
+                    nibli_types::logic::EngineProfile {
+                        strict: self.strict,
+                        existential_import: self.existential_import,
+                        materialization: self.materialization,
+                    },
+                );
+                match nibli_types::logic::validate_envelope(&envelope) {
+                    Ok(()) => eprintln!("[Certify] envelope coherent (independent validator)"),
+                    Err(errs) => {
+                        eprintln!("[Certify] VALIDATOR REJECTED the envelope: {errs:?}")
+                    }
+                }
+                println!("{}", nibli_protocol::envelope_to_json(&envelope));
+            }
+            Ok(Err(e)) => println!("{}", format_nibli_error(&e)),
+            Err(e) => {
+                println!("{}", format_host_error(&e));
+                self.needs_rebuild = true;
+            }
+        }
     }
 
     /// Run a proof query and print the verdict, the `[Why]` summary, and the

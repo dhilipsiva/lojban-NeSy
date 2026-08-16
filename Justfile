@@ -551,7 +551,20 @@ ci: fmt-check release-check clippy-runtime test test-engine test-host test-valid
 # them all: fuel exhaustion + post-trap recovery + journal replay
 # (trap-recovery), plus the script transcript, persist-replay, NAF-note,
 # :debug round-trip, and the determinism corpus.
-ci-wasm: smoke-component-imports smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-count-query-only smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-compute-query-only smoke-host-compute-registration-order smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
+ci-wasm: smoke-component-imports smoke-host-certify smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-count-query-only smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-compute-query-only smoke-host-compute-registration-order smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
+
+# Envelope smoke: `:certify` binds verdict + trace + host-tracked profile +
+# the lockstep workspace version into one JSON ProofEnvelope — document on
+# stdout (pipeable pure certificate), independent-validator verdict on stderr.
+smoke-host-certify: build-wasm build-host
+    @echo "Smoke-testing gasnu :certify (JSON proof envelope)..."
+    @out=$(printf 'dog(Adam).\n:certify dog(Adam).\n' \
+        | NIBLI_WASM_PATH={{wasm_dir}}/nibli.wasm NIBLI_QUIET=1 ./target/{{profile}}/nibli-host 2>&1); \
+        echo "$out" | grep -qF '"schema":1' || { echo 'FAIL: envelope JSON missing the schema stamp'; exit 1; }; \
+        echo "$out" | grep -qF '"result":"True"' || { echo 'FAIL: envelope missing the bound verdict'; exit 1; }; \
+        echo "$out" | grep -qF '"engine_version"' || { echo 'FAIL: envelope missing the lockstep version stamp'; exit 1; }; \
+        echo "$out" | grep -qF '[Certify] envelope coherent' || { echo 'FAIL: independent validator did not confirm the envelope'; exit 1; }; \
+        echo 'PASS: :certify binds verdict+trace+profile+version into a coherent JSON envelope'
 
 # Import-surface gate: the shipped component must keep its documented import
 # list — the wasi:cli + wasi:io sets, wasi:random/insecure-seed, and the

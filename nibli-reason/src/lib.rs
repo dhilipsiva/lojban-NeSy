@@ -1236,6 +1236,13 @@ impl KnowledgeBase {
         *inner.materialized.borrow_mut() = None;
     }
 
+    /// Whether stratum-ordered materialisation is enabled — the read twin of
+    /// [`Self::set_materialization`] (the proof envelope's profile stamp
+    /// reads it).
+    pub fn materialization_enabled(&self) -> bool {
+        self.inner.borrow().materialization
+    }
+
     /// Whether stratum-ordered materialisation is enabled.
     pub fn is_materialization(&self) -> bool {
         self.inner.borrow().materialization

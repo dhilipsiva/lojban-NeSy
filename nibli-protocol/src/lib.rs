@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 // ProofTrace, LogicalTerm}` unchanged. The JSON (de)serialization helpers live
 // below as free functions (`proof_trace_to_json` / `proof_trace_from_json`).
 pub use nibli_types::logic::{
-    AssertionCitation, FactId, LogicalTerm, ProofRule, ProofStep, ProofTrace, RuleCitation,
-    WitnessBinding, WitnessOrigin,
+    AssertionCitation, EngineProfile, FactId, LogicalTerm, PROOF_ENVELOPE_SCHEMA, ProofEnvelope,
+    ProofRule, ProofStep, ProofTrace, QueryResult, ResourceKind, RuleCitation, UnknownReason,
+    WitnessBinding, WitnessOrigin, validate_envelope,
 };
 
 /// The native TCP compute-backend JSON-Lines client, shared by nibli-host (the WASM
@@ -63,6 +64,17 @@ pub fn proof_trace_to_json(trace: &ProofTrace) -> String {
 
 /// Deserialize a proof trace from its wire JSON string.
 pub fn proof_trace_from_json(s: &str) -> Option<ProofTrace> {
+    serde_json::from_str(s).ok()
+}
+
+/// Serialize a proof envelope (verdict + trace + profile + version, bound) to
+/// its wire JSON string.
+pub fn envelope_to_json(envelope: &ProofEnvelope) -> String {
+    serde_json::to_string(envelope).unwrap_or_default()
+}
+
+/// Deserialize a proof envelope from its wire JSON string.
+pub fn envelope_from_json(s: &str) -> Option<ProofEnvelope> {
     serde_json::from_str(s).ok()
 }
 
@@ -217,5 +229,51 @@ mod tests {
             "json: {json}"
         );
         assert_eq!(proof_trace_from_json(&json), Some(trace));
+    }
+
+    /// Every verdict class — TRUE, FALSE, all five UNKNOWN reasons, all three
+    /// resource kinds — binds, serializes, deserializes to the identity, and
+    /// validates. The wire coverage the live engine matrix cannot fully
+    /// construct (some UNKNOWN reasons have no easy live repro).
+    #[test]
+    fn envelope_round_trips_and_validates_for_every_verdict_class() {
+        use nibli_types::logic::{EngineProfile, ProofEnvelope, validate_envelope};
+        let verdicts = [
+            QueryResult::True,
+            QueryResult::False,
+            QueryResult::Unknown(UnknownReason::CycleCut),
+            QueryResult::Unknown(UnknownReason::IncompleteKnowledge),
+            QueryResult::Unknown(UnknownReason::NafDependent),
+            QueryResult::Unknown(UnknownReason::BackendUnavailable),
+            QueryResult::Unknown(UnknownReason::NonFinite),
+            QueryResult::ResourceExceeded(ResourceKind::Depth),
+            QueryResult::ResourceExceeded(ResourceKind::Fuel),
+            QueryResult::ResourceExceeded(ResourceKind::Memory),
+        ];
+        for result in verdicts {
+            let mut trace = one_step(ProofRule::Asserted {
+                fact: "dog(adam)".into(),
+                sources: vec![],
+            });
+            trace.steps[0].holds = !matches!(result, QueryResult::False);
+            let envelope = ProofEnvelope::bind(
+                "dog(Adam).",
+                result.clone(),
+                trace,
+                EngineProfile {
+                    strict: false,
+                    existential_import: false,
+                    materialization: true,
+                },
+            );
+            validate_envelope(&envelope)
+                .unwrap_or_else(|e| panic!("{result:?} must validate: {e:?}"));
+            let json = envelope_to_json(&envelope);
+            assert_eq!(
+                envelope_from_json(&json),
+                Some(envelope),
+                "{result:?}: JSON round trip must be the identity"
+            );
+        }
     }
 }

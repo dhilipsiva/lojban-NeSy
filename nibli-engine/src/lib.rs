@@ -8,12 +8,13 @@ use nibli_store::NibliStore;
 
 pub use nibli_reason::ComputeRequest as EngineComputeRequest;
 pub use nibli_types::logic::{
-    AggregateOp as EngineAggregateOp, AggregateOutcome as EngineAggregateOutcome,
+    AggregateOp as EngineAggregateOp, AggregateOutcome as EngineAggregateOutcome, EngineProfile,
     FactSummary as EngineFactSummary, LogicBuffer as EngineLogicBuffer,
-    LogicNode as EngineLogicNode, LogicalTerm as EngineLogicalTerm,
-    QueryResult as EngineQueryResult, ResourceKind as EngineResourceKind,
-    UnknownReason as EngineUnknownReason, WitnessBinding as EngineWitnessBinding,
-    WitnessOrigin as EngineWitnessOrigin,
+    LogicNode as EngineLogicNode, LogicalTerm as EngineLogicalTerm, PROOF_ENVELOPE_SCHEMA,
+    ProofEnvelope as EngineProofEnvelope, QueryResult as EngineQueryResult,
+    ResourceKind as EngineResourceKind, UnknownReason as EngineUnknownReason,
+    WitnessBinding as EngineWitnessBinding, WitnessOrigin as EngineWitnessOrigin,
+    validate_envelope,
 };
 
 /// The pipeline's typed error (`Syntax`/`Semantic`/`Reasoning`/`Backend`),
@@ -396,6 +397,17 @@ impl NibliEngine {
 
         let buffer = self.core.compile_injected_fact(&relation, &args)?;
         self.persist_and_assert(store, buffer, format!(":assert {relation}"))
+    }
+
+    /// Certify a KR query: verdict + trace + session profile + lockstep
+    /// engine version bound into one `ProofEnvelope` (re-exported as
+    /// `EngineProofEnvelope`; `validate_envelope` is the KB-independent
+    /// checker). Exposes `CoreSession::certify_text`.
+    pub fn certify_text(
+        &self,
+        text: &str,
+    ) -> Result<nibli_types::logic::ProofEnvelope, EngineError> {
+        self.core.certify_text(text)
     }
 
     /// Parse KR query, run entailment check, return result + formatted proof + JSON proof.

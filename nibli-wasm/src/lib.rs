@@ -131,6 +131,18 @@ impl Session {
         Ok(out.to_string())
     }
 
+    /// Certify a KR query: verdict + proof trace + session profile + the
+    /// lockstep engine version, bound into one JSON `ProofEnvelope`
+    /// (`nibli_protocol::envelope_to_json`; `validate_envelope` is the
+    /// KB-independent checker). The durable pairing a bare trace cannot prove.
+    pub fn certify(&self, text: &str) -> Result<String, JsError> {
+        let envelope = self
+            .core
+            .certify_text(text)
+            .map_err(|e| js_err(e.to_string()))?;
+        Ok(nibli_protocol::envelope_to_json(&envelope))
+    }
+
     /// Retract a fact by id and rebuild derived state.
     pub fn retract_fact(&self, id: u64) -> Result<(), JsError> {
         self.core

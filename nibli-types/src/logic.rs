@@ -166,6 +166,7 @@ pub struct WitnessBinding {
 
 /// Why the engine cannot currently return a definitive `True` or `False`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UnknownReason {
     /// Search encountered a recursive cycle and cut it rather than diverging.
     CycleCut,
@@ -184,6 +185,7 @@ pub enum UnknownReason {
 }
 
 /// Which resource or search bound prevented a definitive answer.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResourceKind {
     Depth,
@@ -193,6 +195,7 @@ pub enum ResourceKind {
 
 /// Top-level entailment result returned by the reasoning engine.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum QueryResult {
     True,
     False,
@@ -403,6 +406,131 @@ impl ProofTrace {
             .iter()
             .any(|s| matches!(s.rule, ProofRule::Negation) && s.holds)
     }
+}
+
+/// Schema version of [`ProofEnvelope`] — bump on any breaking shape change.
+/// [`validate_envelope`] fails closed on versions it does not know.
+pub const PROOF_ENVELOPE_SCHEMA: u32 = 1;
+
+/// The session profile a certificate was produced under. The same KB answers
+/// differently across these switches (strict ingress, legacy existential
+/// import, materialisation's depth-bound completeness gain), so a certificate
+/// that omitted them could be validated against the wrong semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EngineProfile {
+    pub strict: bool,
+    pub existential_import: bool,
+    pub materialization: bool,
+}
+
+/// A verdict BOUND to its certificate: the root [`QueryResult`] (UNKNOWN
+/// reason and RESOURCE_EXCEEDED kind included), the [`ProofTrace`], the
+/// producing engine's workspace version (lockstep across every crate and
+/// surface — `release-check` enforces it, so any surface may stamp its own),
+/// the session profile, and the query display text. A serialized
+/// [`ProofTrace`] alone cannot prove which non-TRUE verdict it accompanied —
+/// its root simply fails to hold for FALSE, UNKNOWN, and RESOURCE_EXCEEDED
+/// alike; this envelope is the durable pairing, coherence-checkable by
+/// [`validate_envelope`] without a knowledge base.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProofEnvelope {
+    pub schema: u32,
+    pub engine_version: String,
+    pub profile: EngineProfile,
+    pub query: String,
+    pub result: QueryResult,
+    pub trace: ProofTrace,
+}
+
+impl ProofEnvelope {
+    /// Bundle a traced verdict into a schema-stamped envelope. The version is
+    /// the compiling workspace's lockstep version (every crate shares it).
+    pub fn bind(
+        query: impl Into<String>,
+        result: QueryResult,
+        trace: ProofTrace,
+        profile: EngineProfile,
+    ) -> Self {
+        ProofEnvelope {
+            schema: PROOF_ENVELOPE_SCHEMA,
+            engine_version: env!("CARGO_PKG_VERSION").to_string(),
+            profile,
+            query: query.into(),
+            result,
+            trace,
+        }
+    }
+}
+
+/// Independent coherence check over a [`ProofEnvelope`] — no knowledge base
+/// required. Collects EVERY violation rather than stopping at the first, so a
+/// tampered or corrupted envelope reports all of what is wrong:
+///
+/// * unknown schema version (fail closed — later fields may mean other things),
+/// * root or child step indices out of bounds,
+/// * a `ProofRef` without exactly one child (its back-reference),
+/// * root `holds` disagreeing with a definitive verdict (TRUE root must hold,
+///   FALSE root must not; UNKNOWN/RESOURCE_EXCEEDED carry best-effort context
+///   and constrain nothing),
+/// * `cwa_false` on a non-FALSE verdict,
+/// * a `naf_dependent` flag that does not match the recomputable property
+///   (any `Negation` step with `holds: true`).
+pub fn validate_envelope(envelope: &ProofEnvelope) -> Result<(), Vec<String>> {
+    let mut errs: Vec<String> = Vec::new();
+    if envelope.schema != PROOF_ENVELOPE_SCHEMA {
+        return Err(vec![format!(
+            "unknown envelope schema {} (validator knows {PROOF_ENVELOPE_SCHEMA}) — refusing \
+             to interpret the remaining fields",
+            envelope.schema
+        )]);
+    }
+    let steps = &envelope.trace.steps;
+    let n = steps.len();
+    if envelope.trace.root as usize >= n {
+        errs.push(format!(
+            "root index {} out of bounds ({n} steps)",
+            envelope.trace.root
+        ));
+    }
+    for (i, step) in steps.iter().enumerate() {
+        for &child in &step.children {
+            if child as usize >= n {
+                errs.push(format!(
+                    "step {i}: child index {child} out of bounds ({n} steps)"
+                ));
+            }
+        }
+        if matches!(step.rule, ProofRule::ProofRef { .. }) && step.children.len() != 1 {
+            errs.push(format!(
+                "step {i}: ProofRef must carry exactly one back-reference child, has {}",
+                step.children.len()
+            ));
+        }
+    }
+    if let Some(root) = steps.get(envelope.trace.root as usize) {
+        match envelope.result {
+            QueryResult::True if !root.holds => {
+                errs.push("TRUE verdict but the root step does not hold".to_string());
+            }
+            QueryResult::False if root.holds => {
+                errs.push("FALSE verdict but the root step holds".to_string());
+            }
+            _ => {}
+        }
+    }
+    if envelope.trace.cwa_false && !matches!(envelope.result, QueryResult::False) {
+        errs.push("cwa_false set on a non-FALSE verdict".to_string());
+    }
+    if envelope.trace.naf_dependent != envelope.trace.has_naf_dependency() {
+        errs.push(format!(
+            "naf_dependent flag ({}) does not match the trace's recomputable NAF property ({})",
+            envelope.trace.naf_dependent,
+            envelope.trace.has_naf_dependency()
+        ));
+    }
+    if errs.is_empty() { Ok(()) } else { Err(errs) }
 }
 
 /// Aggregation operation for numeric witness values.
@@ -616,5 +744,141 @@ mod tests {
             "a connective's single And-root must stay one fact"
         );
         assert_eq!(parts[0], buf);
+    }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+
+    fn leaf(rule: ProofRule, holds: bool, children: Vec<u32>) -> ProofStep {
+        ProofStep {
+            rule,
+            holds,
+            children,
+        }
+    }
+
+    fn valid_true_envelope() -> ProofEnvelope {
+        ProofEnvelope::bind(
+            "dog(Adam).",
+            QueryResult::True,
+            ProofTrace {
+                steps: vec![leaf(
+                    ProofRule::Asserted {
+                        fact: "dog(adam)".into(),
+                        sources: vec![],
+                    },
+                    true,
+                    vec![],
+                )],
+                root: 0,
+                naf_dependent: false,
+                cwa_false: false,
+            },
+            EngineProfile {
+                strict: false,
+                existential_import: false,
+                materialization: true,
+            },
+        )
+    }
+
+    #[test]
+    fn a_valid_envelope_validates_and_stamps_the_lockstep_version() {
+        let e = valid_true_envelope();
+        assert_eq!(e.schema, PROOF_ENVELOPE_SCHEMA);
+        assert_eq!(e.engine_version, env!("CARGO_PKG_VERSION"));
+        validate_envelope(&e).expect("a coherent envelope must validate");
+    }
+
+    #[test]
+    fn every_incoherence_class_is_reported_by_name() {
+        // Unknown schema fails closed, alone.
+        let mut e = valid_true_envelope();
+        e.schema = 999;
+        let errs = validate_envelope(&e).unwrap_err();
+        assert!(errs[0].contains("unknown envelope schema"), "{errs:?}");
+
+        // Root out of bounds.
+        let mut e = valid_true_envelope();
+        e.trace.root = 7;
+        assert!(
+            validate_envelope(&e).unwrap_err()[0].contains("root index"),
+            "root OOB must be named"
+        );
+
+        // Child out of bounds + ProofRef arity, collected TOGETHER.
+        let mut e = valid_true_envelope();
+        e.trace.steps.push(leaf(
+            ProofRule::ProofRef {
+                fact: "dog(adam)".into(),
+            },
+            true,
+            vec![9, 0],
+        ));
+        let errs = validate_envelope(&e).unwrap_err();
+        assert!(errs.iter().any(|m| m.contains("out of bounds")), "{errs:?}");
+        assert!(
+            errs.iter()
+                .any(|m| m.contains("exactly one back-reference")),
+            "{errs:?}"
+        );
+
+        // Verdict/holds mismatch, both directions.
+        let mut e = valid_true_envelope();
+        e.trace.steps[0].holds = false;
+        assert!(
+            validate_envelope(&e).unwrap_err()[0].contains("TRUE verdict"),
+            "TRUE with non-holding root must be named"
+        );
+        let mut e = valid_true_envelope();
+        e.result = QueryResult::False;
+        assert!(
+            validate_envelope(&e).unwrap_err()[0].contains("FALSE verdict"),
+            "FALSE with holding root must be named"
+        );
+
+        // cwa_false on a non-FALSE verdict.
+        let mut e = valid_true_envelope();
+        e.trace.cwa_false = true;
+        assert!(
+            validate_envelope(&e)
+                .unwrap_err()
+                .iter()
+                .any(|m| m.contains("cwa_false")),
+            "cwa_false on TRUE must be named"
+        );
+
+        // naf_dependent flag drift from the recomputable property.
+        let mut e = valid_true_envelope();
+        e.trace.naf_dependent = true;
+        assert!(
+            validate_envelope(&e)
+                .unwrap_err()
+                .iter()
+                .any(|m| m.contains("naf_dependent")),
+            "NAF flag drift must be named"
+        );
+    }
+
+    #[test]
+    fn unknown_and_resource_verdicts_constrain_no_root_holds() {
+        for result in [
+            QueryResult::Unknown(UnknownReason::CycleCut),
+            QueryResult::Unknown(UnknownReason::IncompleteKnowledge),
+            QueryResult::Unknown(UnknownReason::NafDependent),
+            QueryResult::Unknown(UnknownReason::BackendUnavailable),
+            QueryResult::Unknown(UnknownReason::NonFinite),
+            QueryResult::ResourceExceeded(ResourceKind::Depth),
+            QueryResult::ResourceExceeded(ResourceKind::Fuel),
+            QueryResult::ResourceExceeded(ResourceKind::Memory),
+        ] {
+            let mut e = valid_true_envelope();
+            e.result = result.clone();
+            validate_envelope(&e).unwrap_or_else(|errs| {
+                panic!("{result:?} must not constrain root holds: {errs:?}")
+            });
+        }
     }
 }

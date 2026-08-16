@@ -418,6 +418,28 @@ impl CoreSession {
         self.kb.query_entailment_with_proof(buf)
     }
 
+    /// Certify a KR query: run it with a proof trace and BIND verdict, trace,
+    /// session profile, and the lockstep engine version into a
+    /// [`nibli_types::logic::ProofEnvelope`] — the durable pairing a bare
+    /// trace cannot prove (`nibli_types::logic::validate_envelope` is the
+    /// KB-independent coherence checker).
+    pub fn certify_text(
+        &self,
+        text: &str,
+    ) -> Result<nibli_types::logic::ProofEnvelope, NibliError> {
+        let (result, trace) = self.query_text_with_proof(text)?;
+        Ok(nibli_types::logic::ProofEnvelope::bind(
+            text,
+            result,
+            trace,
+            nibli_types::logic::EngineProfile {
+                strict: self.kb.is_strict(),
+                existential_import: self.kb.is_existential_import(),
+                materialization: self.kb.materialization_enabled(),
+            },
+        ))
+    }
+
     /// Compile a KR query and extract all satisfying witness binding sets.
     /// Returns the reasoner's incomplete-enumeration error instead of partial rows
     /// when any evaluated candidate leaf is non-definitive.

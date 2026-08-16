@@ -79,47 +79,30 @@ a concrete need.
 
 ---
 
-## Chain — proof certificate (1 → 2)
+## Materialisation: the trace story (C2) — the proof chain's last step
 
-Order: step 1 defines the versioned contract (the index-cap refusal LANDED
-2026-08-16: `push_proof_step` is the one indexing point, overflow refuses the
-whole trace as a typed error — fold that outcome into the envelope); step 2
-extends the contract to materialised verdicts — design 1 knowing 2's needs, or
-the envelope bakes in the per-rule-derivation assumption C2 exists to relax.
+(The proof-certificate chain's other steps LANDED 2026-08-16: checked step
+indices with the typed overflow refusal, and the schema-versioned
+`ProofEnvelope` — verdict + trace + profile + lockstep version, bound and
+independently validatable, on every surface without a WIT change. C2 extends
+the certificate contract to materialised verdicts; whoever designs its proof
+shape starts from `ProofEnvelope` + `validate_envelope`, not from scratch.)
 
-1. **Bind proof traces to the full verdict and durable evidence.** *(effort: extra; narrow-the-public-contract
-   exit: medium)* `ProofStep` exposes
-   only `holds: bool`, while `ProofTrace` carries `naf_dependent` and `cwa_false` but
-   not the root `QueryResult`, UNKNOWN reason, or RESOURCE_EXCEEDED kind
-   (`nibli-types/src/logic.rs`:366-394 — `ProofStep` :366-370, `ProofTrace` :375-394).
-   Native callers receive a separate tuple, but a serialized/cached trace can no longer
-   prove which non-TRUE result it accompanied. (Direct-assertion evidence ids DO exist
-   since `d421a6d` / WIT 0.10.0: `ProofRule::Asserted`/`Derived`/`Presupposed` carry
-   `AssertionCitation`/`RuleCitation` with `FactId` — logic.rs:315-340 — so the
-   envelope can build on them rather than invent them; the earlier claim here that
-   `Asserted` held only a display string is dead.) Define one versioned
-   result-plus-certificate envelope (or narrow the public "proof" contract), with
-   configuration/corpus/engine versions and stable evidence ids sufficient for an
-   independent checker. **Exit:** round-trip and independent-validation tests cover
-   TRUE, closed-world FALSE, arithmetic FALSE, every UNKNOWN reason, every resource
-   kind, NAF, equality, duplicate assertions, proof-local compute evidence, and replay;
-   WIT/protocol/host/UI and Appendix C evolve together.
-
-2. **Materialisation: the trace story (C2).** *(effort: extra; declining as a decision of record:
-   low)* Proof-traced queries keep the
-   backward-chaining path (`positive_lookup` lowered for their duration —
-   `nibli-reason/src/lib.rs`:1024, restored at :1052/:1072; the fast-path gates read it
-   at `reasoning.rs`:1003 and :2705) because a materialised verdict has no derivation
-   to record. To let them use the fast path, four things need answering:
-   `trace_predicate_provenance_typed` (reasoning.rs:3304) falls to a `holds:false`
-   `PredicateNotFound` (:3616-3620) for a TRUE reachable only by materialisation; a
-   materialised FALSE has no per-rule blocking premise, which `proofs/Trace.lean`'s
-   `Neg` constructor and `trace_soundness_conformance` both require; `ProofRule::
-   ExistsWitness` names a witness term the projection eliminated; and `naf_dependent`
-   can flip true→false when a positive lookup deletes the `Negation` steps beneath it
-   (a user-visible honesty marker moving because of an optimisation). Minimum-churn
-   option if pursued: `ProofRule::PredicateCheck { method: "materialized" }` — no WIT
-   change — plus a `validate_cert` arm and a `factAx`-analogue bridge against `m.ext`.
+- **Materialisation: the trace story (C2).** *(effort: extra; declining as a decision of record:
+  low)* Proof-traced queries keep the
+  backward-chaining path (`positive_lookup` lowered for their duration —
+  `nibli-reason/src/lib.rs`:1024, restored at :1052/:1072; the fast-path gates read it
+  at `reasoning.rs`:1003 and :2705) because a materialised verdict has no derivation
+  to record. To let them use the fast path, four things need answering:
+  `trace_predicate_provenance_typed` (reasoning.rs:3304) falls to a `holds:false`
+  `PredicateNotFound` (:3616-3620) for a TRUE reachable only by materialisation; a
+  materialised FALSE has no per-rule blocking premise, which `proofs/Trace.lean`'s
+  `Neg` constructor and `trace_soundness_conformance` both require; `ProofRule::
+  ExistsWitness` names a witness term the projection eliminated; and `naf_dependent`
+  can flip true→false when a positive lookup deletes the `Negation` steps beneath it
+  (a user-visible honesty marker moving because of an optimisation). Minimum-churn
+  option if pursued: `ProofRule::PredicateCheck { method: "materialized" }` — no WIT
+  change — plus a `validate_cert` arm and a `factAx`-analogue bridge against `m.ext`.
 
 ---
 
@@ -419,6 +402,18 @@ Blocked followers:
   quote the old fallback under these verdicts — recapture from real bytes. Run the
   book validator, reference checker, capture checker, and two byte-idempotence
   passes before removing this residual with the `book-todo` workflow.
+
+- **Document the proof envelope on the book/docs surfaces (engine done
+  2026-08-16; book-repo work only).** *(effort: low)* `ProofEnvelope` binds
+  verdict + trace + session profile + the lockstep engine version into one
+  schema-versioned, independently-validatable certificate (`validate_envelope`,
+  KB-free); surfaces: `certify_text` (engine/session), wasm `certify` (JSON),
+  nibli-host `:certify` (document on stdout, validator verdict on stderr — no
+  WIT change). Chapter 17/Appendix C exposition should present it as THE
+  durable proof artifact (a bare trace cannot prove which non-TRUE verdict it
+  accompanied). Run the book validator, reference checker, capture checker, and
+  two byte-idempotence passes before removing this residual with the
+  `book-todo` workflow.
 
 - **Wire `dhilipsiva.dev/docs/nibli/`** *(effort: low)* in the external `dhilipsiva/dhilipsiva.dev`
   repo, on the `nibli-updated` dispatch this repo already fires: checkout nibli →

@@ -6720,3 +6720,119 @@ fn reset_reopens_the_vocabulary() {
     assert!(!engine.kb().vocabulary_is_closed());
     assert!(engine.assert_text("rich(Adam).").is_ok());
 }
+
+// ─── Proof envelope: verdict + trace + profile + version, BOUND ──────────
+
+/// The live certification matrix: every constructible verdict class binds into
+/// a coherent envelope (independent validator green), JSON round-trips to the
+/// identity, and the profile/version stamps are real.
+#[test]
+fn certify_binds_verdict_trace_profile_and_version_across_the_matrix() {
+    use nibli_engine::{
+        EngineProofEnvelope, EngineResourceKind, PROOF_ENVELOPE_SCHEMA, validate_envelope,
+    };
+
+    fn check(env: &EngineProofEnvelope, expect: &EngineQueryResult) {
+        assert_eq!(env.schema, PROOF_ENVELOPE_SCHEMA);
+        assert_eq!(
+            env.engine_version,
+            env!("CARGO_PKG_VERSION"),
+            "the envelope must stamp the lockstep workspace version"
+        );
+        assert_eq!(
+            &env.result, expect,
+            "bound verdict must match ({})",
+            env.query
+        );
+        validate_envelope(env)
+            .unwrap_or_else(|errs| panic!("{}: validator rejected: {errs:?}", env.query));
+        let json = nibli_protocol::envelope_to_json(env);
+        assert_eq!(
+            nibli_protocol::envelope_from_json(&json).as_ref(),
+            Some(env),
+            "JSON round trip must be the identity"
+        );
+    }
+
+    let mut engine = fresh_engine();
+    engine.assert_text("animal(every dog).").unwrap();
+    engine.assert_text("dog(Rex).").unwrap();
+    engine.assert_text("dog(Rex).").unwrap(); // duplicate assertion, separately citable
+    engine.assert_text("Kim = Rex.").unwrap();
+
+    // TRUE via rule derivation + equality substitution over duplicates.
+    let env = engine.certify_text("animal(Kim).").unwrap();
+    check(&env, &EngineQueryResult::True);
+    assert!(!env.profile.existential_import);
+    assert!(env.profile.materialization);
+
+    // NAF TRUE: the naf_dependent flag rides the envelope and the validator
+    // re-derives it.
+    let env = engine.certify_text("~cat(Rex).").unwrap();
+    check(&env, &EngineQueryResult::True);
+    assert!(env.trace.naf_dependent, "NAF truth must be flagged");
+
+    // Ordinary closed-world FALSE.
+    let env = engine.certify_text("cat(Rex).").unwrap();
+    check(&env, &EngineQueryResult::False);
+    assert!(env.trace.cwa_false, "missing-fact FALSE is closed-world");
+
+    // Arithmetic FALSE: a computed DECISION (cwa_false stays off) whose
+    // proof-local compute evidence is in the trace.
+    let env = engine.certify_text("num_equal(5, 3).").unwrap();
+    check(&env, &EngineQueryResult::False);
+    assert!(!env.trace.cwa_false, "computed FALSE is not closed-world");
+    assert!(
+        env.trace.steps.iter().any(|s| matches!(
+            &s.rule,
+            nibli_types::logic::ProofRule::ComputeCheck { .. }
+        ) && !s.holds),
+        "the failing compute check must ride the certificate"
+    );
+
+    // UNKNOWN (backend-unavailable): registered external compute, no backend.
+    engine
+        .register_compute_predicate("exponential".to_string())
+        .unwrap();
+    let env = engine.certify_text("exponential(2, 3, 8).").unwrap();
+    check(
+        &env,
+        &EngineQueryResult::Unknown(EngineUnknownReason::BackendUnavailable),
+    );
+
+    // RESOURCE_EXCEEDED (depth): a chain past the bound, with materialisation
+    // off so its completeness gain does not decide it first.
+    let deep = fresh_engine();
+    deep.set_materialization(false);
+    for rule in [
+        "cat(every dog).",
+        "animal(every cat).",
+        "alive(every animal).",
+        "beautiful(every alive).",
+        "awake(every beautiful).",
+        "dark(every awake).",
+        "sleep(every dark).",
+        "person(every sleep).",
+        "eats(every person).",
+        "runs(every eats).",
+        "walks(every runs).",
+        "talks(every walks).",
+    ] {
+        deep.assert_text(rule).unwrap();
+    }
+    deep.assert_text("dog(Rex).").unwrap();
+    let env = deep.certify_text("talks(Rex).").unwrap();
+    check(
+        &env,
+        &EngineQueryResult::ResourceExceeded(EngineResourceKind::Depth),
+    );
+
+    // The profile stamp is live, not a constant: flip strict + import.
+    let flipped = fresh_engine();
+    flipped.set_strict(true);
+    flipped.set_existential_import(true).unwrap();
+    flipped.assert_text("dog(Rex).").unwrap();
+    let env = flipped.certify_text("dog(Rex).").unwrap();
+    check(&env, &EngineQueryResult::True);
+    assert!(env.profile.strict && env.profile.existential_import);
+}
