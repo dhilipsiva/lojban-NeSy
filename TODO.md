@@ -22,6 +22,19 @@ order), dependency CHAINS (numbered; do them in the stated order, the reason is 
 place), and entries blocked on external repos. Effort is NOT the axis — an independent
 entry may be week-sized and a chain step an afternoon.
 
+**Effort tags (added 2026-08-16):** every open entry carries *(effort: …)*, sized
+against the code by a 10-agent assess-and-calibrate sweep. **low** = under an hour —
+one file or recipe, existing coverage. **medium** = a focused session — a few files
+plus targeted tests, no open design decisions. **high** = days — cross-crate work,
+new batteries/gates, design within established patterns. **extra** = a week-plus — a
+new contract/subsystem, a WIT bump threaded through every surface, or Lean
+proof-gate work. **max** = a multi-week program — external professional review on
+the critical path. **ultracode** = open-ended program-scale work whose scope is only
+discoverable by doing it; currently unused — every entry here has a stated
+deliverable and bounded scope. Where an entry documents a cheaper exit, that exit's
+tier is noted in the same tag. Constraints of record carry no tag (nothing to
+implement).
+
 Release runbook: **`RELEASING.md`**. Docs hosting: **`DEPLOY.md`**. Book manuscript:
 separate `book/` repo (`book/TODO.md`). The docs + release tracker `DOCS_TODO.md` was
 RETIRED 2026-08-03.
@@ -67,14 +80,14 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **Auth Python bridge has no CI coverage.** `just test-auth-py` stays local (maturin;
+- **Auth Python bridge has no CI coverage.** *(effort: medium; docs-only "tested-by-hand" exit: low)* `just test-auth-py` stays local (maturin;
   Justfile:932 via `build-auth-py`:925), and the `auth` CI job runs only
   `just test-auth && just check-auth-axum` (`.github/workflows/ci.yml`:41-58). Either
   add a maturin job or state in user-facing docs that the Python adapter is
   tested-by-hand — ci.yml:42 already records the decision as a comment, which is the
   right content in the wrong place.
 
-- **`--allow-shell` has no test that it stays OFF for `pins/`.** The gate is what keeps
+- **`--allow-shell` has no test that it stays OFF for `pins/`.** *(effort: low)* The gate is what keeps
   the pin language closed during `just ci`; nothing pins that `just verify-pins`
   (Justfile:751-760 — runs `nibli-pin $files`, no flags) never passes it. The only
   related test, `require_is_refused_without_the_flag` (`nibli/src/bin/pin.rs`:1676),
@@ -83,7 +96,7 @@ a concrete need.
   recipe's argv, would stop a future edit from quietly opening it.
 
 - **`register_constraint` takes raw `StoredFact` conjuncts and bypasses buffer
-  preflight.** Noted while closing the external-compute registration-order entry
+  preflight.** *(effort: medium; doc-disclosure exit: low)* Noted while closing the external-compute registration-order entry
   (2026-08-09): the integrity-constraint API (`nibli-reason/src/lib.rs`:1516) accepts
   conjuncts directly — the only per-conjunct check is the abstraction-marker
   canonicalization (:1521-1523) — so a constraint naming `exponential`, or any
@@ -97,7 +110,7 @@ a concrete need.
   inert by construction.
 
 - **`collect_negated_relations` misses the opposite-polarity visit of a shared
-  subtree.** The walker (`nibli-reason/src/materialize.rs`:1457, inner `walk`
+  subtree.** *(effort: low)* The walker (`nibli-reason/src/materialize.rs`:1457, inner `walk`
   :1462-1471) threads `under_not` as a parameter but keys its `seen` set on node id
   ALONE (the insert check at :1469), so a node first reached positively is never
   re-walked under a negation. A compiled buffer is a DAG — `<->` and `xor` share
@@ -110,7 +123,7 @@ a concrete need.
   `(id, under_not)`. **Exit:** a `<->`/`xor` case whose negative-polarity relation is
   currently missed is pinned, and the doc comment matches what the code does.
 
-- **Preserve or explicitly invalidate rule execution settings across rebuild.**
+- **Preserve or explicitly invalidate rule execution settings across rebuild.** *(effort: high)*
   `set_rule_forward` (`nibli-reason/src/lib.rs`:1669-1699) and `set_rule_priority`
   (:1705-1721) mutate compiled `UniversalRuleRecord`s (`forward` at `kb.rs`:1584,
   `priority` at :1587 — the record's own doc at :1564-1565 says "mutable execution
@@ -131,7 +144,7 @@ a concrete need.
   proof origin, and verdict; add this case to the retraction differential
   (`retract_diff.rs` has no reference to either setter today — positive-controlled).
 
-- **Make aggregation fail closed instead of returning a partial numeric result.**
+- **Make aggregation fail closed instead of returning a partial numeric result.** *(effort: medium)*
   `KnowledgeBase::aggregate` (`nibli-reason/src/lib.rs`:1559-1593) uses `filter_map`
   over witness bindings (:1572), silently dropping a witness when the requested variable
   is absent or nonnumeric and then summing/averaging the survivors (:1586-1591, with no
@@ -150,7 +163,7 @@ a concrete need.
   provenance states the contributing witnesses/count or the book narrows its proof
   claim. Ripple: Chapter 20 and Appendices B/E.
 
-- **Remove the retired two-path retraction story from active docs and benchmarks.**
+- **Remove the retired two-path retraction story from active docs and benchmarks.** *(effort: medium)*
   `retract_fact_inner` (`nibli-reason/src/lib.rs`:455-465) has no branch at all: it
   flips `r.retracted = true` (:460) and calls `rebuild_inner` unconditionally (:462),
   which ID-sorts the survivors (:532). Its OWN doc block (:435-454) correctly narrates
@@ -184,7 +197,7 @@ a concrete need.
   plus tests). The replacement benchmark asserts its fixture/verdicts and reports
   reproducible hardware/profile/methodology; retraction tests remain green.
 
-- **README's REPL-commands table is missing entries** (README.md:359
+- **README's REPL-commands table is missing entries** *(effort: low)* (README.md:359
   `### REPL Commands`, header still `| Command | Description |`). The table omits the
   host's `:dump` and `:export` (`nibli-host/src/main.rs`:1659, :1694), all six short
   aliases (`:b :f :h :m :q :r`), and has no rows for `:quit`/`:help` themselves. NOT
@@ -194,7 +207,7 @@ a concrete need.
   report (already documented in the row at :372). A Surface column would still read
   better than the prose caveat, but that is polish, not a defect.
 
-- **The component's import list is not gated.** Docs (book Ch 13/15/App C) state
+- **The component's import list is not gated.** *(effort: low)* Docs (book Ch 13/15/App C) state
   "no clock or filesystem imports" — true today (imports are the
   `wasi:cli`/`wasi:io` set + `wasi:random/insecure-seed`), but no CI check pins it and
   `wasm-tools` sits unused in the flake (its sole mention repo-wide is `flake.nix`:56).
@@ -202,7 +215,7 @@ a concrete need.
   (`wasm-tools component wit target/wasm32-wasip2/release/nibli.wasm` + grep for the
   absent interfaces) closes the gap.
 
-- **`wit/world.wit`:281 `proof-ref` doc comment is wrong.** It claims "No children —
+- **`wit/world.wit`:281 `proof-ref` doc comment is wrong.** *(effort: low)* It claims "No children —
   the full proof was shown at its first occurrence," but the memo-hit arm of
   `trace_predicate_provenance_typed` (`nibli-reason/src/reasoning.rs`:3314-3326) always
   pushes `children: vec![cached_idx]` (:3323), and nothing strips it: `children` lives
@@ -220,7 +233,8 @@ a concrete need.
   none. Ripple: the book's Appendix C reproduces `world.wit` in full and must be
   updated together.
 
-- **Settle the RDF export contract.** `nibli-import/src/export.rs`:1-18 (the whole
+- **Settle the RDF export contract.** *(effort: high; narrow-to-fact-label-dump
+  exit: low)* `nibli-import/src/export.rs`:1-18 (the whole
   file, byte-stable through the sweep) calls its output N-Triples (:1) but the sole
   emitter (:15) writes `# fact:<id> <label>` — a valid but EMPTY N-Triples document,
   all comment lines. Its doc comment still describes labels as "Lojban source or
@@ -250,7 +264,7 @@ a concrete need.
 Order: step 1 defines the honest FALSE/UNKNOWN/resource sentences; step 2's Depth hint
 prints alongside them, and its repro exhibits exactly the false `[Why]` step 1 removes.
 
-1. **Render computed FALSE as a decision, not closed-world non-derivability.** A query
+1. **Render computed FALSE as a decision, not closed-world non-derivability.** *(effort: high)* A query
    such as `greater(3, 5)` carries a false `ComputeCheck` leaf, but `summarize_false`
    (`nibli-render/src/summary.rs`:223-249) has arms only for `PredicateNotFound`,
    `ForallCounterexample` and `ExistsFailed`, and otherwise returns the fallback at
@@ -270,7 +284,7 @@ prints alongside them, and its repro exhibits exactly the false `[Why]` step 1 r
    UNKNOWN, resource-exceeded, and ordinary CWA FALSE; Chapter 17 is recaptured from
    real bytes. (Surfaced by the book's 2026-07-26 review pass.)
 
-2. **`resource_hint`'s Depth arm is dead code.** `resource_hint`
+2. **`resource_hint`'s Depth arm is dead code.** *(effort: medium; drop-the-dead-arm exit: low)* `resource_hint`
    (`nibli-host/src/main.rs`:587) has exactly one call site, :1846, inside the `Err(e)`
    trap arm of `run_proof_query` (fn at :1798); an engine-returned Depth verdict takes
    the `Ok(Ok(…))` arm at :1802 and never reaches it, and `classify_resource_trap`
@@ -296,7 +310,7 @@ outcome step 2's envelope should carry; step 2 defines the versioned contract; s
 extends that contract to materialised verdicts — design 2 knowing 3's needs, or the
 envelope bakes in the per-rule-derivation assumption C2 exists to relax.
 
-1. **Check proof indices instead of casting them.** The display-string half of this
+1. **Check proof indices instead of casting them.** *(effort: medium)* The display-string half of this
    entry LANDED in `706bfb9`: the provenance tracer keys structurally on `StoredFact`
    (`memo: &mut HashMap<StoredFact, u32>` — signature sites now
    `nibli-reason/src/reasoning.rs`:596 and :3309, plus a THIRD site since the TraceSink
@@ -310,7 +324,8 @@ envelope bakes in the per-rule-derivation assumption C2 exists to relax.
    resource/error outcome rather than a silently truncated index; the memo regression
    suite and `just verify-proofs` remain green.
 
-2. **Bind proof traces to the full verdict and durable evidence.** `ProofStep` exposes
+2. **Bind proof traces to the full verdict and durable evidence.** *(effort: extra; narrow-the-public-contract
+   exit: medium)* `ProofStep` exposes
    only `holds: bool`, while `ProofTrace` carries `naf_dependent` and `cwa_false` but
    not the root `QueryResult`, UNKNOWN reason, or RESOURCE_EXCEEDED kind
    (`nibli-types/src/logic.rs`:366-394 — `ProofStep` :366-370, `ProofTrace` :375-394).
@@ -327,7 +342,8 @@ envelope bakes in the per-rule-derivation assumption C2 exists to relax.
    kind, NAF, equality, duplicate assertions, proof-local compute evidence, and replay;
    WIT/protocol/host/UI and Appendix C evolve together.
 
-3. **Materialisation: the trace story (C2).** Proof-traced queries keep the
+3. **Materialisation: the trace story (C2).** *(effort: extra; declining as a decision of record:
+   low)* Proof-traced queries keep the
    backward-chaining path (`positive_lookup` lowered for their duration —
    `nibli-reason/src/lib.rs`:1024, restored at :1052/:1072; the fast-path gates read it
    at `reasoning.rs`:1003 and :2705) because a materialised verdict has no derivation
@@ -351,7 +367,7 @@ is strictly sound and independent of delta design, and the full delta machinery 
 last. Both steps edit `examine_globs` files, so each one grows the mutation debt below —
 gate with `cargo mutants --in-diff` per change, and see the baseline re-cut entry.
 
-1. **Index the join on already-bound positions.** `eval_rule`'s inner `walk`
+1. **Index the join on already-bound positions.** *(effort: medium)* `eval_rule`'s inner `walk`
    (`nibli-reason/src/materialize.rs`:1054 / :1076) does a FULL relation scan per level
    (the `for tuple in tuples` loop at :1125, fed by `source.get(&atom.relation)` over
    the whole extension, :1117-1148) with no index on the positions a partial binding
@@ -365,7 +381,7 @@ gate with `cargo mutants --in-diff` per change, and see the baseline re-cut entr
    comes with join REORDERING, note that the undo trail is order-independent by
    construction, which is what makes permuting `positive` safe.
 
-2. **Materialisation: incremental re-saturation (C3) — rollback subset first.** Every
+2. **Materialisation: incremental re-saturation (C3) — rollback subset first.** *(effort: high; the rollback subset alone: medium)* Every
    fact insert drops the saturation (`assert_typed_fact` → `invalidate_materialization`,
    `rules.rs`:873 → :892 → :1044; the invalidation itself is `reasoning.rs`:2016-2018,
    `*inner.materialized.borrow_mut() = None`), so an interleaved
@@ -390,7 +406,7 @@ gate with `cargo mutants --in-diff` per change, and see the baseline re-cut entr
    strictly-sound subset of C3 and would cover 36 of those 66 directives — do that
    subset first.
 
-**The mutation baseline is stale enough that `just mutants` fails on `main`** — and the
+**The mutation baseline is stale enough that `just mutants` fails on `main`** *(effort: high)* — and the
 chain above will widen the gap, so sequence the re-cut before it or immediately after.
 `mutants-baseline.txt` was cut 2026-07-19 from a 985-mutant sweep (the file's own
 header; last touched 2026-08-05 by `2385012`, a 4-line survivor shrink, not a re-cut);
@@ -421,7 +437,7 @@ through the same renderer. The drug-interactions redesign (3) does not depend on
 can run in parallel with 2.
 
 1. **`obliged`-spelled duties render the wrong obligated party (TWO defects, one
-   entry).** `obliged(every data governs, event { message() }).` back-translates as
+   entry).** *(effort: medium)* `obliged(every data governs, event { message() }).` back-translates as
    "For every X, if X governs and X is data, then **Y** is obligated to notify", while
    the converted `obligated_by` spelling correctly binds X. (a) WHO-SELECTION — both
    `collapse_deontic_event_duties` (`nibli-render/src/logic.rs`:381-385) and
@@ -450,7 +466,7 @@ can run in parallel with 2.
    `c18_draft_error_glosses_are_verbatim` pin (`nibli-wasm/src/lib.rs`:454) and the
    book's Ch 18 alias note.
 
-2. **Replace person-level GDPR proxies with operation-scoped legal facts.**
+2. **Replace person-level GDPR proxies with operation-scoped legal facts.** *(effort: max)*
    `gdpr.nibli`:46-78 derives a generic `permitted(person)` from
    `approves/promise/obliged` (the three rules at :48/:50/:52) and uses absence of
    `approves` under NAF as the erasure trigger (rationale at :64-78; the erasure rule
@@ -465,7 +481,7 @@ can run in parallel with 2.
    non-compliance-neutral result rather than a legal conclusion; engine/UI fixtures and
    Chapter 19 consume the same live artifact.
 
-3. **Redesign `drug-interactions.nibli` around a patient-local exposure event.** The
+3. **Redesign `drug-interactions.nibli` around a patient-local exposure event.** *(effort: max)* The
    concentration rules at :71-72 derive drug-level risk from global
    inhibition/metabolism, and the alert rule at :94 checks only that Adam uses the
    risky substrate. Retracting `uses(Adam, Flukonazol)` therefore does not withdraw the
@@ -493,22 +509,24 @@ here changes. Keywords must stay equal to `nibli_lexicon::RESERVED_WORDS`.
 
 Independent starters (any order):
 
-- **VS Code / Cursor extension (local):** package `grammars/nibli.tmLanguage.json`
+- **VS Code / Cursor extension (local):** *(effort: medium)* package `grammars/nibli.tmLanguage.json`
   as language id `nibli` for `*.nibli`, plus markdown fence injection for
   `nibli` and `nibli-kr` via `grammars/nibli-markdown-injection.json`. Ship as
   `editors/vscode/` (or a small sibling repo) with `language-configuration.json`
   (`#` line / `/* */` block). Optional: publish to Open VSX / Marketplace.
   → Unblocks the editor docs page below.
-- **GitHub Linguist PR:** submit `source.nibli` + samples from shipped corpora
+- **GitHub Linguist PR:** *(effort: medium — the submission work; merge is
+  externally gated on Linguist's usage threshold)* submit `source.nibli` + samples from shipped corpora
   (`gdpr.nibli`, `drug-interactions.nibli`, `readme.nibli`, …); language name
   **Nibli**, extensions `.nibli`, aliases `nibli-kr` / `nibli kr`. Until merge,
   github.com fences stay uncolored — do not retag book fences to `prolog` etc.
-- **Tree-sitter grammar (`tree-sitter-nibli`):** new crate/repo tracking
+- **Tree-sitter grammar (`tree-sitter-nibli`):** *(effort: high)* new crate/repo tracking
   `nibli-kr.pest` by discipline (not codegen). Queries: `highlights.scm`,
   `locals.scm`, `injections.scm` for Markdown. Consumers: nvim-treesitter,
   Helix, Zed. Does **not** replace Linguist/TextMate for github.com.
   → Unblocks the tree-sitter keyword ratchet below.
-- **`nibli-lsp` (thin LSP):** workspace bin on `tower-lsp` (or `lsp-server`) using
+- **`nibli-lsp` (thin LSP):** *(effort: high; diagnostics-only first cut: medium)* workspace
+  bin on `tower-lsp` (or `lsp-server`) using
   `nibli_kr::parse_checked` diagnostics, lexicon hover/completion (gloss,
   places, templates), optional format via `nibli_kr::render`, optional semantic
   tokens from `nibli_kr::highlight::lex`. Single-file first; multi-file KB
@@ -516,11 +534,13 @@ Independent starters (any order):
 
 Blocked followers:
 
-- **Conformance guard — TextMate half LANDED** (`just verify-grammar-parity`, in
+- **Conformance guard — TextMate half LANDED** *(effort of the still-owed tree-sitter half: low)*
+  (`just verify-grammar-parity`, in
   `ci`: set, order and the `\b` anchors vs `RESERVED_WORDS`). Still owed: the same
   ratchet for the Tree-sitter keyword list — blocked on the tree-sitter grammar
   existing.
-- **Editor/LSP docs (mdBook)** — blocked, precondition UNMET, and the last docs
+- **Editor/LSP docs (mdBook)** *(effort: low, once unblocked)* — blocked,
+  precondition UNMET, and the last docs
   item that outlived `DOCS_TODO.md`. Everything above is design + seed artifacts:
   `grammars/` holds a TextMate grammar and an injection sketch that **no build or
   CI job consumes** (only the keyword ratchet reads it), and there is no
@@ -528,7 +548,7 @@ Blocked followers:
   anywhere — `Cargo.lock` included. Writing the page now would present aspiration
   as shipped, which the docs' own epistemic rule forbids. Revisit when
   `editors/vscode/` or `nibli-lsp` actually exists.
-- **Book fence rename (optional, coordinated):** if/when fences go plain
+- **Book fence rename (optional, coordinated):** *(effort: medium)* if/when fences go plain
   `nibli` only, retarget `verify_book.py` + capture harness + injection regex in
   one PR; keep `nibli-kr` as Linguist/VS Code alias forever.
 
@@ -537,7 +557,7 @@ Blocked followers:
 ## Blocked on external repos — nothing in this repo is missing
 
 - **Synchronize the manuscript with the resolved existential-import algebra (engine
-  decision complete 2026-08-05; book-repo work only).** The engine now uses clean-core
+  decision complete 2026-08-05; book-repo work only).** *(effort: high)* The engine now uses clean-core
   as the high-assurance default: a description universal mints no entity, so `some`,
   `??`/`query_find`, `count_witnesses`, and `exactly 0/1` all range over the same
   ordinary domain. Explicit legacy import remains available
@@ -568,7 +588,7 @@ Blocked followers:
   removing this residual with the `book-todo` workflow.
 
 - **Synchronize the manuscript with query-only exact-count semantics (engine
-  decision complete 2026-08-05; book-repo work only).** The engine no longer
+  decision complete 2026-08-05; book-repo work only).** *(effort: medium)* The engine no longer
   generates witnesses for an asserted `CountNode`: every assertion, assumption,
   and preassigned/replay ingress rejects `exactly N`/`no` in asserted position before
   allocating an id or mutating state. Counts remain valid queries over the current
@@ -587,7 +607,7 @@ Blocked followers:
   validator, reference checker, capture checker, and two byte-idempotence passes
   before removing this residual with the `book-todo` workflow.
 
-- **Wire `dhilipsiva.dev/docs/nibli/`** in the external `dhilipsiva/dhilipsiva.dev`
+- **Wire `dhilipsiva.dev/docs/nibli/`** *(effort: low)* in the external `dhilipsiva/dhilipsiva.dev`
   repo, on the `nibli-updated` dispatch this repo already fires: checkout nibli →
   `just docs` (default `site-url=/docs/nibli/`) → copy `mdbook/book/` →
   `public/docs/nibli/`. Recipe and requirements are `DEPLOY.md` §2b. **Do not call
