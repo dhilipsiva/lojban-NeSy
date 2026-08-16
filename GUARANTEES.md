@@ -122,7 +122,7 @@ The proofs are model-level (the perfect model is *characterized* by axioms, not 
 
 ## Integrity Constraints
 
-**Mechanism:** `register_constraint(label, conjuncts)` declares a set of facts that must NOT all hold simultaneously. Registration is fallible and canonicalizes any valid versioned opaque-abstraction marker (rejecting legacy/malformed identities); the constraint is checked after every fact insertion.
+**Mechanism:** `register_constraint(label, conjuncts)` declares a set of facts that must NOT all hold simultaneously. Registration is fallible and canonicalizes any valid versioned opaque-abstraction marker (rejecting legacy/malformed identities); the constraint is checked after every fact insertion. Constraint ingress shares the assertion guards with stored-fact semantics: a conjunct naming a reference external-compute relation (`exponential`/`logarithm`, role spellings collapsed) or an operational numeric comparison (`greater`/`less`/`num_equal` with a numeric or pattern-variable operand) is refused — assertion ingress refuses such facts, so a constraint over them could never match anything and would be inert by construction while reading as a guarantee. The relational reading (`greater(Alis, Bob)`, non-numeric constants) registers and fires normally, the same boundary `pins/numeric-comparison-boundary.nibli` pins for assertions.
 
 **Mode:** Permissive by default — violations are warned via stderr, not rejected; the fact is still inserted. **Strict mode (opt-in, same switches as §Predicate Validation)** rejects: the violating fact is rolled back and the assertion fails atomically. Facts inserted internally by forward chaining are also rejected loudly on violation, but have no user call to fail — their rejections are stderr-visible only.
 

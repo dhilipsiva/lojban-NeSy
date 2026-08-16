@@ -1513,6 +1513,13 @@ impl KnowledgeBase {
 
     /// Register an integrity constraint: a set of facts that must NOT all hold simultaneously.
     /// Checked after every fact insertion (permissive mode: warns on violation).
+    ///
+    /// Shares the assertion guards with stored-fact semantics
+    /// ([`kb::validate_constraint_conjunct`]): a conjunct naming a reference
+    /// external-compute relation, or an operational numeric comparison, is
+    /// REFUSED — such facts are refused at assertion ingress, so a constraint
+    /// over them could never match anything and would be inert by
+    /// construction while looking like a guarantee.
     pub fn register_constraint(
         &self,
         label: String,
@@ -1521,6 +1528,7 @@ impl KnowledgeBase {
         for conjunct in &mut conjuncts {
             kb::canonicalize_stored_fact_abstraction_marker(conjunct)
                 .map_err(NibliError::Reasoning)?;
+            kb::validate_constraint_conjunct(conjunct).map_err(NibliError::Reasoning)?;
         }
         let predicates: Vec<String> = conjuncts.iter().map(|c| c.relation().to_string()).collect();
         let mut inner = self.inner.borrow_mut();

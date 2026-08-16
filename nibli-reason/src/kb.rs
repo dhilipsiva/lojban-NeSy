@@ -550,6 +550,58 @@ pub(super) fn preflight_assertion_buffer(buffer: &mut LogicBuffer) -> Result<(),
     validate_assertion_buffer(buffer)
 }
 
+/// The constraint-ingress twin of the assertion guards above, for the
+/// `StoredFact`-vector path (`register_constraint`) that never sees a
+/// `LogicBuffer`. A constraint conjunct only ever matches STORED facts, so a
+/// conjunct over a shape assertion ingress refuses can never match anything:
+/// the constraint is vacuously satisfied forever — inert, not unsound — and
+/// silently accepting it tells the caller a guarantee exists that does not.
+/// Shares the two guards with well-defined stored-fact semantics: the
+/// reference external-compute NAMES (query-only in every asserted position,
+/// role spellings collapsed like [`asserted_external_compute_name`]) and the
+/// operational numeric COMPARISONS (computed by queries, never stored —
+/// operand logic mirrors [`operational_comparison_atom`]: `Number` and
+/// `PatternVar` count as computable, relational `greater(Alis, Bob)` stays
+/// registrable per `pins/numeric-comparison-boundary.nibli`).
+pub(super) fn validate_constraint_conjunct(fact: &StoredFact) -> Result<(), String> {
+    let surface = crate::materialize::surface_relation(fact.relation()).to_string();
+    if nibli_types::relations::is_reference_external_compute(&surface) {
+        return Err(format!(
+            "`{surface}` is reserved for EXTERNAL COMPUTE and is query-only, so an \
+             integrity-constraint conjunct naming it can never match a stored fact \
+             — assertion ingress refuses `{surface}` facts, leaving the constraint \
+             vacuously satisfied forever (inert by construction). Constrain \
+             ordinary asserted relations instead."
+        ));
+    }
+    let args = &fact.inner().args;
+    let computable =
+        |t: &GroundTerm| matches!(t, GroundTerm::Number(_) | GroundTerm::PatternVar(_));
+    for base in nibli_types::relations::NUMERIC_COMPARISONS {
+        let decomposed_operand = fact
+            .relation()
+            .strip_prefix(base)
+            .is_some_and(|s| s == "_x1" || s == "_x2");
+        let operational = (decomposed_operand && args.len() >= 2 && computable(&args[1]))
+            || (fact.relation() == *base
+                && args.len() >= 2
+                && (computable(&args[0]) || computable(&args[1])));
+        if operational {
+            return Err(format!(
+                "`{base}` over numeric operands is a computed comparison, not a stored \
+                 fact, so an integrity-constraint conjunct over it can never match — \
+                 assertion ingress refuses it and queries compute it instead, leaving \
+                 the constraint vacuously satisfied forever (inert by construction). \
+                 Constrain an asserted CLASSIFICATION predicate instead (the \
+                 `thin(Varfarin).` pattern). (A comparison between non-numeric terms, \
+                 such as `greater(Alis, Bob)`, is an ordinary relational fact and \
+                 constrains normally.)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Relation-name prefix of the opaque abstraction marker emitted by nibli-semantics for
 /// `event`/`fact`/`property`/`amount`/`concept`. The marker is a versioned,
 /// lossless alpha-canonical unary predicate

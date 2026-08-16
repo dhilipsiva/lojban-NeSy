@@ -303,3 +303,116 @@ fn numeric_comparison_set_matches_the_evaluator_domain() {
         );
     }
 }
+
+// ─── Constraint ingress shares the assertion name/comparison guards ──────
+
+/// A constraint conjunct naming a reference external-compute relation is
+/// refused: assertion ingress refuses `exponential` facts, so the constraint
+/// could never match anything — inert by construction while reading as a
+/// guarantee. Role spellings collapse onto the anchor exactly as at assertion
+/// ingress.
+#[test]
+fn constraint_ingress_refuses_external_compute_names() {
+    let kb = new_kb();
+    for relation in ["exponential", "exponential_x1", "logarithm"] {
+        let conjunct = StoredFact::Bare(GroundFact::new(
+            relation,
+            vec![GroundTerm::from_f64(8.0), GroundTerm::from_f64(2.0)],
+        ));
+        let err = kb
+            .register_constraint("inert".to_string(), vec![conjunct])
+            .expect_err("an external-compute conjunct must be refused");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("query-only") && msg.contains("inert by construction"),
+            "refusal must explain the vacuity, got: {msg}"
+        );
+    }
+    assert!(
+        kb.inner.borrow().integrity_constraints.is_empty(),
+        "a refused constraint must not be registered"
+    );
+}
+
+/// A constraint conjunct over an operational numeric comparison is refused —
+/// with Number operands (flat and decomposed spellings) and with a
+/// PatternVar operand (could bind a number at match time) — while the
+/// RELATIONAL reading (`greater(Alis, Bob)`, non-numeric constants) still
+/// registers: the same boundary `pins/numeric-comparison-boundary.nibli`
+/// pins for assertions, so a name-based ban cannot creep in here either.
+#[test]
+fn constraint_ingress_refuses_operational_comparisons_but_keeps_relational() {
+    let kb = new_kb();
+    let refused: Vec<StoredFact> = vec![
+        StoredFact::Bare(GroundFact::new(
+            "greater",
+            vec![GroundTerm::from_f64(20.0), GroundTerm::from_f64(15.0)],
+        )),
+        StoredFact::Bare(GroundFact::new(
+            "less",
+            vec![
+                GroundTerm::PatternVar("n".to_string()),
+                GroundTerm::from_f64(15.0),
+            ],
+        )),
+        StoredFact::Bare(GroundFact::new(
+            "num_equal",
+            vec![
+                GroundTerm::Constant("alis".to_string()),
+                GroundTerm::from_f64(3.0),
+            ],
+        )),
+        // Decomposed role spelling: the VALUE slot (args[1]) is numeric.
+        StoredFact::Bare(GroundFact::new(
+            "greater_x2",
+            vec![
+                GroundTerm::Constant("_ev0".to_string()),
+                GroundTerm::from_f64(15.0),
+            ],
+        )),
+    ];
+    for conjunct in refused {
+        let relation = conjunct.relation().to_string();
+        let err = kb
+            .register_constraint("inert".to_string(), vec![conjunct])
+            .expect_err("an operational-comparison conjunct must be refused");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("computed comparison") && msg.contains("inert by construction"),
+            "refusal for `{relation}` must explain the vacuity, got: {msg}"
+        );
+    }
+    assert!(
+        kb.inner.borrow().integrity_constraints.is_empty(),
+        "no refused constraint may be registered"
+    );
+
+    // The relational dual must keep working: non-numeric operands are an
+    // ordinary fact, and the constraint over them must register AND fire.
+    let relational = |who: &str| {
+        StoredFact::Bare(GroundFact::new(
+            "greater",
+            vec![
+                GroundTerm::Constant(who.to_string()),
+                GroundTerm::Constant("bob".to_string()),
+            ],
+        ))
+    };
+    kb.register_constraint("taller-ban".to_string(), vec![relational("alis")])
+        .expect("the relational reading must stay registrable");
+    assert_eq!(
+        kb.inner.borrow().integrity_constraints.len(),
+        1,
+        "the relational constraint must be registered"
+    );
+    // And it is live: strict mode rejects the matching assertion.
+    kb.set_strict(true);
+    {
+        let mut inner = kb.inner.borrow_mut();
+        assert_typed_fact(relational("alis"), &mut inner);
+    }
+    assert!(
+        !kb.inner.borrow().fact_store.contains(&relational("alis")),
+        "the registered relational constraint must actually fire under strict mode"
+    );
+}

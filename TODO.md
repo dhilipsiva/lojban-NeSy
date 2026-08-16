@@ -81,20 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **`register_constraint` takes raw `StoredFact` conjuncts and bypasses buffer
-  preflight.** *(effort: medium; doc-disclosure exit: low)* Noted while closing the external-compute registration-order entry
-  (2026-08-09): the integrity-constraint API (`nibli-reason/src/lib.rs`:1516) accepts
-  conjuncts directly — the only per-conjunct check is the abstraction-marker
-  canonicalization (:1521-1523) — so a constraint naming `exponential`, or any
-  query-only shape the assertion guards refuse, is accepted. The guard stack it bypasses
-  (`validate_assertion_buffer`, `kb.rs`:377-383) operates on a `LogicBuffer` and is
-  unreachable from the `StoredFact`-vector path; the 5777ced/07734c8
-  compute-registration rework never touched this function. It is VACUOUS rather than
-  unsound (its conjuncts can never all be stored, since ingress refuses the facts), so
-  this is hygiene, not a divergence. **Exit:** either the constraint ingress shares the
-  name/comparison guards, or its doc states that a constraint over query-only shapes is
-  inert by construction.
-
 - **`collect_negated_relations` misses the opposite-polarity visit of a shared
   subtree.** *(effort: low)* The walker (`nibli-reason/src/materialize.rs`:1457, inner `walk`
   :1462-1471) threads `under_not` as a parameter but keys its `seen` set on node id
