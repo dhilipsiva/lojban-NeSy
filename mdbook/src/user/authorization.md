@@ -174,6 +174,6 @@ Do not invent predicates outside the fail-closed lexicon. Bump the policy versio
 ```bash
 just test-auth          # Rust core + axum/graphql/juniper features
 just check-auth-axum
-just test-auth-py       # requires maturin / .venv-auth (local)
+just test-auth-py       # requires maturin / .venv-auth (also gated in CI: the auth-py job)
 just docs               # includes this chapter
 ```

@@ -39,7 +39,7 @@ jobs:
         run: nix develop --extra-experimental-features 'nix-command flakes' --command just ci-all
 
   # Built-in authorization (nibli-auth + axum example compile). Parallel to
-  # runtime-ci. Python/maturin tests stay local (`just test-auth-py`).
+  # runtime-ci. The Python bridge has its own `auth-py` job below.
   auth:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -56,6 +56,28 @@ jobs:
 
       - name: Auth tests + axum example check
         run: nix develop --extra-experimental-features 'nix-command flakes' --command bash -c 'just test-auth && just check-auth-axum'
+
+  # Python auth bridge (nibli-auth-py via maturin + the pure-Python package's
+  # unittest suite). Its own job rather than a step in `auth`: the PyO3 cdylib
+  # release build is the long pole on a cold runner and must not serialize
+  # behind (or time-box against) the Rust auth leg. maturin + python3 come from
+  # the default Nix devshell; the recipe owns its venv (.venv-auth).
+  auth-py:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Python auth bridge tests (maturin + unittest)
+        run: nix develop --extra-experimental-features 'nix-command flakes' --command just test-auth-py
 
   # Code-derived mdBook site (`mdbook/`). Parallel to runtime-ci so a docs
   # failure does not wait on the full engine gate. No deploy in this job.

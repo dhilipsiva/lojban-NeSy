@@ -142,7 +142,7 @@ Built-in, zero-hallucination **authorization** (entailment of `authorized(...)` 
 | WIT | `nibli:engine@0.11.0` export `authorizer` (the version lives in `wit/world.wit`) |
 | Python | `just build-auth-py` → `nibli_auth` / `nibli_auth_native` |
 | Examples | `examples/auth-axum`, `examples/auth-fastapi` (same policy) |
-| Tests | `just test-auth`; Python: `just test-auth-py` (local, maturin) |
+| Tests | `just test-auth`; Python: `just test-auth-py` (maturin; gated by the `auth-py` CI job) |
 
 Policy file: `nibli-auth/policy/auth-0.1.0.nibli`. Extism is **not** the primary interface (optional future PDK only).
 

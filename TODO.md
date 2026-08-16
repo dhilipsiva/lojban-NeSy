@@ -64,8 +64,9 @@ check-auth-axum`). The phase-by-phase record is in git history; these outlive it
   CWA/CDA; inventing vocabulary outside the fail-closed corpus; framework-specific
   policy languages.
 
-(The one open item this section used to carry — Python-bridge CI coverage — is in the
-independent tier below.)
+(The one open item this section used to carry — Python-bridge CI coverage — LANDED
+2026-08-16: the `auth-py` CI job runs `just test-auth-py` through the default Nix
+devshell, so both halves of the adapter surface are gated.)
 
 **Pin runner — `:accept-scoped` cannot scope a one-way declaration, by design.**
 `derived_only`/`admits` are deliberately absent from `rebuild_inner`'s clear list, so
@@ -79,13 +80,6 @@ a concrete need.
 ---
 
 ## Independent — no ordering constraints between these
-
-- **Auth Python bridge has no CI coverage.** *(effort: medium; docs-only "tested-by-hand" exit: low)* `just test-auth-py` stays local (maturin;
-  Justfile:932 via `build-auth-py`:925), and the `auth` CI job runs only
-  `just test-auth && just check-auth-axum` (`.github/workflows/ci.yml`:41-58). Either
-  add a maturin job or state in user-facing docs that the Python adapter is
-  tested-by-hand — ci.yml:42 already records the decision as a comment, which is the
-  right content in the wrong place.
 
 - **`--allow-shell` has no test that it stays OFF for `pins/`.** *(effort: low)* The gate is what keeps
   the pin language closed during `just ci`; nothing pins that `just verify-pins`
