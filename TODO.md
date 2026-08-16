@@ -81,14 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **The component's import list is not gated.** *(effort: low)* Docs (book Ch 13/15/App C) state
-  "no clock or filesystem imports" — true today (imports are the
-  `wasi:cli`/`wasi:io` set + `wasi:random/insecure-seed`), but no CI check pins it and
-  `wasm-tools` sits unused in the flake (its sole mention repo-wide is `flake.nix`:56).
-  A one-line `ci-wasm` smoke
-  (`wasm-tools component wit target/wasm32-wasip2/release/nibli.wasm` + grep for the
-  absent interfaces) closes the gap.
-
 - **`wit/world.wit`:281 `proof-ref` doc comment is wrong.** *(effort: low)* It claims "No children —
   the full proof was shown at its first occurrence," but the memo-hit arm of
   `trace_predicate_provenance_typed` (`nibli-reason/src/reasoning.rs`:3314-3326) always

@@ -551,7 +551,26 @@ ci: fmt-check release-check clippy-runtime test test-engine test-host test-valid
 # them all: fuel exhaustion + post-trap recovery + journal replay
 # (trap-recovery), plus the script transcript, persist-replay, NAF-note,
 # :debug round-trip, and the determinism corpus.
-ci-wasm: smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-count-query-only smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-compute-query-only smoke-host-compute-registration-order smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
+ci-wasm: smoke-component-imports smoke-host-script smoke-host-trap-recovery smoke-host-persist-replay smoke-host-split smoke-host-count-query-only smoke-host-schema-v3-migration smoke-host-naf smoke-host-cwa-false smoke-host-debug smoke-host-collapse smoke-host-backend-unavailable smoke-host-compute-query-only smoke-host-compute-registration-order smoke-host-quiet smoke-host-strict smoke-host-existential-import smoke-host-materialize smoke-host-determinism verify-wasm-node
+
+# Import-surface gate: the shipped component must keep its documented import
+# list — the wasi:cli + wasi:io sets, wasi:random/insecure-seed, and the
+# nibli:engine compute-backend host import — and NOTHING data-bearing: no
+# clock, no filesystem, no sockets, no http (the book's Ch 13/15/App C claim
+# "no clock or filesystem imports"; this smoke makes that a checked property
+# instead of prose). Positive controls FIRST, so an empty or failed WIT dump
+# can never read as a clean import list.
+smoke-component-imports: build-wasm
+    @echo "Smoke-testing the component's import surface (wasm-tools component wit)..."
+    @out=$(wasm-tools component wit {{wasm_dir}}/nibli.wasm 2>&1); \
+        echo "$out" | grep -qF 'import wasi:cli/environment@' || { echo 'FAIL: dump missing the known wasi:cli import — the dump is broken, not the surface clean'; exit 1; }; \
+        echo "$out" | grep -qF 'import wasi:io/streams@' || { echo 'FAIL: dump missing the known wasi:io import — the dump is broken, not the surface clean'; exit 1; }; \
+        echo "$out" | grep -qF 'import wasi:random/insecure-seed@' || { echo 'FAIL: dump missing the known wasi:random/insecure-seed import'; exit 1; }; \
+        echo "$out" | grep -qF 'import nibli:engine/compute-backend@' || { echo 'FAIL: dump missing the compute-backend host import'; exit 1; }; \
+        for banned in 'wasi:clocks' 'wasi:filesystem' 'wasi:sockets' 'wasi:http'; do \
+            if echo "$out" | grep -q "import $banned"; then echo "FAIL: component imports $banned — the documented no-clock/no-filesystem surface regressed"; exit 1; fi; \
+        done; \
+        echo 'PASS: import surface is the documented wasi:cli/wasi:io/insecure-seed + compute-backend set'
 
 # Three-way determinism, WASMTIME leg: the shared determinism-corpus.nibli must produce
 # exactly its pinned annotations through the lasna component under gasnu. The
