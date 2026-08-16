@@ -81,40 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **Remove the retired two-path retraction story from active docs and benchmarks.** *(effort: medium)*
-  `retract_fact_inner` (`nibli-reason/src/lib.rs`:455-465) has no branch at all: it
-  flips `r.retracted = true` (:460) and calls `rebuild_inner` unconditionally (:462),
-  which ID-sorts the survivors (:532). Its OWN doc block (:435-454) correctly narrates
-  the 2026-08-01 retirement and cites `retract_diff.rs` — but four other sites still
-  tell the old story:
-  (1) `nibli-reason/src/lib.rs`:1612-1613 — the stale public `retract_fact` doc,
-  unchanged since 009a663 (2026-04-07): "Uses incremental removal for ground facts,
-  full rebuild for facts that compiled into rules";
-  (2) `nibli-engine/benches/engine_bench.rs`:198-204 narrates "two groups, one per
-  retraction path", so `bench_retraction_incremental` (:229-247, comment "Flat
-  direct-inject ground facts … → incremental path" at :235, registered at :257) measures
-  the rebuild path under a false label;
-  (3) `nibli-reason/src/kb.rs`:1675-1677 documents `rule_source_map` as "Used for
-  incremental retraction: … the corresponding rules can be removed without full
-  rebuild", but at HEAD that map is WRITE-ONLY — writes at `rules.rs`:674 and :1727,
-  clears at `lib.rs`:514 and `kb.rs`:2051, clone at `kb.rs`:1929, init at `kb.rs`:1990,
-  and no production reader anywhere (the only read-adjacent site is the test-only
-  state-equality snapshot, `src/tests/compute_ingest.rs`:148/:252). Decide whether the
-  map itself is now vestigial;
-  (4) `nibli-reason/src/tests/assertions.rs`:133-134 — a comment "(a ground-fact
-  retraction is incremental and would not rebuild)", false at HEAD (found in the
-  2026-08-16 sweep).
-  Chapter 11 still describes and measures the same retired path. Rename or remove the
-  stale benchmark leg, measure the one real path, and reconcile API prose plus
-  Chapter 11. **Exit:** the four sites above are fixed. Do NOT use
-  `rg -n 'incremental.*retract|retraction_incremental|two-path'` as the gate — it
-  matches NOTHING in `nibli-reason/src/lib.rs` (the stale doc reads "Retract … Uses
-  incremental removal": wrong word order, capital R), so it goes green with the worst
-  site untouched; a case-insensitive `incremental` sweep over `nibli-reason/src` plus
-  the bench does fire (today at lib.rs:438 honest, :1612 stale, kb.rs:1675, rules.rs:666,
-  plus tests). The replacement benchmark asserts its fixture/verdicts and reports
-  reproducible hardware/profile/methodology; retraction tests remain green.
-
 - **README's REPL-commands table is missing entries** *(effort: low)* (README.md:359
   `### REPL Commands`, header still `| Command | Description |`). The table omits the
   host's `:dump` and `:export` (`nibli-host/src/main.rs`:1659, :1694), all six short
@@ -536,6 +502,21 @@ Blocked followers:
   contract (and drop any "silently skips non-numeric witnesses" phrasing). Run the
   book validator, reference checker, capture checker, and two byte-idempotence
   passes before removing this residual with the `book-todo` workflow.
+
+- **Synchronize Chapter 11 with the one-path retraction model and the renamed
+  benchmark (engine done 2026-08-16; book-repo work only).** *(effort: low)* The
+  engine repo no longer contains any live two-path retraction claim: the public
+  `retract_fact` doc, the benchmark (now ONE criterion group, `retraction`, with
+  `text_event_decomposed` / `flat_direct_inject` fixture VARIANTS of the same
+  rebuild path, verdict-asserted fixtures, and a methodology header), the
+  write-only `rule_source_map` (removed outright), and the stale test
+  names/comments are all reconciled. Chapter 11 still describes and measures the
+  retired incremental path and quotes the old `retraction_rebuild` /
+  `retraction_incremental` group names — re-derive its table from the new bench
+  (`cargo bench -p nibli-engine --bench engine_bench -- retraction`) on
+  documented hardware and rewrite the prose to the one-path story. Run the book
+  validator, reference checker, capture checker, and two byte-idempotence passes
+  before removing this residual with the `book-todo` workflow.
 
 - **Wire `dhilipsiva.dev/docs/nibli/`** *(effort: low)* in the external `dhilipsiva/dhilipsiva.dev`
   repo, on the `nibli-updated` dispatch this repo already fires: checkout nibli →

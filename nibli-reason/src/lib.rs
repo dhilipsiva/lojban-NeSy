@@ -351,8 +351,9 @@ impl KnowledgeBase {
         let id = inner.fresh_fact_id()?;
         inner.current_assertion_id = Some(id);
         let result = process_assertion(&mut inner, &mut logic);
-        // ALWAYS clear: a stale id would mis-attribute the NEXT assertion's rules
-        // in rule_source_map (register_rule reads current_assertion_id).
+        // ALWAYS clear: a stale id would mis-attribute the NEXT assertion's
+        // rules (register_rule reads current_assertion_id for the rule-source
+        // citations proof traces carry).
         inner.current_assertion_id = None;
         if let Err(e) = result {
             // Atomic rollback. A multi-root assertion that fails on a later root
@@ -405,9 +406,8 @@ impl KnowledgeBase {
                     .to_string()
             })?;
         }
-        // Attribute any rule compiled during this replay to THIS fact in
-        // rule_source_map (otherwise a later retract of a replayed rule-producing
-        // fact leaves a stale rule behind).
+        // Attribute any rule compiled during this replay to THIS fact — the
+        // rule-source citations proof traces carry read current_assertion_id.
         inner.current_assertion_id = Some(id);
         let result = process_assertion(&mut inner, &mut logic);
         inner.current_assertion_id = None;
@@ -511,7 +511,6 @@ impl KnowledgeBase {
         inner.equality_adjacency.clear();
         inner.predicate_registry.clear();
         inner.arg_position_index.clear();
-        inner.rule_source_map.clear();
         inner.current_rule_ordinal = 0;
         inner.negative_facts.clear();
         inner.disjunctive_constraints.clear();
@@ -1641,8 +1640,9 @@ impl KnowledgeBase {
         Ok(())
     }
 
-    /// Retract a fact by ID. Uses incremental removal for ground facts,
-    /// full rebuild for facts that compiled into rules.
+    /// Retract a fact by ID — ONE path for every fact shape: mark the registry
+    /// record retracted, rebuild from the survivors (retract ≡ never-asserted;
+    /// see `retract_fact_inner`'s doc block and GUARANTEES §Retraction Model).
     pub fn retract_fact(&self, id: u64) -> Result<(), NibliError> {
         self.retract_fact_inner(id).map_err(NibliError::Reasoning)
     }

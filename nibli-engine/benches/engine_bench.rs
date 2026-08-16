@@ -195,21 +195,51 @@ fn bench_equality(c: &mut Criterion) {
 
 // ─── Benchmark: Retraction ───────────────────────────────────────
 //
-// Two groups, one per retraction path. The COMMON case for any fact typed as
-// nibli KR is the FULL REBUILD: `dog(Ent0).` event-decomposes to `∃e. (…)`, so
-// its buffer carries an ExistsNode and `retract_fact_inner` takes the rebuild
-// branch (replay every surviving record). The INCREMENTAL path is the narrow
-// exception — flat direct-`:assert` ground facts with no ∃/rule/negation are
-// removed from the fact store in place. The book's Table quotes both so the
-// two-path story has honest numbers.
+// ONE retraction path since 2026-08-01: `retract_fact_inner` marks the record
+// retracted and rebuilds from the survivors — retract ≡ never-asserted, pinned
+// at scale by nibli-verify's retraction differential (the former "incremental
+// O(1)" branch left retracted members in the quantifier domain and was
+// retired; GUARANTEES §Retraction Model). Cost scales with the SURVIVOR count
+// for every fixture shape; the two variants below time the SAME path over
+// different replay workloads (event-decomposed text asserts vs flat
+// direct-inject ground facts), not different paths.
+//
+// Methodology: criterion, bench (release) profile, run with
+// `cargo bench -p nibli-engine --bench engine_bench`; per-iteration setup
+// rebuilds the engine so every sample retracts id 0 from a full n-fact store;
+// each (variant, n) fixture is verdict-asserted once before sampling (the
+// retracted fact is gone, the survivors still resolve). Numbers are
+// machine-local — derive figures at writing time, never hand-copy them into
+// docs (CLAUDE.md pre-commit checklist).
 
-fn bench_retraction_rebuild(c: &mut Criterion) {
-    let mut group = c.benchmark_group("retraction_rebuild");
-    for &n in &[10, 100, 500] {
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+fn bench_retraction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("retraction");
+    for &n in &[10usize, 100, 500] {
+        // Variant 1: text-asserted (event-decomposed) facts.
+        {
+            let engine = fresh_engine();
+            for i in 0..n {
+                engine.assert_text(&format!("dog(Ent{}).", i)).unwrap();
+            }
+            engine.retract_fact(0).unwrap();
+            assert!(
+                matches!(
+                    engine.query_holds(&format!("dog(Ent{}).", n - 1)).unwrap(),
+                    EngineQueryResult::True
+                ),
+                "retraction fixture (text, n={n}): survivors must resolve after the rebuild"
+            );
+            assert!(
+                matches!(
+                    engine.query_holds("dog(Ent0).").unwrap(),
+                    EngineQueryResult::False
+                ),
+                "retraction fixture (text, n={n}): the retracted fact must be gone"
+            );
+        }
+        group.bench_with_input(BenchmarkId::new("text_event_decomposed", n), &n, |b, &n| {
             b.iter_with_setup(
                 || {
-                    // Text-asserted facts (event-decomposed) → rebuild path.
                     let engine = fresh_engine();
                     for i in 0..n {
                         engine.assert_text(&format!("dog(Ent{}).", i)).unwrap();
@@ -217,28 +247,41 @@ fn bench_retraction_rebuild(c: &mut Criterion) {
                     engine
                 },
                 |engine| {
-                    // Retract fact #0 → full rebuild replays the n-1 survivors.
-                    let _ = engine.retract_fact(0);
+                    engine.retract_fact(0).unwrap();
                 },
             );
         });
-    }
-    group.finish();
-}
 
-fn bench_retraction_incremental(c: &mut Criterion) {
-    let mut group = c.benchmark_group("retraction_incremental");
-    for &n in &[10, 100, 500] {
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+        // Variant 2: flat direct-inject ground facts — the SAME rebuild path,
+        // a leaner per-survivor replay.
+        {
+            let engine = fresh_engine();
+            populate_kb(&engine, n);
+            engine.retract_fact(0).unwrap();
+            assert!(
+                matches!(
+                    engine.query_holds(&format!("dog(Ent{}).", n - 1)).unwrap(),
+                    EngineQueryResult::True
+                ),
+                "retraction fixture (flat, n={n}): survivors must resolve after the rebuild"
+            );
+            assert!(
+                matches!(
+                    engine.query_holds("dog(Ent0).").unwrap(),
+                    EngineQueryResult::False
+                ),
+                "retraction fixture (flat, n={n}): the retracted fact must be gone"
+            );
+        }
+        group.bench_with_input(BenchmarkId::new("flat_direct_inject", n), &n, |b, &n| {
             b.iter_with_setup(
                 || {
-                    // Flat direct-inject ground facts (no ∃/rule) → incremental path.
                     let engine = fresh_engine();
                     populate_kb(&engine, n);
                     engine
                 },
                 |engine| {
-                    let _ = engine.retract_fact(0);
+                    engine.retract_fact(0).unwrap();
                 },
             );
         });
@@ -253,7 +296,6 @@ criterion_group!(
     bench_rule_chain,
     bench_witness_extraction,
     bench_equality,
-    bench_retraction_rebuild,
-    bench_retraction_incremental,
+    bench_retraction,
 );
 criterion_main!(benches);

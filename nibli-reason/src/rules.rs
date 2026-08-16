@@ -687,20 +687,6 @@ pub(super) fn register_rule(
         sort_rule_bucket(bucket);
     }
 
-    // Track which assertion ID produced this rule (for incremental retraction).
-    if let Some(assertion_id) = inner.current_assertion_id {
-        let pred_keys: Vec<String> = rc
-            .typed_conclusions
-            .iter()
-            .map(|c| c.relation().to_string())
-            .collect();
-        inner
-            .rule_source_map
-            .entry(assertion_id)
-            .or_default()
-            .extend(pred_keys);
-    }
-
     // A new rule changes `pred_dep_graph`, and therefore BOTH the stratification
     // (`materialize::compute_strata`) and the eligibility closure
     // (`materialize::eligible_relations`) — so it can invalidate a COMPLETENESS claim,
@@ -1745,11 +1731,9 @@ pub(super) fn compile_forall_to_rule(
                         });
                     }
                 }
-                // Record the assertion id so retracting a (possibly skolem-free)
-                // disjunctive conclusion triggers a rebuild that drops the constraint.
-                if let Some(aid) = inner.current_assertion_id {
-                    inner.rule_source_map.entry(aid).or_default();
-                }
+                // (Retracting the source fact drops this constraint via the one
+                // rebuild path: rebuild_inner clears disjunctive_constraints and
+                // replay re-registers only the survivors'.)
                 if inner.diag_enabled() {
                     println!(
                         "[Constraint] Registered disjunctive conclusion {} as ¬(P ∧ ¬Q ∧ ¬R)",

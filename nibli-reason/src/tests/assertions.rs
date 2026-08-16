@@ -91,7 +91,7 @@ fn multi_root_partial_failure_is_atomic() {
 #[test]
 fn failed_assertion_does_not_leak_assertion_id() {
     // The error path must clear current_assertion_id; a stale id would
-    // mis-attribute the NEXT assertion's rules in rule_source_map.
+    // mis-attribute the NEXT assertion's rules in the rule-source citations.
     let kb = new_kb();
     let mut nodes = Vec::new();
     let g = pred(
@@ -130,8 +130,9 @@ fn rebuild_preserves_user_arg_sorts() {
     // User-declared arg sorts (set_predicate_sorts) must survive a rebuild.
     let kb = new_kb();
     kb.set_predicate_sorts("gerku", vec!["animal".to_string(), String::new()]);
-    // Retracting a ForAll record takes the full-rebuild path (a ground-fact
-    // retraction is incremental and would not rebuild).
+    // EVERY retraction takes the one rebuild path (the incremental branch was
+    // retired 2026-08-01); a ForAll record makes the replay's sort
+    // restoration the thing under test.
     let throwaway = assert_id(&kb, make_universal("foo", "bar"), "throwaway");
     assert_buf(&kb, make_assertion("adam", "gerku"));
     kb.retract_fact_inner(throwaway).unwrap(); // forces rebuild_inner

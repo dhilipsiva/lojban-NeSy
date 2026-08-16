@@ -118,8 +118,8 @@ fn test_retract_idempotent() {
 fn test_retract_duplicate_ground_fact_keeps_live_copy() {
     // Two records assert the SAME ground fact. Retracting one must NOT remove
     // the fact from the store while the other record is still live (the
-    // HashSet store has no multiplicity — incremental retraction must consult
-    // the surviving registry records).
+    // HashSet store has no multiplicity — the rebuild replays the surviving
+    // registry records, which re-insert the shared fact).
     let kb = new_kb();
     let id1 = assert_id(&kb, make_assertion("alis", "gerku"), "copy 1");
     let id2 = assert_id(&kb, make_assertion("alis", "gerku"), "copy 2");

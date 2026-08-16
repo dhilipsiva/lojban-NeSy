@@ -521,11 +521,11 @@ fn test_arg_index_cleared_on_reset() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// INCREMENTAL TRUTH MAINTENANCE TESTS
+// RETRACTION TRUTH MAINTENANCE TESTS (one rebuild path since 2026-08-01)
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_incremental_retract_fact() {
+fn test_retract_fact_truth_maintenance() {
     let kb = new_kb();
     let id1 = assert_id(&kb, make_assertion("alis", "gerku"), "alis gerku");
     let _id2 = assert_id(&kb, make_assertion("bob", "gerku"), "bob gerku");
@@ -553,7 +553,7 @@ fn test_incremental_retract_fact() {
 }
 
 #[test]
-fn test_incremental_retract_rule() {
+fn test_retract_rule_truth_maintenance() {
     let kb = new_kb();
     let rule_id = assert_id(&kb, make_universal("gerku", "danlu"), "rule");
     assert_buf(&kb, make_assertion("alis", "gerku"));
@@ -577,7 +577,7 @@ fn test_incremental_retract_rule() {
 }
 
 #[test]
-fn test_incremental_retract_equals() {
+fn test_retract_equals_truth_maintenance() {
     let kb = new_kb();
     let equals_id = assert_id(&kb, make_equals("alis", "bob"), "equals");
     assert_buf(&kb, make_assertion("alis", "gerku"));

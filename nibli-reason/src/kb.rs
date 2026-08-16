@@ -1732,10 +1732,6 @@ pub(super) struct KnowledgeBaseInner {
     /// Argument-position index: (relation, arg_position) → {value → [facts]}.
     /// Speeds up witness extraction and ground-argument queries.
     pub(super) arg_position_index: HashMap<(String, usize), HashMap<GroundTerm, Vec<StoredFact>>>,
-    /// Maps fact_registry ID → rule predicate keys inserted into universal_rules.
-    /// Used for incremental retraction: when a fact that compiled rules is retracted,
-    /// the corresponding rules can be removed without full rebuild.
-    pub(super) rule_source_map: HashMap<u64, Vec<String>>,
     /// Rule execution overrides (`set_rule_forward` / `set_rule_priority`),
     /// keyed by conclusion predicate — SESSION CONFIGURATION, like `strict`:
     /// consulted at every rule registration (`register_rule`'s bucket push), so
@@ -1995,7 +1991,6 @@ impl Clone for KnowledgeBaseInner {
             predicate_registry: self.predicate_registry.clone(),
             integrity_constraints: self.integrity_constraints.clone(),
             arg_position_index: self.arg_position_index.clone(),
-            rule_source_map: self.rule_source_map.clone(),
             rule_exec_overrides: self.rule_exec_overrides.clone(),
             current_assertion_id: None,
             current_rule_ordinal: 0,
@@ -2057,7 +2052,6 @@ impl KnowledgeBaseInner {
             predicate_registry: HashMap::new(),
             integrity_constraints: Vec::new(),
             arg_position_index: HashMap::new(),
-            rule_source_map: HashMap::new(),
             rule_exec_overrides: HashMap::new(),
             current_assertion_id: None,
             current_rule_ordinal: 0,
@@ -2119,7 +2113,6 @@ impl KnowledgeBaseInner {
         self.equality_adjacency.clear();
         self.predicate_registry.clear();
         self.arg_position_index.clear();
-        self.rule_source_map.clear();
         // Session-configured execution overrides die with the rules they
         // configure (reset() drops KB content; a fresh KB starts unconfigured).
         self.rule_exec_overrides.clear();
