@@ -606,7 +606,13 @@ fn classify_resource_trap(e: &anyhow::Error) -> Option<EngineResourceKind> {
 }
 
 /// Actionable hint shown under a query's host-synthesized RESOURCE_EXCEEDED
-/// verdict, so the operator knows how to raise the budget and retry.
+/// verdict, so the operator knows how to raise the budget and retry. Depth is
+/// UNREACHABLE here by construction — the sole caller feeds
+/// `classify_resource_trap`'s result, which only ever yields Fuel/Memory (an
+/// engine Depth verdict takes the Ok path, where the verdict-driven `[Why]`
+/// explains the cutoff) — and there is deliberately no depth hint: the shipped
+/// runtime surfaces keep the default `max_chain_depth` (GUARANTEES §Resource
+/// Limits), so a hint would recommend a knob that does not exist here.
 fn resource_hint(kind: EngineResourceKind) -> &'static str {
     match kind {
         EngineResourceKind::Fuel => {
@@ -615,7 +621,7 @@ fn resource_hint(kind: EngineResourceKind) -> &'static str {
         EngineResourceKind::Memory => {
             "WASM memory cap exceeded; raise it with NIBLI_MEMORY_MB or :memory, then re-run"
         }
-        EngineResourceKind::Depth => "backward-chaining depth limit hit; raise max_chain_depth",
+        EngineResourceKind::Depth => "backward-chaining depth budget exhausted before a decision",
     }
 }
 

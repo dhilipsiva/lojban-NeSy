@@ -79,40 +79,6 @@ a concrete need.
 
 ---
 
-## Independent — no ordering constraints between these
-
----
-
-## Independent (was: verdict-rendering chain — step 1 LANDED 2026-08-16)
-
-The computed-FALSE/verdict rendering landed: `summarize_verdict` + `VerdictKind` in
-nibli-render drive the `[Why]` sentence by VERDICT CLASS (computed FALSE renders as a
-decision naming local/backend method; `cwa_false` selects the closed-world vs
-decided-FALSE fallback; UNKNOWN renders its reason — backend-unavailable and
-non-finite specifically; RESOURCE_EXCEEDED renders as a budget cutoff, never the CWA
-sentence). nibli-host maps the WIT verdict, nibli-wasm the typed verdict; the UI's
-trace-only panel inherits the class-aware FALSE logic. What remains here is the
-Depth-hint entry below.
-
-- **`resource_hint`'s Depth arm is dead code.** *(effort: medium; drop-the-dead-arm exit: low)* `resource_hint`
-  (`nibli-host/src/main.rs`:587) has exactly one call site, :1846, inside the `Err(e)`
-  trap arm of `run_proof_query` (fn at :1798); an engine-returned Depth verdict takes
-  the `Ok(Ok(…))` arm at :1802 and never reaches it, and `classify_resource_trap`
-  (:566) cannot yield Depth — its own doc says so at :564-565, so dropping the arm
-  contradicts nothing already written. Reproduced: a 13-link `X(every Y).` chain at
-  the default `max_chain_depth` of 10 (`awake(every actual). … dark(every cyan).
-  actual(Rex).` then `? dark(Rex).`) prints `[Query] RESOURCE_EXCEEDED (depth)` with
-  no hint line — and with the same false `[Why] This could not be derived from the
-  known facts and rules.` that step 1 fixes. The unreachable hint text (:595)
-  recommends raising `max_chain_depth`, a knob no shipped surface exposes: the only
-  setter is the Rust API `KnowledgeBase::set_max_chain_depth`
-  (`nibli-reason/src/lib.rs`:603) — there is no `:depth` command and no `NIBLI_DEPTH`,
-  and GUARANTEES.md:133 states the shipped runtime surfaces keep the default. Wire a
-  real Depth hint into the verdict path (and something for it to recommend), or drop
-  the dead arm.
-
----
-
 ## Chain — proof certificate (1 → 2 → 3)
 
 Order: step 1 is a small self-contained fail-safe whose typed "cannot index this proof"
