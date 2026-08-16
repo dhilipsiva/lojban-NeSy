@@ -414,6 +414,22 @@ pub enum AggregateOp {
     Avg,
 }
 
+/// The fail-closed result of a numeric aggregation over witness bindings.
+///
+/// `Empty` is a DEFINITIVE zero-witness enumeration — nothing matched, so
+/// there is nothing to aggregate — distinct from every defect class, which is
+/// an error, never a silent drop: a binding set missing the variable, a
+/// nonnumeric value, a non-finite operand, and a non-finite result (overflow)
+/// all refuse. `Value` carries the contributing-witness count as provenance,
+/// so a caller can state what the figure summarizes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AggregateOutcome {
+    /// The enumeration was complete and empty: no witness binding sets.
+    Empty,
+    /// Every binding set contributed exactly one finite numeric value.
+    Value { value: f64, witnesses: usize },
+}
+
 /// Summary of an active fact in the knowledge base.
 #[derive(Clone, Debug)]
 pub struct FactSummary {

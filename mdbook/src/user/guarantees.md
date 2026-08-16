@@ -91,8 +91,13 @@ reasoning error if any evaluated candidate leaf is `UNKNOWN` or
 set or partial count. This includes non-finite arithmetic and negated
 non-definitive leaves, even if another OR branch is true. Definitive TRUE/FALSE
 enumeration is unchanged. Native `aggregate` inherits the same refusal before
-numeric projection, but still filters missing or nonnumeric bindings; strict
-projection remains a separate tracker item. Exact-count formulas use their
+numeric projection, and the projection itself fails closed: a binding set that
+does not bind the variable, a non-numeric value, a non-finite operand, and a
+non-finite (overflowed) result each refuse with a distinct error instead of
+silently dropping rows. A complete empty enumeration is the typed
+`AggregateOutcome::Empty`; a valid aggregate carries its contributing-witness
+count as provenance (`AggregateOutcome::Value { value, witnesses }`).
+Exact-count formulas use their
 separate domain-based `CountNode` evaluator and are not changed by this collection
 rule, including the disclosed NaN-only domain boundary.
 

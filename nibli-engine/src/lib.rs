@@ -8,11 +8,12 @@ use nibli_store::NibliStore;
 
 pub use nibli_reason::ComputeRequest as EngineComputeRequest;
 pub use nibli_types::logic::{
-    AggregateOp as EngineAggregateOp, FactSummary as EngineFactSummary,
-    LogicBuffer as EngineLogicBuffer, LogicNode as EngineLogicNode,
-    LogicalTerm as EngineLogicalTerm, QueryResult as EngineQueryResult,
-    ResourceKind as EngineResourceKind, UnknownReason as EngineUnknownReason,
-    WitnessBinding as EngineWitnessBinding, WitnessOrigin as EngineWitnessOrigin,
+    AggregateOp as EngineAggregateOp, AggregateOutcome as EngineAggregateOutcome,
+    FactSummary as EngineFactSummary, LogicBuffer as EngineLogicBuffer,
+    LogicNode as EngineLogicNode, LogicalTerm as EngineLogicalTerm,
+    QueryResult as EngineQueryResult, ResourceKind as EngineResourceKind,
+    UnknownReason as EngineUnknownReason, WitnessBinding as EngineWitnessBinding,
+    WitnessOrigin as EngineWitnessOrigin,
 };
 
 /// The pipeline's typed error (`Syntax`/`Semantic`/`Reasoning`/`Backend`),
@@ -445,16 +446,18 @@ impl NibliEngine {
     }
 
     /// Aggregate the numeric values bound to `variable` across all witness binding
-    /// sets of a KR query, applying `op` (Sum/Min/Max/Avg). Returns `Ok(None)`
-    /// when no numeric witnesses are found. Exposes `nibli_reason::KnowledgeBase::aggregate`.
-    /// Incomplete witness enumeration is an error before numeric projection;
-    /// mixed/missing binding projection remains a separate API policy.
+    /// sets of a KR query, applying `op` (Sum/Min/Max/Avg) — FAIL CLOSED,
+    /// propagated uncollapsed from `nibli_reason::KnowledgeBase::aggregate`:
+    /// `AggregateOutcome::Empty` for a definitive zero-witness enumeration,
+    /// `Value { value, witnesses }` (contributing-witness provenance) for an
+    /// all-numeric finite aggregate, and an error for incomplete enumeration, a
+    /// missing/nonnumeric binding, or a non-finite operand/result.
     pub fn aggregate_text(
         &self,
         text: &str,
         variable: &str,
         op: nibli_types::logic::AggregateOp,
-    ) -> Result<Option<f64>, EngineError> {
+    ) -> Result<nibli_types::logic::AggregateOutcome, EngineError> {
         self.core.aggregate_text(text, variable, op)
     }
 

@@ -35,7 +35,8 @@ use std::collections::HashSet;
 
 use nibli_types::error::NibliError;
 use nibli_types::logic::{
-    AggregateOp, FactSummary, LogicBuffer, LogicalTerm, ProofTrace, QueryResult, WitnessBinding,
+    AggregateOp, AggregateOutcome, FactSummary, LogicBuffer, LogicalTerm, ProofTrace, QueryResult,
+    WitnessBinding,
 };
 
 /// Compile KR text WITHOUT compute-marking: parse + canonical claim compile only.
@@ -433,15 +434,17 @@ impl CoreSession {
     }
 
     /// Aggregate the numeric values bound to `variable` across all witness
-    /// binding sets of a KR query. `Ok(None)` when no numeric witnesses exist.
-    /// Incomplete witness enumeration is an error before projection; nonnumeric
-    /// or missing bindings retain their separately documented projection behavior.
+    /// binding sets of a KR query — FAIL CLOSED, propagated uncollapsed:
+    /// `AggregateOutcome::Empty` for a definitive zero-witness enumeration,
+    /// `Value { value, witnesses }` for an all-numeric finite aggregate, and an
+    /// error for incomplete enumeration, a missing/nonnumeric binding, or a
+    /// non-finite operand/result (see `KnowledgeBase::aggregate`).
     pub fn aggregate_text(
         &self,
         text: &str,
         variable: &str,
         op: AggregateOp,
-    ) -> Result<Option<f64>, NibliError> {
+    ) -> Result<AggregateOutcome, NibliError> {
         let buf = self.compile_query_text(text)?;
         self.kb.aggregate(buf, variable, op)
     }

@@ -1057,7 +1057,10 @@ fn aggregate_sums_only_witnesses_past_the_threshold() {
         .unwrap();
     assert_eq!(
         total,
-        Some(20.0),
+        nibli_types::logic::AggregateOutcome::Value {
+            value: 20.0,
+            witnesses: 1
+        },
         "only the dose past the threshold may be summed"
     );
 }

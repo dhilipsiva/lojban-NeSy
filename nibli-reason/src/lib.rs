@@ -1564,40 +1564,64 @@ impl KnowledgeBase {
         self.query_find(logic).map(|bindings| bindings.len())
     }
 
-    /// Aggregate numeric values of a named variable across all witness binding sets.
-    /// Returns `None` if no numeric witnesses found for the variable.
-    /// Inherits [`Self::query_find`]'s incomplete-enumeration error; this does not
-    /// change the separate numeric-projection behavior for nonnumeric/missing bindings.
+    /// Aggregate numeric values of a named variable across all witness binding
+    /// sets — FAIL CLOSED. Inherits [`Self::query_find`]'s complete-or-error
+    /// enumeration contract, then refuses (rather than silently dropping) every
+    /// defective binding: a set that does not bind `variable`, a nonnumeric
+    /// value, a non-finite operand, and a non-finite aggregate (overflow) are
+    /// each a distinct [`NibliError::Reasoning`]. A definitive zero-witness
+    /// enumeration is [`AggregateOutcome::Empty`]; a valid aggregate carries
+    /// its contributing-witness count as provenance.
     pub fn aggregate(
         &self,
         logic: LogicBuffer,
         variable: &str,
         op: nibli_types::logic::AggregateOp,
-    ) -> Result<Option<f64>, NibliError> {
+    ) -> Result<nibli_types::logic::AggregateOutcome, NibliError> {
+        use nibli_types::logic::{AggregateOp, AggregateOutcome};
         let bindings = self.query_find(logic)?;
-        let values: Vec<f64> = bindings
-            .iter()
-            .filter_map(|binding_set| {
-                binding_set
-                    .iter()
-                    .find(|b| b.variable == variable)
-                    .and_then(|b| match &b.term {
-                        LogicalTerm::Number(n) => Some(*n),
-                        _ => None,
-                    })
-            })
-            .collect();
-        if values.is_empty() {
-            return Ok(None);
+        let mut values: Vec<f64> = Vec::with_capacity(bindings.len());
+        for (i, binding_set) in bindings.iter().enumerate() {
+            let Some(binding) = binding_set.iter().find(|b| b.variable == variable) else {
+                return Err(NibliError::Reasoning(format!(
+                    "aggregate over `{variable}` is undefined: witness binding set #{i} \
+                     does not bind the variable — refusing a partial aggregate \
+                     (fail closed, never a silent drop)"
+                )));
+            };
+            let LogicalTerm::Number(n) = &binding.term else {
+                return Err(NibliError::Reasoning(format!(
+                    "aggregate over `{variable}` is undefined: witness binding set #{i} \
+                     binds a non-numeric term ({:?}) — refusing a mixed aggregate \
+                     (fail closed, never a silent drop)",
+                    binding.term
+                )));
+            };
+            if !n.is_finite() {
+                return Err(NibliError::Reasoning(format!(
+                    "aggregate over `{variable}` is undefined: witness binding set #{i} \
+                     binds the non-finite value {n} — refusing (fail closed)"
+                )));
+            }
+            values.push(*n);
         }
-        use nibli_types::logic::AggregateOp;
-        let result = match op {
+        if values.is_empty() {
+            return Ok(AggregateOutcome::Empty);
+        }
+        let witnesses = values.len();
+        let value = match op {
             AggregateOp::Sum => values.iter().sum(),
             AggregateOp::Min => values.iter().cloned().reduce(f64::min).unwrap_or(0.0),
             AggregateOp::Max => values.iter().cloned().reduce(f64::max).unwrap_or(0.0),
-            AggregateOp::Avg => values.iter().sum::<f64>() / values.len() as f64,
+            AggregateOp::Avg => values.iter().sum::<f64>() / witnesses as f64,
         };
-        Ok(Some(result))
+        if !value.is_finite() {
+            return Err(NibliError::Reasoning(format!(
+                "aggregate over `{variable}` overflowed: the {witnesses}-witness result \
+                 is non-finite ({value}) — refusing (fail closed)"
+            )));
+        }
+        Ok(AggregateOutcome::Value { value, witnesses })
     }
 
     /// Check entailment and return a proof trace showing the full derivation chain.

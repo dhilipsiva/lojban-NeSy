@@ -136,9 +136,16 @@ fn test_aggregate_sum() {
         nodes,
         roots: vec![root],
     };
-    use nibli_types::logic::AggregateOp;
+    use nibli_types::logic::{AggregateOp, AggregateOutcome};
     let sum = kb.aggregate(buf, "x", AggregateOp::Sum).unwrap();
-    assert_eq!(sum, Some(10.0), "sum of 2+3+5 should be 10");
+    assert_eq!(
+        sum,
+        AggregateOutcome::Value {
+            value: 10.0,
+            witnesses: 3
+        },
+        "sum of 2+3+5 should be 10 with three contributing witnesses"
+    );
 }
 
 #[test]
@@ -1353,5 +1360,123 @@ fn forall_does_not_quantify_over_event_skolems() {
         query(&kb, bare_forall),
         "bare ∀x.p(x) must be TRUE over individuals (p(adam) holds); an event \
          Skolem must not be a spurious counterexample"
+    );
+}
+
+// ─── Aggregation fails closed: every defect class refuses, never drops ───
+
+/// Helper: assert `quantity(<val>, zo'e)` for each value via the flat path
+/// (KR text cannot spell f64::MAX / infinities), then build the
+/// `∃x. quantity(x, zo'e)` aggregate query.
+fn quantity_kb_and_query(vals: &[f64]) -> (KnowledgeBase, LogicBuffer) {
+    let kb = new_kb();
+    for val in vals {
+        let mut nodes = Vec::new();
+        let root = pred(
+            &mut nodes,
+            "quantity",
+            vec![LogicalTerm::Number(*val), LogicalTerm::Unspecified],
+        );
+        assert_buf(
+            &kb,
+            LogicBuffer {
+                nodes,
+                roots: vec![root],
+            },
+        );
+    }
+    let mut nodes = Vec::new();
+    let body = pred(
+        &mut nodes,
+        "quantity",
+        vec![
+            LogicalTerm::Variable("x".to_string()),
+            LogicalTerm::Unspecified,
+        ],
+    );
+    let root = exists(&mut nodes, "x", body);
+    (
+        kb,
+        LogicBuffer {
+            nodes,
+            roots: vec![root],
+        },
+    )
+}
+
+/// A variable no binding set binds is a REFUSAL, not a silent empty aggregate.
+#[test]
+fn aggregate_refuses_a_variable_the_witnesses_do_not_bind() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("quantity(Adam, 3)."));
+    let err = kb
+        .aggregate(
+            compile_surface("quantity($x, $n)."),
+            "$zz",
+            nibli_types::logic::AggregateOp::Sum,
+        )
+        .expect_err("an unbound aggregation variable must refuse");
+    assert!(
+        format!("{err:?}").contains("does not bind"),
+        "refusal must name the missing-binding class: {err:?}"
+    );
+}
+
+/// A mixed numeric/non-numeric witness column is a REFUSAL, not a sum of the
+/// numeric survivors.
+#[test]
+fn aggregate_refuses_a_mixed_numeric_and_constant_column() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("quantity(Adam, 3)."));
+    assert_buf(&kb, compile_surface("quantity(Bel, Cyan)."));
+    let err = kb
+        .aggregate(
+            compile_surface("quantity($x, $n)."),
+            "$n",
+            nibli_types::logic::AggregateOp::Sum,
+        )
+        .expect_err("a mixed column must refuse, never aggregate the survivors");
+    assert!(
+        format!("{err:?}").contains("non-numeric"),
+        "refusal must name the mixed-column class: {err:?}"
+    );
+}
+
+/// An overflowed aggregate (finite operands, non-finite result) is a REFUSAL,
+/// not an infinity handed to the caller.
+#[test]
+fn aggregate_refuses_an_overflowed_result() {
+    // Two DISTINCT huge operands (identical facts dedupe to one witness).
+    let (kb, query) = quantity_kb_and_query(&[f64::MAX, f64::MAX * 0.75]);
+    let err = kb
+        .aggregate(query, "x", nibli_types::logic::AggregateOp::Sum)
+        .expect_err("a non-finite sum of finite operands must refuse");
+    assert!(
+        format!("{err:?}").contains("overflow"),
+        "refusal must name the overflow class: {err:?}"
+    );
+    // Control: the same operands under Max are finite and valid.
+    let (kb, query) = quantity_kb_and_query(&[f64::MAX, f64::MAX * 0.75]);
+    assert_eq!(
+        kb.aggregate(query, "x", nibli_types::logic::AggregateOp::Max)
+            .unwrap(),
+        nibli_types::logic::AggregateOutcome::Value {
+            value: f64::MAX,
+            witnesses: 2
+        },
+    );
+}
+
+/// A non-finite OPERAND refuses at the operand check (defense in depth even if
+/// some path lets a non-finite number into the domain).
+#[test]
+fn aggregate_refuses_a_non_finite_operand() {
+    let (kb, query) = quantity_kb_and_query(&[3.0, f64::INFINITY]);
+    let err = kb
+        .aggregate(query, "x", nibli_types::logic::AggregateOp::Sum)
+        .expect_err("a non-finite operand must refuse");
+    assert!(
+        format!("{err:?}").contains("non-finite"),
+        "refusal must name the non-finite class: {err:?}"
     );
 }

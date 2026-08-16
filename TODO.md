@@ -81,25 +81,6 @@ a concrete need.
 
 ## Independent — no ordering constraints between these
 
-- **Make aggregation fail closed instead of returning a partial numeric result.** *(effort: medium)*
-  `KnowledgeBase::aggregate` (`nibli-reason/src/lib.rs`:1559-1593) uses `filter_map`
-  over witness bindings (:1572), silently dropping a witness when the requested variable
-  is absent or nonnumeric and then summing/averaging the survivors (:1586-1591, with no
-  non-finite/overflow rejection); the success payload is only `Option<f64>`, so
-  `Ok(None)` (:1583) conflates "no witnesses" with "witnesses exist but none numeric".
-  Since 5580618 the ENUMERATION half is pinned: `aggregate` inherits `query_find`'s
-  incomplete-enumeration refusal via `?` at :1569 (any non-definitive final candidate
-  leaf errors instead of undercounting — `src/tests/witness_completeness.rs`:82, with
-  the definitive-empty → `Ok(None)` control at :161-172), and the doc (:1561-1562)
-  states the numeric-projection behavior is deliberately unchanged — so what remains is
-  exactly the typed-outcome half. Define a typed outcome that distinguishes empty input,
-  incomplete or mixed bindings, non-finite input/result, and a valid aggregate;
-  preserve the (now-pinned) incompleteness refusal. **Exit:** missing-variable, mixed
-  string/number, NaN/infinity, overflow, empty, and all-numeric controls are pinned;
-  session/engine/WIT callers propagate the outcome without collapsing it; aggregate
-  provenance states the contributing witnesses/count or the book narrows its proof
-  claim. Ripple: Chapter 20 and Appendices B/E.
-
 - **Remove the retired two-path retraction story from active docs and benchmarks.** *(effort: medium)*
   `retract_fact_inner` (`nibli-reason/src/lib.rs`:455-465) has no branch at all: it
   flips `r.retracted = true` (:460) and calls `rebuild_inner` unconditionally (:462),
@@ -543,6 +524,18 @@ Blocked followers:
   surfaces; rewrite examples that currently load them as KB statements. Run the book
   validator, reference checker, capture checker, and two byte-idempotence passes
   before removing this residual with the `book-todo` workflow.
+
+- **Synchronize the manuscript with the fail-closed aggregate outcome (engine done
+  2026-08-16; book-repo work only).** *(effort: low)* `KnowledgeBase::aggregate` /
+  `aggregate_text` now return the typed `AggregateOutcome` — `Empty` for a complete
+  zero-witness enumeration, `Value { value, witnesses }` with contributing-witness
+  provenance — and REFUSE (distinct reasoning errors) a binding set missing the
+  variable, a non-numeric value, a non-finite operand, and an overflowed result;
+  the 5580618 incomplete-enumeration refusal is unchanged, and no WIT surface
+  exposes aggregation. Update Chapter 20 and Appendices B/E to present this
+  contract (and drop any "silently skips non-numeric witnesses" phrasing). Run the
+  book validator, reference checker, capture checker, and two byte-idempotence
+  passes before removing this residual with the `book-todo` workflow.
 
 - **Wire `dhilipsiva.dev/docs/nibli/`** *(effort: low)* in the external `dhilipsiva/dhilipsiva.dev`
   repo, on the `nibli-updated` dispatch this repo already fires: checkout nibli →

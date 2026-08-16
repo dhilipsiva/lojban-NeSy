@@ -4,8 +4,9 @@
 //! No WASM, no HTTP — exercises nibli-kr+nibli-semantics+nibli-reason directly via Rust crate calls.
 
 use nibli_engine::{
-    EngineAggregateOp, EngineComputeRequest, EngineError, EngineLogicBuffer, EngineLogicNode,
-    EngineLogicalTerm, EngineQueryResult, EngineUnknownReason, EngineWitnessOrigin, NibliEngine,
+    EngineAggregateOp, EngineAggregateOutcome, EngineComputeRequest, EngineError,
+    EngineLogicBuffer, EngineLogicNode, EngineLogicalTerm, EngineQueryResult, EngineUnknownReason,
+    EngineWitnessOrigin, NibliEngine,
 };
 use nibli_render::{
     DRUG_INTERACTIONS_OVERLAY, GDPR_OVERLAY, Register, render_collapsed_text_with,
@@ -1904,7 +1905,16 @@ fn existential_import_profiles_are_algebraically_coherent_and_retractable() {
 
 #[test]
 fn existential_import_profile_applies_to_aggregate_enumeration() {
-    for (enabled, expected) in [(false, None), (true, Some(5.0))] {
+    for (enabled, expected) in [
+        (false, EngineAggregateOutcome::Empty),
+        (
+            true,
+            EngineAggregateOutcome::Value {
+                value: 5.0,
+                witnesses: 1,
+            },
+        ),
+    ] {
         let engine = fresh_engine();
         engine.set_existential_import(enabled).unwrap();
         engine.assert_text("quantity(every dog, 5).").unwrap();
@@ -2437,7 +2447,10 @@ fn named_query_variable_corefers_across_conjuncts() {
                 EngineAggregateOp::Sum,
             )
             .unwrap(),
-        Some(5.0),
+        EngineAggregateOutcome::Value {
+            value: 5.0,
+            witnesses: 1
+        },
         "aggregate must use only numeric witnesses shared across both clauses"
     );
 }
@@ -5401,7 +5414,14 @@ fn ddi_dose_sum_aggregation() {
     let total = engine
         .aggregate_text("quantity($da, $de).", "$de", EngineAggregateOp::Sum)
         .unwrap();
-    assert_eq!(total, Some(12.0), "Summed dose across drugs should be 12");
+    assert_eq!(
+        total,
+        EngineAggregateOutcome::Value {
+            value: 12.0,
+            witnesses: 2
+        },
+        "Summed dose across drugs should be 12"
+    );
 }
 
 /// The boolean verdict and the witness enumeration must AGREE about a numeric
@@ -5439,7 +5459,10 @@ fn numeric_threshold_verdict_and_find_agree() {
         engine
             .aggregate_text(q, "$de", EngineAggregateOp::Sum)
             .unwrap(),
-        Some(20.0),
+        EngineAggregateOutcome::Value {
+            value: 20.0,
+            witnesses: 1
+        },
         "aggregate sums only the witnesses past the threshold"
     );
 }
@@ -5478,7 +5501,10 @@ fn arithmetic_verdict_and_find_agree_end_to_end() {
         engine
             .aggregate_text(q, "$de", EngineAggregateOp::Sum)
             .unwrap(),
-        Some(27.0),
+        EngineAggregateOutcome::Value {
+            value: 27.0,
+            witnesses: 2
+        },
         "aggregate reaches both rows"
     );
     assert_eq!(

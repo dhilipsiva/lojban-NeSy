@@ -166,7 +166,8 @@ fn assert_definitive_empty_collections(kb: &KnowledgeBase, query: LogicBuffer) {
     assert_eq!(
         kb.aggregate(query, "x", nibli_types::logic::AggregateOp::Sum)
             .unwrap(),
-        None
+        nibli_types::logic::AggregateOutcome::Empty,
+        "a definitive zero-witness enumeration is Empty, not an error"
     );
 }
 
