@@ -1600,3 +1600,77 @@ fn negated_relations_cover_both_polarities_of_a_shared_subtree() {
         );
     }
 }
+
+/// The join index bounds the WORK, not just the verdict: a transitive-closure
+/// saturation must enumerate O(|R| * fanout) candidates per round, not
+/// O(|R|^2). Kills the performance-shape mutants a verdict test cannot see
+/// (an emptied/degraded bound-position analysis or a bypassed index all fall
+/// back to the SOUND full scan — same verdicts, quadratic enumeration).
+#[test]
+fn join_index_bounds_transitive_closure_bind_attempts() {
+    let kb = new_kb();
+    for i in 0..12 {
+        assert_buf(
+            &kb,
+            compile_surface(&format!("earlier(E{}, E{}).", i, i + 1)),
+        );
+    }
+    assert_buf(
+        &kb,
+        compile_surface(
+            "all $a: all $b: all $c: earlier($a, $b) & earlier($b, $c) -> earlier($a, $c).",
+        ),
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("~earlier(E12, E0).")),
+        QueryResult::True,
+        "the NAF query must force the earlier cone's saturation"
+    );
+    let attempts = kb.materialization_tuple_bind_attempts("earlier");
+    assert!(attempts > 0, "the closure must do real join work");
+    // Measured at pinning time: 618 indexed vs 7631 with the index disabled —
+    // the 2,000 threshold sits well clear of both.
+    assert!(
+        attempts <= 2_000,
+        "transitive closure over a 12-link chain must stay indexed \
+         (O(|R| * fanout) per round); {attempts} attempts means the level-1 \
+         join degraded to a full scan"
+    );
+}
+
+/// The bound-position ANALYSIS must be real, not coincidental: this rule's
+/// second atom joins on POSITION 1 (`earlier($c, $b)` — `$b` is the variable
+/// level 0 bound), so an analysis hardwired to position 0 keys the index on
+/// the unbound `$c`, falls open to the full scan, and blows the work bound.
+/// (The transitive-closure pin above cannot see that mutant — its join
+/// position happens to BE 0.)
+#[test]
+fn join_index_analysis_handles_non_leading_bound_positions() {
+    let kb = new_kb();
+    for i in 0..12 {
+        assert_buf(
+            &kb,
+            compile_surface(&format!("earlier(E{}, E{}).", i, i + 1)),
+        );
+    }
+    assert_buf(
+        &kb,
+        compile_surface(
+            "all $a: all $b: all $c: earlier($a, $b) & earlier($c, $b) -> concurrent($a, $c).",
+        ),
+    );
+    assert_eq!(
+        query_result(&kb, compile_surface("~concurrent(E0, E0).")),
+        QueryResult::False,
+        "E0 converges with itself on E1, so the NAF query is FALSE"
+    );
+    let attempts = kb.materialization_tuple_bind_attempts("concurrent");
+    assert!(attempts > 0, "the converging join must do real work");
+    // Measured at pinning time: 24 indexed; a position-0-hardwired analysis
+    // full-scans at ~144.
+    assert!(
+        attempts <= 60,
+        "the position-1 join must stay indexed; {attempts} attempts means the \
+         analysis mis-keyed and degraded to a full scan"
+    );
+}

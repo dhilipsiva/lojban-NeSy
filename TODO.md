@@ -79,51 +79,39 @@ a concrete need.
 
 ---
 
-## Chain — materialisation performance (1 → 2; gate each step with `--in-diff`)
+## Materialisation: incremental re-saturation (C3) + the mutants re-cut
 
-Order: step 1 is the top measured cost and the smaller change; step 2's rollback subset
-is strictly sound and independent of delta design, and the full delta machinery comes
-last. Both steps edit `examine_globs` files, so each one grows the mutation debt below —
-gate with `cargo mutants --in-diff` per change, and see the baseline re-cut entry.
+(The chain's step 1 — indexing the semi-naive join on statically bound
+positions — LANDED 2026-08-16: `LevelIndex` in `eval_rule`, a pure pre-filter
+(`bind_tuple` re-checks everything), lazily built per level per call, level 0
+never indexed. Transitive closure: 1.19 s → 72 ms at |R|=100, 12.2 s → 620 ms
+at |R|=200, verdicts identical, ON/OFF differential green. C3 remains; gate it
+with `cargo mutants --in-diff` and see the baseline re-cut below.)
 
-1. **Index the join on already-bound positions.** *(effort: medium)* `eval_rule`'s inner `walk`
-   (`nibli-reason/src/materialize.rs`:1054 / :1076) does a FULL relation scan per level
-   (the `for tuple in tuples` loop at :1125, fed by `source.get(&atom.relation)` over
-   the whole extension, :1117-1148) with no index on the positions a partial binding
-   has already fixed. For a transitive-closure shape
-   (`earlier($a,$b) & earlier($b,$c) -> earlier($a,$c)`) that is O(|R|²) per round
-   where an index on the bound position is O(|R| · fanout). Since the binding clone
-   landed this is the largest remaining cost: `walk` went from 4.98% to 13.97% of self
-   time and is now the top symbol. The set of positions bound on entry to level `i` is
-   statically derivable from the rule's templates, so the index key is known per
-   (rule, level); the index must be rebuilt per round because `ext`/`delta` grow. If it
-   comes with join REORDERING, note that the undo trail is order-independent by
-   construction, which is what makes permuting `positive` safe.
+- **Materialisation: incremental re-saturation (C3) — rollback subset first.** *(effort: high; the rollback subset alone: medium)* Every
+  fact insert drops the saturation (`assert_typed_fact` → `invalidate_materialization`,
+  `rules.rs`:873 → :892 → :1044; the invalidation itself is `reasoning.rs`:2016-2018,
+  `*inner.materialized.borrow_mut() = None`), so an interleaved
+  `assert; query; assert; query` REPL session recomputes the next requested query cone
+  and its cumulative root union from scratch, and `nibli-ui` re-asserts its whole tab
+  per run by design. Datalog is monotone, so a seed addition can only GROW the model:
+  a three-state dirty flag (`Clean` / `GrewBy(Vec<StoredFact>)` / `Invalid`) could
+  resume the semi-naive loop from a one-tuple delta rather than rebuild —
+  `eval_rule`'s `delta_pos` marker is already a delta-driven round. `Invalid` for
+  retraction, rebuild, reset, rule registration, and any non-`Bare` or `equals` insert
+  (both can retroactively disqualify a relation).
 
-2. **Materialisation: incremental re-saturation (C3) — rollback subset first.** *(effort: high; the rollback subset alone: medium)* Every
-   fact insert drops the saturation (`assert_typed_fact` → `invalidate_materialization`,
-   `rules.rs`:873 → :892 → :1044; the invalidation itself is `reasoning.rs`:2016-2018,
-   `*inner.materialized.borrow_mut() = None`), so an interleaved
-   `assert; query; assert; query` REPL session recomputes the next requested query cone
-   and its cumulative root union from scratch, and `nibli-ui` re-asserts its whole tab
-   per run by design. Datalog is monotone, so a seed addition can only GROW the model:
-   a three-state dirty flag (`Clean` / `GrewBy(Vec<StoredFact>)` / `Invalid`) could
-   resume the semi-naive loop from a one-tuple delta rather than rebuild —
-   `eval_rule`'s `delta_pos` marker is already a delta-driven round. `Invalid` for
-   retraction, rebuild, reset, rule registration, and any non-`Bare` or `equals` insert
-   (both can retroactively disqualify a relation).
-
-   **Now the top materialisation cost, measured.** With the per-candidate binding clone
-   gone (`9671e2e`), a 555-pin run over a 2004-line constitution spends its time in
-   `eval_rule::walk` itself. The suite carries 66 KB-mutating directives interleaved
-   with 492 queries, and each one drops the saturation: 20 identical queries with no
-   mutation cost 0.13 s, the same 20 with a `:accept-scoped` between each cost 1.16 s
-   (~9x). A `:refuse` costs the same as a real mutation even though the KB ends
-   semantically identical — `rebuild_inner` (`nibli-reason/src/lib.rs`:475) nulls the
-   saturation unconditionally on the rollback (the `None` assignment at :523).
-   Preserving it across a rollback that restores the prior state is a smaller,
-   strictly-sound subset of C3 and would cover 36 of those 66 directives — do that
-   subset first.
+  **Now the top materialisation cost, measured.** With the per-candidate binding clone
+  gone (`9671e2e`), a 555-pin run over a 2004-line constitution spends its time in
+  `eval_rule::walk` itself. The suite carries 66 KB-mutating directives interleaved
+  with 492 queries, and each one drops the saturation: 20 identical queries with no
+  mutation cost 0.13 s, the same 20 with a `:accept-scoped` between each cost 1.16 s
+  (~9x). A `:refuse` costs the same as a real mutation even though the KB ends
+  semantically identical — `rebuild_inner` (`nibli-reason/src/lib.rs`:475) nulls the
+  saturation unconditionally on the rollback (the `None` assignment at :523).
+  Preserving it across a rollback that restores the prior state is a smaller,
+  strictly-sound subset of C3 and would cover 36 of those 66 directives — do that
+  subset first.
 
 **The mutation baseline is stale enough that `just mutants` fails on `main`** *(effort: high)* — and the
 chain above will widen the gap, so sequence the re-cut before it or immediately after.
@@ -156,62 +144,62 @@ through the same renderer. The drug-interactions redesign (3) does not depend on
 can run in parallel with 2.
 
 1. **`obliged`-spelled duties render the wrong obligated party (TWO defects, one
-   entry).** *(effort: medium)* `obliged(every data governs, event { message() }).` back-translates as
-   "For every X, if X governs and X is data, then **Y** is obligated to notify", while
-   the converted `obligated_by` spelling correctly binds X. (a) WHO-SELECTION — both
-   `collapse_deontic_event_duties` (`nibli-render/src/logic.rs`:381-385) and
-   `render_frame`'s early deontic branch (:406-419, taken whenever place 1 is a
-   Constant and place 2 exists, bypassing `frame_template`/`fill_template` entirely)
-   hardcode place 2 as the duty-holder. That is right only for the CONVERTED argument
-   order: both spellings compile to the SAME base relation with the places SWAPPED
-   (`obliged(Adam, Bel)` emits `obliged_x1(_ev0, adam)`/`obliged_x2(_ev0, bel)`;
-   `obligated_by(Adam, Bel)` emits x1=bel, x2=adam), and the corpus places are
-   `[bound, duty, standard]` — the bound party is x1
-   (`nibli-lexicon/src/corpus/predicates.rs`:1627). (b) INVERTED TEMPLATE — the
-   override row `("obliged", "{x2} is obligated that {x1}")`
-   (`nibli-render/src/frame.rs`:19) is likewise converted-ordered. (The converse-alias
-   corpus work DID de-invert the lexicon templates — predicates.rs:1625/:1627 — but
-   `TEMPLATE_OVERRIDES` wins over corpus templates, so that fix does not touch either
-   defect here.) The override is NOT reached for (a) — the early branch wins — but it
-   IS reached at arity 1, where `fill_template`'s trailing-elision cut
-   (frame.rs:243-251) drops the whole string: `obliged(Adam).` renders as the EMPTY
-   string, and `permitted(every person where obliged).` (`gdpr.nibli`:52) renders
-   "For every X, if , then …" — GDPR Article 6(1)(c) with its antecedent silently gone,
-   in a shipped corpus the Transparency Triad asks reviewers to check. Fixing either
-   half alone leaves the other. The `obligated_by` row at frame.rs:18 is dead for
-   rendering in the common path (a who-less collapse acc with place 2 absent can still
-   fall through to it, so "dead" is approximate) and cannot be deleted without updating
-   its assertion at frame.rs:310-313. Ripple: re-check nibli-wasm's
-   `c18_draft_error_glosses_are_verbatim` pin (`nibli-wasm/src/lib.rs`:454) and the
-   book's Ch 18 alias note.
+  entry).** *(effort: medium)* `obliged(every data governs, event { message() }).` back-translates as
+  "For every X, if X governs and X is data, then **Y** is obligated to notify", while
+  the converted `obligated_by` spelling correctly binds X. (a) WHO-SELECTION — both
+  `collapse_deontic_event_duties` (`nibli-render/src/logic.rs`:381-385) and
+  `render_frame`'s early deontic branch (:406-419, taken whenever place 1 is a
+  Constant and place 2 exists, bypassing `frame_template`/`fill_template` entirely)
+  hardcode place 2 as the duty-holder. That is right only for the CONVERTED argument
+  order: both spellings compile to the SAME base relation with the places SWAPPED
+  (`obliged(Adam, Bel)` emits `obliged_x1(_ev0, adam)`/`obliged_x2(_ev0, bel)`;
+  `obligated_by(Adam, Bel)` emits x1=bel, x2=adam), and the corpus places are
+  `[bound, duty, standard]` — the bound party is x1
+  (`nibli-lexicon/src/corpus/predicates.rs`:1627). (b) INVERTED TEMPLATE — the
+  override row `("obliged", "{x2} is obligated that {x1}")`
+  (`nibli-render/src/frame.rs`:19) is likewise converted-ordered. (The converse-alias
+  corpus work DID de-invert the lexicon templates — predicates.rs:1625/:1627 — but
+  `TEMPLATE_OVERRIDES` wins over corpus templates, so that fix does not touch either
+  defect here.) The override is NOT reached for (a) — the early branch wins — but it
+  IS reached at arity 1, where `fill_template`'s trailing-elision cut
+  (frame.rs:243-251) drops the whole string: `obliged(Adam).` renders as the EMPTY
+  string, and `permitted(every person where obliged).` (`gdpr.nibli`:52) renders
+  "For every X, if , then …" — GDPR Article 6(1)(c) with its antecedent silently gone,
+  in a shipped corpus the Transparency Triad asks reviewers to check. Fixing either
+  half alone leaves the other. The `obligated_by` row at frame.rs:18 is dead for
+  rendering in the common path (a who-less collapse acc with place 2 absent can still
+  fall through to it, so "dead" is approximate) and cannot be deleted without updating
+  its assertion at frame.rs:310-313. Ripple: re-check nibli-wasm's
+  `c18_draft_error_glosses_are_verbatim` pin (`nibli-wasm/src/lib.rs`:454) and the
+  book's Ch 18 alias note.
 
 2. **Replace person-level GDPR proxies with operation-scoped legal facts.** *(effort: max)*
-   `gdpr.nibli`:46-78 derives a generic `permitted(person)` from
-   `approves/promise/obliged` (the three rules at :48/:50/:52) and uses absence of
-   `approves` under NAF as the erasure trigger (rationale at :64-78; the erasure rule
-   statement itself, `obligated_by(every person where ~approves, event { removes() }).`,
-   sits at :101). It does not identify the processing operation, controller, data,
-   purpose, consent scope/withdrawal time, alternative lawful bases, Article 17
-   exceptions, or jurisdiction/effective text; NAF absence is not a legal finding.
-   Design an operation-scoped schema and corpus with legal review, explicit coverage
-   assumptions, exceptions, and dated primary sources. **Exit:**
-   multi-controller/multi-purpose/withdrawal/alternative-basis/exception
-   counterexamples are pinned; missing evidence yields an honest
-   non-compliance-neutral result rather than a legal conclusion; engine/UI fixtures and
-   Chapter 19 consume the same live artifact.
+  `gdpr.nibli`:46-78 derives a generic `permitted(person)` from
+  `approves/promise/obliged` (the three rules at :48/:50/:52) and uses absence of
+  `approves` under NAF as the erasure trigger (rationale at :64-78; the erasure rule
+  statement itself, `obligated_by(every person where ~approves, event { removes() }).`,
+  sits at :101). It does not identify the processing operation, controller, data,
+  purpose, consent scope/withdrawal time, alternative lawful bases, Article 17
+  exceptions, or jurisdiction/effective text; NAF absence is not a legal finding.
+  Design an operation-scoped schema and corpus with legal review, explicit coverage
+  assumptions, exceptions, and dated primary sources. **Exit:**
+  multi-controller/multi-purpose/withdrawal/alternative-basis/exception
+  counterexamples are pinned; missing evidence yields an honest
+  non-compliance-neutral result rather than a legal conclusion; engine/UI fixtures and
+  Chapter 19 consume the same live artifact.
 
 3. **Redesign `drug-interactions.nibli` around a patient-local exposure event.** *(effort: max)* The
-   concentration rules at :71-72 derive drug-level risk from global
-   inhibition/metabolism, and the alert rule at :94 checks only that Adam uses the
-   risky substrate. Retracting `uses(Adam, Flukonazol)` therefore does not withdraw the
-   warfarin alert; a second patient taking warfarin alone can inherit risk from an
-   inhibitor nobody in that regimen takes. Model co-administration explicitly and
-   decide/document the dosage, route, timing, phenotype, evidence-quality, and
-   uncertainty boundary with a pharmacology reviewer. **Exit:** patient-isolation and
-   inhibitor-retraction negatives, dose/route/time boundary tests, and clinically
-   reviewed scenario fixtures pass in `nibli-engine`, `nibli-ui`, and the pin/seam
-   gates; Chapter 20 is recaptured from the live corpus and is labeled a synthetic
-   teaching model until that review exists.
+  concentration rules at :71-72 derive drug-level risk from global
+  inhibition/metabolism, and the alert rule at :94 checks only that Adam uses the
+  risky substrate. Retracting `uses(Adam, Flukonazol)` therefore does not withdraw the
+  warfarin alert; a second patient taking warfarin alone can inherit risk from an
+  inhibitor nobody in that regimen takes. Model co-administration explicitly and
+  decide/document the dosage, route, timing, phenotype, evidence-quality, and
+  uncertainty boundary with a pharmacology reviewer. **Exit:** patient-isolation and
+  inhibitor-retraction negatives, dose/route/time boundary tests, and clinically
+  reviewed scenario fixtures pass in `nibli-engine`, `nibli-ui`, and the pin/seam
+  gates; Chapter 20 is recaptured from the live corpus and is labeled a synthetic
+  teaching model until that review exists.
 
 ---
 

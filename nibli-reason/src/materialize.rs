@@ -1045,12 +1045,60 @@ fn builtin_holds(fact: &StoredFact, bindings: &HashMap<String, GroundTerm>) -> O
     Some(args[0] == args[1])
 }
 
+/// Per-level join index for [`eval_rule`]'s walk: the template positions of
+/// `positive[i]` that are BOUND on entry (constants, plus variables bound by an
+/// earlier positive atom — statically derivable from the templates alone), and a
+/// lazily built bucket map over the level's source extension keyed by the values
+/// at those positions.
+///
+/// A pure PRE-FILTER: `bind_tuple` still re-checks every position on every
+/// candidate, so the index may only skip tuples it can PROVE `bind_tuple` would
+/// reject (a different value at a bound position, or an arity too short to carry
+/// one) — soundness never depends on the bound-position analysis, only the
+/// speedup does, and an unexpectedly unbound "bound" variable falls open to the
+/// full scan. Rebuilt per [`eval_rule`] call, because `ext`/`delta` grow between
+/// rounds and `delta_pos` changes which source a level reads. Level 0 is never
+/// indexed (it is visited exactly once, so a build costs what one scan costs).
+struct LevelIndex<'e> {
+    bound_positions: Vec<usize>,
+    map: Option<HashMap<Vec<GroundTerm>, Vec<&'e Vec<GroundTerm>>>>,
+}
+
+/// The positions of `positive[i]`'s template bound when the walk reaches level
+/// `i`: constants always, and pattern variables that occur in an earlier
+/// positive atom. (A variable repeated within atom `i` itself binds DURING
+/// `bind_tuple`, not on entry — correctly excluded.)
+fn bound_positions_at(pr: &ProjectedRule, i: usize) -> Vec<usize> {
+    let mut earlier_vars: HashSet<&str> = HashSet::new();
+    for atom in &pr.positive[..i] {
+        for v in &atom.values {
+            if let GroundTerm::PatternVar(n) = v {
+                earlier_vars.insert(n.as_str());
+            }
+        }
+    }
+    pr.positive[i]
+        .values
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| match v {
+            GroundTerm::PatternVar(n) => earlier_vars.contains(n.as_str()),
+            _ => true,
+        })
+        .map(|(p, _)| p)
+        .collect()
+}
+
 /// Evaluate one projected rule, appending every head tuple it derives.
 ///
 /// `delta_pos` is the semi-naive marker: when `Some(i)`, positive atom `i` is joined
 /// against `delta` (the tuples discovered in the previous round) instead of the full
 /// extension, so a round only re-derives what the previous round could have enabled.
 /// When `None` the rule is evaluated against the full extensions (the seeding round).
+///
+/// Join levels beyond the first are INDEXED on their statically bound positions
+/// (see [`LevelIndex`]): a transitive-closure shape that scanned O(|R|²) tuples
+/// per round now touches O(|R| · fanout).
 fn eval_rule(
     pr: &ProjectedRule,
     ext: &Extensions,
@@ -1073,16 +1121,17 @@ fn eval_rule(
     // bindings between rules — where a slot means a different variable — which is a far
     // worse failure than the one being fixed.
     #[allow(clippy::too_many_arguments)]
-    fn walk<'p>(
+    fn walk<'p, 'e>(
         pr: &'p ProjectedRule,
-        ext: &Extensions,
-        delta: &Extensions,
+        ext: &'e Extensions,
+        delta: &'e Extensions,
         delta_pos: Option<usize>,
         i: usize,
         bindings: &mut HashMap<String, GroundTerm>,
         trail: &mut Vec<&'p str>,
         out: &mut Vec<(String, Vec<GroundTerm>)>,
         work: &mut MaterializationWork,
+        indexes: &mut [LevelIndex<'e>],
     ) {
         if i == pr.positive.len() {
             // Built-ins first: they are the cheapest and often the most selective
@@ -1118,37 +1167,128 @@ fn eval_rule(
         let Some(tuples) = source.get(&atom.relation) else {
             return;
         };
-        // INVARIANT for this loop: there is exactly ONE unwind site, and no `return`,
-        // `?`, `break` or `continue` may sit between a `bind_tuple` call and it. The
-        // frame's bindings must be identical at the top of every iteration — which the
-        // old owned-map version gave for free, and which this now has to maintain.
+        // Indexed path: a level past the first whose template has statically
+        // bound positions visits only the bucket matching the current
+        // bindings' key values. `take()`/restore instead of borrowing the map
+        // across the recursion — levels strictly increase, so this level's map
+        // is never needed while it is out.
+        if !indexes[i].bound_positions.is_empty() {
+            let key: Option<Vec<GroundTerm>> = indexes[i]
+                .bound_positions
+                .iter()
+                .map(|&p| match &atom.values[p] {
+                    GroundTerm::PatternVar(n) => bindings.get(n.as_str()).cloned(),
+                    constant => Some(constant.clone()),
+                })
+                .collect();
+            if let Some(key) = key {
+                if indexes[i].map.is_none() {
+                    let positions = indexes[i].bound_positions.clone();
+                    let mut map: HashMap<Vec<GroundTerm>, Vec<&'e Vec<GroundTerm>>> =
+                        HashMap::new();
+                    for tuple in tuples {
+                        // A tuple too short to carry a bound position can never
+                        // pass bind_tuple's arity check — soundly excluded.
+                        if let Some(k) = positions
+                            .iter()
+                            .map(|&p| tuple.get(p).cloned())
+                            .collect::<Option<Vec<_>>>()
+                        {
+                            map.entry(k).or_default().push(tuple);
+                        }
+                    }
+                    indexes[i].map = Some(map);
+                }
+                let map = indexes[i].map.take().expect("index map was just built");
+                if let Some(bucket) = map.get(&key) {
+                    for tuple in bucket {
+                        try_tuple(
+                            pr, ext, delta, delta_pos, i, tuple, bindings, trail, out, work,
+                            indexes,
+                        );
+                    }
+                }
+                indexes[i].map = Some(map);
+                return;
+            }
+            // A "bound" variable was unbound at entry — unreachable by the
+            // analysis, but fail OPEN to the full scan rather than dropping
+            // derivations.
+        }
         for tuple in tuples {
-            work.note_tuple_bind_attempt(pr);
-
-            #[cfg(debug_assertions)]
-            let before = bindings.clone();
-
-            let mark = trail.len();
-            if bind_tuple(&atom.values, tuple, bindings, trail) {
-                walk(pr, ext, delta, delta_pos, i + 1, bindings, trail, out, work);
-            }
-            // UNCONDITIONAL, and outside the `if` on purpose: `bind_tuple` binds as it
-            // scans and can reject at any place, so the `false` path has bindings to undo
-            // too. Never write this as an `else`.
-            for n in trail.drain(mark..) {
-                bindings.remove(n);
-            }
-
-            #[cfg(debug_assertions)]
-            debug_assert_eq!(
-                *bindings, before,
-                "the undo trail left frame {i} of rule '{}' altered",
-                pr.label
+            try_tuple(
+                pr, ext, delta, delta_pos, i, tuple, bindings, trail, out, work, indexes,
             );
         }
     }
+
+    /// One candidate tuple at level `i` — bind, recurse, unwind. INVARIANT:
+    /// exactly ONE unwind site, and no `return`, `?`, `break` or `continue`
+    /// may sit between the `bind_tuple` call and it. The frame's bindings must
+    /// be identical on exit — which the old owned-map version gave for free,
+    /// and which this has to maintain.
+    #[allow(clippy::too_many_arguments)]
+    fn try_tuple<'p, 'e>(
+        pr: &'p ProjectedRule,
+        ext: &'e Extensions,
+        delta: &'e Extensions,
+        delta_pos: Option<usize>,
+        i: usize,
+        tuple: &[GroundTerm],
+        bindings: &mut HashMap<String, GroundTerm>,
+        trail: &mut Vec<&'p str>,
+        out: &mut Vec<(String, Vec<GroundTerm>)>,
+        work: &mut MaterializationWork,
+        indexes: &mut [LevelIndex<'e>],
+    ) {
+        let atom = &pr.positive[i];
+        work.note_tuple_bind_attempt(pr);
+
+        #[cfg(debug_assertions)]
+        let before = bindings.clone();
+
+        let mark = trail.len();
+        if bind_tuple(&atom.values, tuple, bindings, trail) {
+            walk(
+                pr,
+                ext,
+                delta,
+                delta_pos,
+                i + 1,
+                bindings,
+                trail,
+                out,
+                work,
+                indexes,
+            );
+        }
+        // UNCONDITIONAL, and outside the `if` on purpose: `bind_tuple` binds as it
+        // scans and can reject at any place, so the `false` path has bindings to undo
+        // too. Never write this as an `else`.
+        for n in trail.drain(mark..) {
+            bindings.remove(n);
+        }
+
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            *bindings, before,
+            "the undo trail left frame {i} of rule '{}' altered",
+            pr.label
+        );
+    }
     let mut bindings: HashMap<String, GroundTerm> = HashMap::new();
     let mut trail: Vec<&str> = Vec::new();
+    let mut indexes: Vec<LevelIndex> = (0..pr.positive.len())
+        .map(|i| LevelIndex {
+            // Level 0 is visited once — building would cost what one scan costs.
+            bound_positions: if i == 0 {
+                Vec::new()
+            } else {
+                bound_positions_at(pr, i)
+            },
+            map: None,
+        })
+        .collect();
     walk(
         pr,
         ext,
@@ -1159,6 +1299,7 @@ fn eval_rule(
         &mut trail,
         out,
         work,
+        &mut indexes,
     );
     debug_assert!(
         bindings.is_empty() && trail.is_empty(),
