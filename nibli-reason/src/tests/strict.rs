@@ -373,6 +373,12 @@ fn constraint_ingress_refuses_operational_comparisons_but_keeps_relational() {
     ];
     for conjunct in refused {
         let relation = conjunct.relation().to_string();
+        // The BASE the message must name: a decomposed role reports its anchor.
+        let base = relation
+            .strip_suffix("_x1")
+            .or_else(|| relation.strip_suffix("_x2"))
+            .unwrap_or(&relation)
+            .to_string();
         let err = kb
             .register_constraint("inert".to_string(), vec![conjunct])
             .expect_err("an operational-comparison conjunct must be refused");
@@ -381,11 +387,37 @@ fn constraint_ingress_refuses_operational_comparisons_but_keeps_relational() {
             msg.contains("computed comparison") && msg.contains("inert by construction"),
             "refusal for `{relation}` must explain the vacuity, got: {msg}"
         );
+        // Naming matters as much as refusing: the guard loops over every comparison
+        // base, so a mis-keyed match refuses the right conjunct while reporting a
+        // relation the caller never wrote.
+        assert!(
+            msg.contains(&base),
+            "refusal for `{relation}` must name `{base}`, got: {msg}"
+        );
     }
     assert!(
         kb.inner.borrow().integrity_constraints.is_empty(),
         "no refused constraint may be registered"
     );
+
+    // The place-3 dual: the conjunct guard recognises the `_x1`/`_x2` role spellings
+    // only, because those are the places a query actually computes. A role atom for
+    // place 3 is an ordinary stored fact and must stay constrainable.
+    kb.register_constraint(
+        "place-three".to_string(),
+        vec![StoredFact::Bare(GroundFact::new(
+            "greater_x3",
+            vec![
+                GroundTerm::Constant("_ev0".to_string()),
+                GroundTerm::from_f64(15.0),
+            ],
+        ))],
+    )
+    .expect("a number in place 3 is inert, not an operational comparison");
+    {
+        let mut inner = kb.inner.borrow_mut();
+        inner.integrity_constraints.clear();
+    }
 
     // The relational dual must keep working: non-numeric operands are an
     // ordinary fact, and the constraint over them must register AND fire.

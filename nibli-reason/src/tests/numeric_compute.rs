@@ -986,6 +986,76 @@ fn a_flat_raw_ir_comparison_is_refused_too() {
         error.contains("computed comparison"),
         "the flat raw-IR spelling must be refused as well: {error}"
     );
+    // And it must NAME the relation that was written. The guard scans every comparison
+    // base in turn, so a mis-keyed match would refuse `greater` while reporting `less`
+    // — a correct verdict with a message that sends the reader to the wrong predicate.
+    assert!(
+        error.contains("`greater`"),
+        "the refusal must name the relation actually written: {error}"
+    );
+
+    // ONE numeric operand is enough. `try_numeric_comparison` reads both places, so a
+    // mixed pair is still computed by a query and still never consulted from the store;
+    // requiring BOTH operands to be numeric would let `greater(Alis, 15)` be asserted.
+    for (label, pair) in [
+        (
+            "number in place 1",
+            vec![
+                LogicalTerm::Number(3.0),
+                LogicalTerm::Constant("bob".to_string()),
+            ],
+        ),
+        (
+            "number in place 2",
+            vec![
+                LogicalTerm::Constant("alis".to_string()),
+                LogicalTerm::Number(15.0),
+            ],
+        ),
+    ] {
+        let mut nodes = Vec::new();
+        let mut args = pair;
+        args.push(LogicalTerm::Unspecified);
+        args.push(LogicalTerm::Unspecified);
+        let root = pred(&mut nodes, "greater", args);
+        let buf = LogicBuffer {
+            nodes,
+            roots: vec![root],
+        };
+        let kb = new_kb();
+        let error = kb.assert_fact_inner(buf, label.to_string()).unwrap_err();
+        assert!(
+            error.contains("computed comparison"),
+            "{label}: a single numeric operand must still be refused: {error}"
+        );
+    }
+}
+
+/// PLACE 3 IS INERT, and must stay assertable.
+///
+/// `try_numeric_comparison` reads places 1 and 2 only, so a number anywhere else is
+/// never computed and the two halves cannot disagree about it. The guard therefore
+/// recognises exactly the `_x1` / `_x2` role spellings — widen that to "any role of a
+/// comparison" and this ordinary fact becomes unassertable, with no compensating
+/// soundness gain.
+#[test]
+fn a_number_in_place_three_is_not_an_operational_comparison() {
+    let kb = new_kb();
+    let mut nodes = Vec::new();
+    let root = pred(
+        &mut nodes,
+        "greater_x3",
+        vec![
+            LogicalTerm::Constant("_ev0".to_string()),
+            LogicalTerm::Number(15.0),
+        ],
+    );
+    let buf = LogicBuffer {
+        nodes,
+        roots: vec![root],
+    };
+    kb.assert_fact_inner(buf, "place 3".to_string())
+        .expect("a number in place 3 is inert, not an operational comparison");
 }
 
 // ─── Verdict ≡ witness enumeration ──────────────────────────────────────────

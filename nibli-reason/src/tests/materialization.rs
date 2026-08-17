@@ -2164,3 +2164,112 @@ fn a_fold_costs_delta_work_not_a_full_re_evaluation() {
          (build was {after_build}; measured fold at pinning time was 261)"
     );
 }
+
+/// A CONSTANT in a rule body must keep filtering the join.
+///
+/// `bind_tuple` matches a template term against a tuple value: a `PatternVar` binds,
+/// anything else must be EQUAL. Drop that equality and a literal in a body atom stops
+/// selecting — `teaches($x, Cyd)` matches every `teaches` tuple — so the rule fires for
+/// subjects it does not cover. That is over-derivation, and it is definitive in both
+/// directions: the head reads TRUE for the wrong subject, and anything reading the head
+/// under `~` reads FALSE for them. Nothing else in this file puts a constant in a body
+/// atom, which is why the equality guard was unpinned.
+#[test]
+fn a_constant_in_a_rule_body_still_filters_the_join() {
+    let kb_lines = [
+        "person(Ara).",
+        "person(Bel).",
+        "teaches(Ara, Cyd).",
+        "teaches(Bel, Dee).",
+        "all $x: teaches($x, Cyd) -> reward($x).",
+        "all $y: person($y) & ~reward($y) -> fit($y).",
+    ];
+    let (on, off) = both_ways(
+        &kb_lines,
+        &["reward(Ara).", "reward(Bel).", "fit(Bel).", "fit(Ara)."],
+    );
+    assert_eq!(on[0], QueryResult::True, "Ara teaches Cyd");
+    assert_eq!(
+        on[1],
+        QueryResult::False,
+        "Bel teaches Dee, not Cyd — the constant must still select"
+    );
+    assert_eq!(on[2], QueryResult::True, "so Bel is not a reward-holder");
+    assert_eq!(on[3], QueryResult::False);
+    assert_eq!(on, off, "materialisation must not change any of these");
+}
+
+/// An identity restrictor must keep cutting the diagonal.
+///
+/// `~($a = $b)` is decided by `builtin_holds` and applied by the `holds != negated`
+/// guard in the join walk. Either half failing admits the self-pair: `judge(Ara, Ara)`
+/// would satisfy a rule that explicitly excludes it. This shape is real — `utopia.nibli`
+/// carries exactly it — and it is doubly exposed, since an over-derived head flips every
+/// `~head` reader to a definitive wrong FALSE.
+#[test]
+fn an_identity_restrictor_still_cuts_the_diagonal() {
+    let kb_lines = [
+        "person(Ara).",
+        "person(Bel).",
+        "judge(Ara, Ara).",
+        "judge(Bel, Cyd).",
+        "all $a: all $b: judge($a, $b) & ~($a = $b) -> reward($a).",
+        "all $y: person($y) & ~reward($y) -> fit($y).",
+    ];
+    let (on, off) = both_ways(
+        &kb_lines,
+        &["reward(Ara).", "reward(Bel).", "fit(Ara).", "fit(Bel)."],
+    );
+    assert_eq!(
+        on[0],
+        QueryResult::False,
+        "Ara only judges herself, which `~($a = $b)` excludes"
+    );
+    assert_eq!(on[1], QueryResult::True, "Bel judges someone else");
+    assert_eq!(on[2], QueryResult::True);
+    assert_eq!(on[3], QueryResult::False);
+    assert_eq!(on, off, "materialisation must not change any of these");
+}
+
+/// Four stratified-NAF levels, end to end. The strata tests above pin
+/// `compute_strata` on hand-built graphs; this pins that a real KB whose negation
+/// chain is four deep still agrees with backward chaining at every level.
+#[test]
+fn a_four_stratum_negative_chain_agrees_with_backward_chaining() {
+    let kb_lines = [
+        "person(Ara).",
+        "person(Bel).",
+        "judge(Ara, Bel).",
+        "capture(Ara, Bel).",
+        "all $a: all $x: judge($a, $x) & capture($a, $x) & ~deceive($a, $x) -> false($x).",
+        "all $t: person($t) & ~false($t) -> reward($t).",
+        "all $u: person($u) & ~reward($u) -> fit($u).",
+        "all $v: person($v) & ~fit($v) -> awake($v).",
+    ];
+    let queries = [
+        "false(Bel).",
+        "reward(Bel).",
+        "fit(Bel).",
+        "awake(Bel).",
+        "false(Ara).",
+        "reward(Ara).",
+        "fit(Ara).",
+        "awake(Ara).",
+    ];
+    let (on, off) = both_ways(&kb_lines, &queries);
+    assert_eq!(on, off, "materialisation must not change any verdict here");
+    // Bel is voided; Ara is not. The verdicts alternate up the chain.
+    let expected = [
+        QueryResult::True,
+        QueryResult::False,
+        QueryResult::True,
+        QueryResult::False,
+        QueryResult::False,
+        QueryResult::True,
+        QueryResult::False,
+        QueryResult::True,
+    ];
+    for ((q, got), want) in queries.iter().zip(&on).zip(&expected) {
+        assert_eq!(got, want, "{q}");
+    }
+}

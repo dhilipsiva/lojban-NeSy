@@ -105,26 +105,19 @@ that do not all invalidate, the 2026-08-01 lingering-member class. Either extend
 the at-the-mutation-point discipline to one logical-state epoch every mutation
 bumps, or leave the replay alone.)
 
-**The mutation baseline is stale enough that `just mutants` fails on `main`** *(effort: high)* — and the
-chain above will widen the gap, so sequence the re-cut before it or immediately after.
-`mutants-baseline.txt` was cut 2026-07-19 from a 985-mutant sweep (the file's own
-header; last touched 2026-08-05 by `2385012`, a 4-line survivor shrink, not a re-cut);
-the tree generated **1507** at the 2026-08-08 sweep and has grown since (5580618 added
-~153 in-scope lines to `reasoning.rs`; `lib.rs`'s +107 is NOT in `examine_globs` —
-re-derive with `cargo mutants --list | wc -l` at the re-cut), and **47** commits have
-touched soundness paths since the cut (as of 2026-08-16; the previous figure of 24 was
-already stale) — so well over 300 mutants of code have never been through the gate.
-That is not caused by any one change and cannot be triaged as part of one: a re-cut
-means adjudicating survivors across `reasoning.rs`, `rules.rs`, `kb.rs` and
-`nibli-semantics`, each either killed with a test or added to the baseline with a
-documented reason. `materialize.rs` joined `examine_globs` on 2026-08-07 (+210 mutants)
-and its slice was swept once — 152 caught / 24 missed / 5 timeout / 29 unviable — but
-those 24 survivors are deliberately NOT in the baseline for the same reason (verified:
-zero `materialize` lines in the baseline file, which by itself guarantees the failing
-sweep). Until the re-cut, `cargo mutants --in-diff` is the working gate, as CLAUDE.md
-already says. **Gotcha for whoever runs it:** `cargo mutants -f <path>` does NOT scope
+**Confirming `just mutants` run still owed** *(effort: low — one ~3 h run, no triage)*.
+The baseline was RE-CUT 2026-08-17 from a complete 1592-mutant sweep (1105 caught,
+50 timeouts, 142 unviable, 317 missed = 258 normalized survivors; 11 killed by new
+tests, 247 baselined with documented reasons — see the file's own header). The gate is
+green BY CONSTRUCTION, since the baseline is exactly the sweep's survivor set minus
+verified kills, but `just mutants` has not itself been run end-to-end against the final
+tree. Run it once and delete this entry; a NEW survivor would mean the render-corpus
+migration that landed alongside changed kill power, which is the only untested
+interaction. **Gotcha for whoever runs it:** `cargo mutants -f <path>` does NOT scope
 the sweep when `examine_globs` is set — the config wins and you get the full run. Check
-the "Found N mutants to test" line before walking away.
+the "Found N mutants to test" line before walking away. (To scope a run, edit
+`examine_globs` temporarily; that is how the 2026-08-17 gap sweep closed its last 103
+mutants without repeating the whole thing.)
 
 ---
 

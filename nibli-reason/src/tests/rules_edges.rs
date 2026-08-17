@@ -941,3 +941,35 @@ fn rule_identity_distinguishes_negated_exists_groups_under_one_digest() {
         "the distinct ~dog group must remain executable"
     );
 }
+
+/// ALPHA-EQUIVALENCE IS IDENTITY — so the normalizer must keep distinct variables
+/// distinct.
+///
+/// `RuleIdentityIndex` drops a rule whose canonical identity equals one already
+/// registered. That canonical form alpha-renames pattern variables to positional
+/// indices, so two rules that differ ONLY in which variable the head uses must
+/// normalize apart. Collapse the renaming — every variable to the same index — and
+/// the second rule below reads as a duplicate of the first and is silently dropped,
+/// which under-derives `reward` for the student. The digest itself is only a bucket
+/// key (full identity decides), but the RENAMING is load-bearing.
+#[test]
+fn rules_differing_only_in_head_variable_are_not_duplicates() {
+    let kb = new_kb();
+    assert_buf(&kb, compile_surface("teaches(Ara, Cyd)."));
+    assert_buf(
+        &kb,
+        compile_surface("all $x: all $y: teaches($x, $y) -> reward($x)."),
+    );
+    assert_buf(
+        &kb,
+        compile_surface("all $x: all $y: teaches($x, $y) -> reward($y)."),
+    );
+    assert!(
+        query(&kb, compile_surface("reward(Ara).")),
+        "the teacher is rewarded by the first rule"
+    );
+    assert!(
+        query(&kb, compile_surface("reward(Cyd).")),
+        "the student is rewarded by the SECOND rule — it is not a duplicate of the first"
+    );
+}

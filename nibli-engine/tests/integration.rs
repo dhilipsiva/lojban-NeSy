@@ -6658,6 +6658,51 @@ fn admits_closes_the_vocabulary_fail_closed() {
     );
 }
 
+/// The two meta-declarations do not count as "ordinary assertions".
+///
+/// The ordering rule is that the vocabulary must close before any ordinary fact
+/// lands; `derived_only` and `admits` rows are themselves declarations, so a file that
+/// opens with one and then closes its vocabulary is correctly ordered. Counting them
+/// would make the two declaration forms mutually exclusive in the same KB.
+#[test]
+fn a_prior_declaration_does_not_block_a_later_admits_block() {
+    let engine = engine_with_facts(&["derived_only(\"prisoner\")."]);
+    engine
+        .assert_text("admits(\"person\").")
+        .expect("a declaration above the admits block is not an ordinary assertion");
+    assert!(engine.kb().vocabulary_is_closed());
+}
+
+/// The late-declaration refusal must name a DETERMINISTIC relation, and the store
+/// iterates a `HashSet` — so "whichever came first" is a different predicate run to
+/// run. `first_non_declaration_relation` takes the minimum for exactly that reason.
+///
+/// The existing late-declaration tests assert with a SINGLE ordinary fact loaded,
+/// where minimum, maximum and first-found all coincide; this one loads several out of
+/// alphabetical order, so only the documented choice passes.
+#[test]
+fn a_late_admits_names_the_alphabetically_first_offender() {
+    let engine = engine_with_facts(&[
+        "teaches(Ara, Bel).",
+        "person(Ara).",
+        "judge(Ara, Bel).",
+        "reward(Ara).",
+    ]);
+    let err = engine
+        .assert_text("admits(\"person\").")
+        .expect_err("an admits block below the facts it would grandfather must be refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("comes too late"),
+        "the refusal must explain the ordering rule: {msg}"
+    );
+    assert!(
+        msg.contains("judge"),
+        "the offender named must be the alphabetically first stored relation \
+         (judge < person < reward < teaches), not whichever the HashSet yielded: {msg}"
+    );
+}
+
 /// The closure is EXTENSIONAL only — a rule may still conclude outside the set,
 /// exactly as `derived_only` permits derivation while refusing assertion.
 #[test]
