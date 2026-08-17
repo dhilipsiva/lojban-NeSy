@@ -94,10 +94,10 @@ mod tests {
 
     #[test]
     fn utopia_floor_obligation_is_not_event_word_salad() {
-        // obligated_by(every person, event { secure() }) must NOT read
+        // obliged(every person, event { secure() }) must NOT read
         // "Y is event and Y is obligated to X".
-        let ast = nibli_kr::parse_checked("obligated_by(every person, event { secure() }).")
-            .expect("parse");
+        let ast =
+            nibli_kr::parse_checked("obliged(every person, event { secure() }).").expect("parse");
         let buf = nibli_semantics::compile_from_ast(ast).expect("compile");
         let out = render_logic_buffer(&buf, Register::Spec);
         assert!(
@@ -157,6 +157,62 @@ mod tests {
         // event { data discovers() })`. Generalizing that collapse to be
         // template-driven would let this read "X is entitled to eat"; it is
         // deliberately NOT asserted here so the fix does not have to fight a test.
+    }
+
+    /// THE OBLIGATED PARTY IS x1, in every spelling and at every arity.
+    ///
+    /// `obliged`'s corpus places are `[bound, duty, standard]`, so the party bound by
+    /// the duty is place 1. Two defects used to sit on top of that, and fixing either
+    /// alone left the other:
+    ///
+    /// (a) the renderer took place 2 as the duty-holder — right only for the CONVERTED
+    ///     argument order — so a plain-spelled duty named the wrong party, and in the
+    ///     deontic form it named a variable bound to nothing ("then Y is obligated
+    ///     to notify");
+    /// (b) a `TEMPLATE_OVERRIDES` row written in that same converted order
+    ///     ("{x2} is obligated that {x1}") beat the correct corpus template. At arity 1
+    ///     its leading `{x2}` tripped `fill_template`'s trailing-elision cut and the
+    ///     whole line rendered as the EMPTY STRING — which is how `gdpr.nibli`'s
+    ///     Article 6(1)(c) restrictor came out as "For every X, if , then …", with the
+    ///     antecedent silently gone from a corpus the Transparency Triad asks
+    ///     reviewers to check.
+    #[test]
+    fn a_duty_names_the_bound_party_at_every_arity() {
+        let render = |t: &str| {
+            let ast = nibli_kr::parse_checked(t).expect("parse");
+            let buf = nibli_semantics::compile_from_ast(ast).expect("compile");
+            render_logic_buffer(&buf, Register::Spec)
+        };
+
+        // (a) x1 is the bound party.
+        assert_eq!(render("obliged(Adam, Bel)."), "Adam is obligated to Bel.");
+        // The converse alias exchanges the arguments — so it names the OTHER one, and
+        // that is the whole point of `_by`. Both readings come from one place contract.
+        assert_eq!(
+            render("obligated_by(Adam, Bel)."),
+            "Bel is obligated to Adam.",
+            "the converse alias must still invert, and visibly"
+        );
+
+        // (b) arity 1 must render, not vanish.
+        assert_eq!(render("obliged(Adam)."), "Adam is obligated.");
+        // The shipped GDPR Article 6(1)(c) shape: the antecedent must survive.
+        let art6c = render("permitted(every person where obliged).");
+        assert!(
+            art6c.contains("if X is obligated, then"),
+            "the restrictor must not be elided into 'if , then': {art6c}"
+        );
+        assert!(
+            !art6c.contains("if , then"),
+            "empty antecedent regressed: {art6c}"
+        );
+
+        // The deontic collapse names the party, not the event scaffold.
+        let duty = render("obliged(every data governs, event { message() }).");
+        assert_eq!(
+            duty,
+            "For every X, if X governs and X is data, then X is obligated to notify."
+        );
     }
 
     #[test]

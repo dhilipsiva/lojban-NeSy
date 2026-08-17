@@ -15,10 +15,10 @@ prevents(Flukonazol, Siptucin).
 metabolized_by(Varfarin, Siptucin).
 healthy data(Kanrek).
 animal(every dog).
-obligated_by(every data, x2: event { correct() }).
+obliged(every data, x2: event { correct() }).
 permitted(every person where approves).
-obligated_by(every data governs where flaw, x2: event { message() }).
-obligated_by(every person where ~approves, x2: event { removes() }).
+obliged(every data governs where flaw, x2: event { message() }).
+obliged(every person where ~approves, x2: event { removes() }).
 permitted(every person, x2: event { data discovers() }).
 beautiful(every person where ~cat).
 prevents(Flukonazol, Siptucin) & metabolized_by(Varfarin, Siptucin) -> increases(Varfarin).

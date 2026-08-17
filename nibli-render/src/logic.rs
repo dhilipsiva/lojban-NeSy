@@ -21,7 +21,11 @@ fn is_abstraction_scaffold(rel: &str) -> bool {
     matches!(rel, "event" | "fact" | "property" | "amount" | "concept")
 }
 
-/// Deontic head predicates whose x1 is the duty/content and x2 the obligated party.
+/// Deontic duty heads. The compiled base is always `obliged`, whose corpus places are
+/// `[bound, duty, standard]` — so the OBLIGATED PARTY IS x1. `obligated_by` is the
+/// converted alias: it never survives compilation (nibli-kr lowers it to `obliged` with
+/// the places swapped), so a `FrameAcc` carrying that base can only be the synthetic
+/// frame [`collapse_deontic_event_duties`] builds below.
 fn is_deontic_duty_rel(rel: &str) -> bool {
     matches!(rel, "obligated_by" | "obliged")
 }
@@ -343,7 +347,7 @@ fn build_frames(preds: &[(String, Vec<LogicalTerm>)], ctx: &mut Ctx) -> Vec<Stri
         .collect()
 }
 
-/// Collapse `obligated_by(person, event { P() })` packaging:
+/// Collapse `obliged(person, event { P() })` packaging:
 ///   event(Y) ∧ P(…) ∧ obliged(Y, X)  →  "X is obligated to be P"
 /// without the word-salad "Y is event and Y is obligated to X".
 fn collapse_deontic_event_duties(accs: Vec<FrameAcc>) -> Vec<FrameAcc> {
@@ -370,19 +374,27 @@ fn collapse_deontic_event_duties(accs: Vec<FrameAcc>) -> Vec<FrameAcc> {
         }
     };
 
-    // One rewritten deontic frame per original deontic (usually one), carrying the
-    // obligated party in place 2; place 1 becomes the English content phrase via
-    // a synthetic constant so fill_template still works.
+    // One rewritten deontic frame per original deontic (usually one). The SYNTHETIC
+    // frame has its own place convention — place 1 is the English content phrase (a
+    // constant so fill_template still works), place 2 the obligated party — which is
+    // the inverse of the compiled `obliged` it replaces. `obligated_by` is the marker
+    // for that convention; nothing else produces it.
     let mut out = Vec::new();
     for acc in &accs {
         if !is_deontic_duty_rel(&acc.base) {
             continue;
         }
+        // x1 is the BOUND PARTY (`obliged` places are `[bound, duty, standard]`), and
+        // both spellings compile to `obliged` — so the duty-holder is place 1 for the
+        // plain spelling and, after nibli-kr's swap, place 1 for the converted one too.
+        // Reading place 2 here took the DUTY as the obligated party, which is why
+        // `obliged(every data governs, event { message() })` back-translated as "then Y
+        // is obligated to notify" — a variable bound to nothing.
         let who = acc
             .places
-            .get(&2)
+            .get(&1)
             .cloned()
-            .or_else(|| acc.flat_args.get(1).cloned());
+            .or_else(|| acc.flat_args.first().cloned());
         let mut places = HashMap::new();
         places.insert(1, LogicalTerm::Constant(content_joined.clone()));
         if let Some(w) = who {
@@ -400,10 +412,14 @@ fn collapse_deontic_event_duties(accs: Vec<FrameAcc>) -> Vec<FrameAcc> {
 }
 
 fn render_frame(acc: &FrameAcc, ctx: &mut Ctx) -> String {
-    // Deontic collapse stores the content phrase as place-1 constant and the
-    // obligated party as place-2 — render with a dedicated template so we get
-    // "X is obligated to be secure" not "X is obligated that be secure".
-    if is_deontic_duty_rel(&acc.base)
+    // The SYNTHETIC collapse frame (and only it) stores the content phrase as a
+    // place-1 constant and the obligated party as place-2 — render with a dedicated
+    // template so we get "X is obligated to be secure", not "X is obligated that be
+    // secure". Keyed on the `obligated_by` marker rather than on "is this deontic":
+    // a genuine compiled `obliged(Adam, Bel)` also has a place-1 constant and a
+    // place-2, and this branch would have read it in the synthetic order and rendered
+    // "Bel is obligated to Adam". It falls through to the corpus template instead.
+    if acc.base == "obligated_by"
         && let (Some(LogicalTerm::Constant(content)), Some(who_term)) =
             (acc.places.get(&1), acc.places.get(&2))
         && let Some(who) = render_term(who_term, ctx)

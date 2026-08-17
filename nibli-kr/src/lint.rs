@@ -88,7 +88,7 @@ impl Linter {
                     input,
                     st.span.start,
                     "L7",
-                    "this KB mixes must/may prefixes with the obligated_by()/permitted() \
+                    "this KB mixes must/may prefixes with the obliged()/permitted() \
                      predicate idiom — both are engine-faithful, but they don't chain \
                      with each other"
                         .to_string(),
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn l7_quiet_on_either_idiom_alone() {
         assert!(!codes("must eats(Adam).\nmay eats(Betis).").contains(&"L7"));
-        assert!(!codes("permitted(Adam).\nobligated_by(Adam).").contains(&"L7"));
+        assert!(!codes("permitted(Adam).\nobliged(Adam).").contains(&"L7"));
     }
 
     // ── L8 — O9 attachment echo ──

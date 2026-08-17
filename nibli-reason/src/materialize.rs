@@ -319,7 +319,7 @@ fn project_atoms_inner(
 ) -> Result<(Vec<Atom>, Vec<StoredFact>, Vec<String>), ProjectErr> {
     // Every atom must be Bare: v1 does not encode Past/Present/Future or deontic
     // wrappers, and dropping one would change the rule. (This is also what keeps the GDPR-style
-    // `obligated_by(every X, event { … })` / `permitted(…)` rules out — they compile to
+    // `obliged(every X, event { … })` / `permitted(…)` rules out — they compile to
     // Obligatory/Permitted stored facts, so only the plain `entitled` shape reaches the
     // abstraction handling below.)
     if atoms.iter().any(|a| !matches!(a, StoredFact::Bare(_))) {

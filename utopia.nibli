@@ -50,12 +50,12 @@
 # Prisoners remain persons. The Old World loved to un-person the inconvenient.
 # We refuse.
 
-obligated_by(every person, event { secure() }).
-obligated_by(every person, event { eats() }).
-obligated_by(every person, event { dwell() }).
-obligated_by(every person, event { healthy() }).
-obligated_by(every person, event { learn() }).
-obligated_by(every person, event { expresses() }).
+obliged(every person, event { secure() }).
+obliged(every person, event { eats() }).
+obliged(every person, event { dwell() }).
+obliged(every person, event { healthy() }).
+obliged(every person, event { learn() }).
+obliged(every person, event { expresses() }).
 all $anyone: prisoner($anyone) -> person($anyone).
 
 # ─── Article 2: Due-process suspension ────────────────────────────

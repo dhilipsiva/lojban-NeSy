@@ -98,7 +98,7 @@ entails(conclusion: every logical certain).
 
 # Law and obligation
 rule(every law).
-obligated_by(every rule).
+obliged(every rule).
 every obligated_by $x: permitted($x) & ~prevents(prevented: $x).
 
 # Data governance

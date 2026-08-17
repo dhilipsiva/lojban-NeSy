@@ -27,7 +27,7 @@ corpus header:
 |-----------|----------|
 | `permitted(x)` | processing of `x` has a lawful basis (Art 6) |
 | `~permitted(x)` | no lawful basis remains → right to erasure (Art 17) |
-| `obligated_by(x, event { P() })` | `x` is under a legal obligation that `P` |
+| `obliged(x, event { P() })` | `x` is under a legal obligation that `P` |
 | `permitted(x, event { P() })` | `x` has the right that `P` |
 
 ## Load it in the REPL
@@ -53,14 +53,14 @@ the regression suite against the full loaded corpus:
 | `? ~permitted(Adam).` | **FALSE** | A lawful basis stands, so no erasure right |
 | `? permitted(Gugli).` | **FALSE** | A controller is not a consenting subject — an exhaustive, deduced FALSE |
 | `? data(Kanrek).` | **TRUE** | Health record → personal data, derived via `data(every healthy data).` |
-| `? obligated_by(Kanrek, event { correct() }).` | **TRUE** | Art 5 accuracy reaches health data through the category chain |
-| `? obligated_by(Kanrek, event { exact() }).` | **TRUE** | Special-category data needs a stricter basis (Art 9) |
-| `? obligated_by(Ordrek, event { exact() }).` | **FALSE** | Ordinary data does not |
+| `? obliged(Kanrek, event { correct() }).` | **TRUE** | Art 5 accuracy reaches health data through the category chain |
+| `? obliged(Kanrek, event { exact() }).` | **TRUE** | Special-category data needs a stricter basis (Art 9) |
+| `? obliged(Ordrek, event { exact() }).` | **FALSE** | Ordinary data does not |
 | `? permitted(Adam, event { data discovers() }).` | **TRUE** | Right of access / DSAR (Art 15) |
 | `? permitted(Akmes, event { data discovers() }).` | **FALSE** | A controller does not acquire the subject's access right |
-| `? obligated_by(Akmes, event { message() }).` | **TRUE** | Breached controller must notify (Art 33) |
-| `? obligated_by(Gugli, event { message() }).` | **FALSE** | No breach, no notification duty |
-| `? obligated_by(Adam, event { removes() }).` | **FALSE** | Consent present → no erasure obligation (Art 17 rule) |
+| `? obliged(Akmes, event { message() }).` | **TRUE** | Breached controller must notify (Art 33) |
+| `? obliged(Gugli, event { message() }).` | **FALSE** | No breach, no notification duty |
+| `? obliged(Adam, event { removes() }).` | **FALSE** | Consent present → no erasure obligation (Art 17 rule) |
 
 Every FALSE here is a **deduced** false under the closed-world assumption — the
 engine exhausted the search — not a shrug. `?` also prints a plain-English
@@ -92,7 +92,7 @@ surviving facts. See [Belief revision](belief-revision.md) for the mechanics.
 The corpus also stores Article 17 as a rule with a negated restrictor:
 
 ```nibli-kr
-obligated_by(every person where ~approves, event { removes() }).
+obliged(every person where ~approves, event { removes() }).
 ```
 
 `where ~approves` compiles to a negation-as-failure check *per subject*: a

@@ -46,7 +46,10 @@ obliged(Review, Ruk).
 obligated(Review, Ruk).
 
 # ── THE DEONTIC FORM ROUTES THE SAME WAY ─────────────────────────────────────
-# `obligated_by(every X, event { P() })` is the shape the GDPR corpus uses. The swap
+# (The shipped corpora write these duties with the PLAIN `obliged` spelling, so that the
+# bound party lands on x1 where the corpus places put it — see the 2026-08-17 migration.
+# The alias must keep working, and keep inverting, which is what this section pins.)
+# `obligated_by(every X, event { P() })` is the DEONTIC form of the alias. The swap
 # applies here too — pinned because the deontic path is a different code path and could
 # regress independently of the plain relational one.
 person(Ruk).

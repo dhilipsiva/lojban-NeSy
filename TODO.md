@@ -128,44 +128,18 @@ the "Found N mutants to test" line before walking away.
 
 ---
 
-## Chain — case-study corpora and their rendering (1 → 2; 3 independent)
+## Chain — case-study corpora (1 and 2 independent)
 
-Order: fix the rendering (1) before recapturing GDPR (2) — `gdpr.nibli`:52 currently
-renders with its antecedent silently gone, and the redesigned corpus will be reviewed
-through the same renderer. The drug-interactions redesign (3) does not depend on 1 and
-can run in parallel with 2.
+The `obliged`-rendering entry that used to head this chain LANDED 2026-08-17, together
+with the corpus migration it turned out to require, so the GDPR redesign below no longer
+waits on anything. What was fixed, and what a future change must not undo: the obligated
+party is **x1** in every spelling (`obliged`'s corpus places are `[bound, duty, standard]`),
+the renderer reads that place rather than compensating for a corpus, and the shipped
+corpora now write duties with the PLAIN `obliged` spelling so the party lands where the
+places put it. The converted `obligated_by` alias still exists, still inverts, and is
+still pinned (`pins/converse-alias.nibli`) — it is simply no longer what the corpora use.
 
-1. **`obliged`-spelled duties render the wrong obligated party (TWO defects, one
-  entry).** *(effort: medium)* `obliged(every data governs, event { message() }).` back-translates as
-  "For every X, if X governs and X is data, then **Y** is obligated to notify", while
-  the converted `obligated_by` spelling correctly binds X. (a) WHO-SELECTION — both
-  `collapse_deontic_event_duties` (`nibli-render/src/logic.rs`:381-385) and
-  `render_frame`'s early deontic branch (:406-419, taken whenever place 1 is a
-  Constant and place 2 exists, bypassing `frame_template`/`fill_template` entirely)
-  hardcode place 2 as the duty-holder. That is right only for the CONVERTED argument
-  order: both spellings compile to the SAME base relation with the places SWAPPED
-  (`obliged(Adam, Bel)` emits `obliged_x1(_ev0, adam)`/`obliged_x2(_ev0, bel)`;
-  `obligated_by(Adam, Bel)` emits x1=bel, x2=adam), and the corpus places are
-  `[bound, duty, standard]` — the bound party is x1
-  (`nibli-lexicon/src/corpus/predicates.rs`:1627). (b) INVERTED TEMPLATE — the
-  override row `("obliged", "{x2} is obligated that {x1}")`
-  (`nibli-render/src/frame.rs`:19) is likewise converted-ordered. (The converse-alias
-  corpus work DID de-invert the lexicon templates — predicates.rs:1625/:1627 — but
-  `TEMPLATE_OVERRIDES` wins over corpus templates, so that fix does not touch either
-  defect here.) The override is NOT reached for (a) — the early branch wins — but it
-  IS reached at arity 1, where `fill_template`'s trailing-elision cut
-  (frame.rs:243-251) drops the whole string: `obliged(Adam).` renders as the EMPTY
-  string, and `permitted(every person where obliged).` (`gdpr.nibli`:52) renders
-  "For every X, if , then …" — GDPR Article 6(1)(c) with its antecedent silently gone,
-  in a shipped corpus the Transparency Triad asks reviewers to check. Fixing either
-  half alone leaves the other. The `obligated_by` row at frame.rs:18 is dead for
-  rendering in the common path (a who-less collapse acc with place 2 absent can still
-  fall through to it, so "dead" is approximate) and cannot be deleted without updating
-  its assertion at frame.rs:310-313. Ripple: re-check nibli-wasm's
-  `c18_draft_error_glosses_are_verbatim` pin (`nibli-wasm/src/lib.rs`:454) and the
-  book's Ch 18 alias note.
-
-2. **Replace person-level GDPR proxies with operation-scoped legal facts.** *(effort: max)*
+1. **Replace person-level GDPR proxies with operation-scoped legal facts.** *(effort: max)*
   `gdpr.nibli`:46-78 derives a generic `permitted(person)` from
   `approves/promise/obliged` (the three rules at :48/:50/:52) and uses absence of
   `approves` under NAF as the erasure trigger (rationale at :64-78; the erasure rule
@@ -180,7 +154,7 @@ can run in parallel with 2.
   non-compliance-neutral result rather than a legal conclusion; engine/UI fixtures and
   Chapter 19 consume the same live artifact.
 
-3. **Redesign `drug-interactions.nibli` around a patient-local exposure event.** *(effort: max)* The
+2. **Redesign `drug-interactions.nibli` around a patient-local exposure event.** *(effort: max)* The
   concentration rules at :71-72 derive drug-level risk from global
   inhibition/metabolism, and the alert rule at :94 checks only that Adam uses the
   risky substrate. Retracting `uses(Adam, Flukonazol)` therefore does not withdraw the

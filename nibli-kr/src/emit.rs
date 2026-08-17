@@ -1469,7 +1469,7 @@ mod tests {
             let e = bad("klama(me, x2: some market).");
             assert!(e.message.contains("unknown predicate"), "{e}");
             // Converted aliases resolve.
-            ok("obligated_by(every data, x2: this).");
+            ok("obliged(every data, x2: this).");
         }
 
         #[test]

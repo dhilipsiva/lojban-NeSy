@@ -345,11 +345,11 @@ fn ch12_consent_case_study_traced_query_completes() {
             .unwrap();
         engine
             .assert_text(
-                "obligated_by(every person where permits(it, event { uses(tool: some data) }), event { uses(tool: some data) }).",
+                "obliged(every person where permits(it, event { uses(tool: some data) }), event { uses(tool: some data) }).",
             )
             .unwrap();
         let (verdict, _trace, _json) = engine
-            .query_text_with_proof("obligated_by(some person, event { uses(tool: some data) }).")
+            .query_text_with_proof("obliged(some person, event { uses(tool: some data) }).")
             .unwrap();
         tx.send(verdict).ok();
     });

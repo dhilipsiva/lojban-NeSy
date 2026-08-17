@@ -249,7 +249,7 @@ mod tests {
             "past goes(me, some market).",
             "computer+user(Ara, this, some purpose).",
             "all $x, $y: dog($x) & likes($x, $y).",
-            "obligated_by(every person where owns(it, some data), event { permits() }).",
+            "obliged(every person where owns(it, some data), event { permits() }).",
         ];
         for s in samples {
             assert_eq!(joined(s), s, "lossless cover failed for {s:?}");

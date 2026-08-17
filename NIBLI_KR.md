@@ -38,7 +38,7 @@ differential gates, and the Lean soundness proofs all apply as-is.
 goes(me, destination: the market).
 
 # Lojban: ro lo prenu poi na zanru cu se bilga lo nu se vimcu   (GDPR erasure)
-obligated_by(every person where ~approves, event { removes() }).
+obliged(every person where ~approves, event { removes() }).
 
 # Lojban: ro da zo'u ganai ge da ckape gi la .adam. cu pilno da gi da kajde
 all $x: dangerous($x) & uses(Adam, $x) -> warns($x).
@@ -514,7 +514,7 @@ never invoke the linter.
   positive `past P` restrictor; differentially oracled by `verify-soundness`). Emit an
   informational NOTE of the reading. (`~past P` is rejected outright — §6.)
 - **L7 — norm-encoding style:** warn when a KB mixes `must`/`may` wrappers with the
-  `obligated_by()`/`permitted()` predicate idiom for what looks like the same norm — both
+  `obliged()`/`permitted()` predicate idiom for what looks like the same norm — both
   are engine-faithful, but they don't chain with each other.
 - **L8 — O9 attachment echo (2026-07-12 review):** when a clause-body-final equality's
   RHS term carries its own `where`/`also` clause, echo the resolved innermost-wins
@@ -654,7 +654,7 @@ prelude) **declares its vocabulary**:
 ```text
 pred goes(goer, destination, origin, route, means).
 pred inhibits(inhibitor, inhibited): "blocks the metabolism of".
-pred obligated_by(who, duty).
+pred obliged(who, duty).
 ```
 
 - The **declared name is the canonical predicate identity** — no gismu keying, no
@@ -767,10 +767,10 @@ Verification:
 ```text
 pred person(who).
 pred consents(who).
-pred obligated_by(who, duty).
+pred obliged(who, duty).
 pred removed(what).
 
-obligated_by(every person where ~approves, event { removes() }).
+obliged(every person where ~approves, event { removes() }).
 ```
 
 Identical logic to the v0.1/Lojban form — but the argument order is the declared one
@@ -862,11 +862,11 @@ metabolized_by(Varfarin, Siptucin).              # la .varfarin. cu se katna la 
                                                  #   (alias katna⟨x1↔x2⟩; = cuts(x2: Varfarin, x1: Siptucin))
 healthy data(Kanrek).                            # la .kanrek. cu kanro datni  (tanru, head = data)
 animal(every dog).                               # ro lo gerku cu danlu
-obligated_by(every data, x2: event { correct() }).  # ro lo datni cu se bilga lo nu drani
+obliged(every data, x2: event { correct() }).  # ro lo datni cu se bilga lo nu drani
 permitted(every person where approves).          # ro lo prenu poi zanru cu se curmi
-obligated_by(every data governs where flaw, x2: event { message() }).
+obliged(every data governs where flaw, x2: event { message() }).
                                                  # ro lo datni turni poi cfila cu se bilga lo nu notci
-obligated_by(every person where ~approves, x2: event { removes() }).
+obliged(every person where ~approves, x2: event { removes() }).
                                                  # ro lo prenu poi na zanru cu se bilga lo nu se vimcu  (GDPR erasure)
 permitted(every person, x2: event { data discovers() }).
                                                  # ro lo prenu cu se curmi lo nu datni facki
