@@ -1,27 +1,32 @@
 # Mutation-testing survivor baseline — soundness paths (`just mutants`)
 #
-# RE-CUT 2026-08-17 (triage COMPLETE — no pending category) from a full sweep of
-# all 1592 mutants on current paths/identifiers: 1105 caught + 50 timeouts (a
-# mutant that hangs or trips the recipe's 12 GiB `ulimit -v` guard IS a catch —
-# the tests noticed), 142 unviable, 317 missed = 258 survivors after line:col
-# normalization, of which 11 were KILLED by tests added at this re-cut, leaving
-# 247 baselined. Scope + per-mutant test set in `.cargo/mutants.toml`.
+# RE-CUT 2026-08-17 from ONE COMPLETE `just mutants` run on this tree:
+# 1592 mutants in 4 h — 1104 caught + 49 timeouts (a mutant that hangs or trips
+# the recipe's 12 GiB `ulimit -v` guard IS a catch — the tests noticed), 142
+# unviable, 297 missed = 241 survivors after line:col normalization. Scope +
+# per-mutant test set in `.cargo/mutants.toml`.
+#
+# CUT FROM ONE RUN, DELIBERATELY. The first attempt at this re-cut stitched a
+# baseline together from an interrupted sweep plus a scoped follow-up that
+# closed its gap, on the theory that the union was equivalent to one sweep. It
+# was not: the confirming run found 13 survivors the union had recorded as
+# CAUGHT, and re-testing them by hand showed they survive at BOTH the pre- and
+# post-migration commits — so the union, not the tree, was wrong. A baseline is
+# a claim about a whole sweep and has to come from one.
 #
 # The previous cut (2026-07-19) was made from a 985-mutant tree. `materialize.rs`
 # joined `examine_globs` on 2026-08-07 and had NEVER been baselined, so its
 # survivors alone guaranteed a failing gate; ~47 commits had touched the
 # soundness paths since. `cargo mutants --in-diff` was the working gate meanwhile.
 #
-# METHOD (worth repeating, because it changed several verdicts). The sweep was
-# interrupted and re-run, giving two INDEPENDENT adjudications of overlapping
-# mutant sets; they were cross-checked and agreed on every shared mutant, twice,
-# with zero disagreement. Every survivor kept below was then reproduced BY HAND
-# and, where its safety argument was "unreachable", probed directly: the
-# surviving face was instrumented with a panic and the whole suite re-run. Five
-# faces in `materialize.rs` are filed under D on that evidence rather than on an
-# assertion, and one (`project_atoms_inner`'s `b == base`) turned out to be
-# REACHED and still verdict-neutral, because the contiguity check immediately
-# after refuses the same shape.
+# METHOD for the entries below. Every survivor kept was reproduced BY HAND, and
+# where its safety argument was "unreachable" the surviving face was
+# instrumented with a panic and the whole suite re-run rather than argued. That
+# evidence is what files five `materialize.rs` faces under D — and it corrected
+# one filed wrong: `project_atoms_inner`'s `b == base` IS reached, and is
+# verdict-neutral only because the contiguity check after it refuses the same
+# shape. Column matters when reproducing: several of these functions carry two
+# mutable faces on one line, and mutating the wrong one proves nothing.
 #
 # Format: mutants.out/missed.txt lines with line:col stripped (unrelated edits
 # do not shift entries). `just mutants` FAILS on any survivor not listed here
@@ -51,7 +56,6 @@
 # test at all, and whose engine test loaded a single fact, where minimum,
 # maximum and first-found all coincide.
 
-
 # ── Category A: EXPLANATION LAYER — trace/display/diagnostics text only, never a verdict: proof-step wording and indeterminate-reason strings (incl. the equals_substitution_note variants), [Note:]/[Trace]/[Forward]/[Skolem] prints and their gates, rule branch labels, no-op trace sinks, int-vs-float display thresholds, test-only work counters, and WHICH relation a refusal names when the refusal itself is unchanged (`first_non_declaration_relation`'s minimum pick — the DECISION is pinned, the name in the message is not) or which `Ineligible` reason a refused projection reports
 nibli-reason/src/kb.rs: delete ! in KnowledgeBaseInner::diag_enabled
 nibli-reason/src/kb.rs: delete ! in process_assertion
@@ -71,11 +75,9 @@ nibli-reason/src/kb.rs: replace KnowledgeBaseInner::diag_enabled -> bool with tr
 nibli-reason/src/kb.rs: replace note_entailment_candidate_cartesian_step with ()
 nibli-reason/src/materialize.rs: delete match arm ProjectErr::SkolemInValue in project_rule
 nibli-reason/src/reasoning.rs: delete ! in trace_predicate_provenance_typed
-nibli-reason/src/reasoning.rs: delete ! in try_backward_chain_core
 nibli-reason/src/reasoning.rs: delete match arm QueryResult::ResourceExceeded(k) in check_formula_holds_core
 nibli-reason/src/reasoning.rs: delete match arm QueryResult::Unknown(r) in check_formula_holds_core
 nibli-reason/src/reasoning.rs: replace && with || in trace_predicate_provenance_typed
-nibli-reason/src/reasoning.rs: replace && with || in try_backward_chain_core
 nibli-reason/src/reasoning.rs: replace + with * in emit_derived
 nibli-reason/src/reasoning.rs: replace + with * in trace_predicate_provenance_typed
 nibli-reason/src/reasoning.rs: replace < with <= in trace_predicate_provenance_typed
@@ -92,8 +94,6 @@ nibli-reason/src/reasoning.rs: replace rule_label -> Option<String> with Some(St
 nibli-reason/src/rules.rs: delete ! in register_clause_rule
 nibli-reason/src/rules.rs: delete ! in trigger_forward_rules
 nibli-reason/src/rules.rs: replace != with == in trigger_forward_rules
-nibli-reason/src/rules.rs: replace -= with += in trigger_forward_rules
-nibli-reason/src/rules.rs: replace -= with /= in trigger_forward_rules
 nibli-reason/src/rules.rs: replace > with < in register_clause_rule
 nibli-semantics/src/semantic/helpers.rs: replace == with != in SemanticCompiler::resolve_argument
 
@@ -106,12 +106,12 @@ nibli-reason/src/rules.rs: delete ! in assert_typed_fact_with_origin
 nibli-reason/src/rules.rs: replace && with || in assert_typed_fact_with_origin
 nibli-reason/src/rules.rs: replace >= with < in assert_typed_fact_with_origin
 
-# ── Category C: STRATEGY/REDUNDANCY-EQUIVALENT — every branch computes the same verdict: index and candidate-selection heuristics (anchor tie-breaks, smallest-set picks, the event join-order priority and its selectivity estimate, the LevelIndex join pre-filter whose every hit `try_tuple` re-verifies, non-indexable/decidability fast paths with authoritative downstream evaluation, find_var_position extraction fallback, rule-bucket sort, Cow fast-paths), union-find rank/orientation choices, predicate-cache lifecycle, DNF/du resource-cap boundaries (cost or Unknown only, never a flip), NAF depth-accounting off-by-ones, cycle-key under-collapse, du equivalence-shortcut layers redundant with assert/query-time canonicalization, skolem-fn dep-chain duplication that stays injective through the single builder, rule-identity DIGESTS (a bucket key only — `RuleIdentityIndex` compares the full canonical identity, so a degenerate digest costs a longer scan and nothing else), forward-chaining eagerness (a conclusion it misses is still derived by backward chaining at query time), and — in `materialize.rs` — the saturation SHORTCUTS: `probe_*` results are gated by `is_complete_for`, so a bogus or absent relation simply falls through to the ordinary search; `query_cone_has_negative_dependency` decides only whether to saturate EAGERLY, and declining it falls back to the lazy path; `is_edb`'s eligibility answer is re-decided authoritatively by `saturate`'s pass 1 and pass 3; the tuple budget and round counter are stop-loss/bookkeeping that cost time, not verdicts
-nibli-reason/src/kb.rs: delete ! in find_var_position
+# ── Category C: STRATEGY/REDUNDANCY-EQUIVALENT — every branch computes the same verdict: index and candidate-selection heuristics (anchor tie-breaks, smallest-set picks, candidate-priority ordering, the event join-order priority and its selectivity estimate, the LevelIndex join pre-filter whose every hit `try_tuple` re-verifies, non-indexable/decidability fast paths with authoritative downstream evaluation, find_var_position extraction fallback, rule-bucket sort, Cow fast-paths), union-find rank/orientation choices, predicate-cache lifecycle, DNF/du resource-cap boundaries (cost or Unknown only, never a flip), NAF depth-accounting and leaf-completeness bookkeeping off-by-ones, cycle-key under-collapse, du equivalence-shortcut layers redundant with assert/query-time canonicalization, skolem-fn dep-chain duplication that stays injective through the single builder, rule-identity DIGESTS (a bucket key only — `RuleIdentityIndex` compares the full canonical identity, so a degenerate digest costs a longer scan and nothing else), forward-chaining eagerness (a conclusion it misses is still derived by backward chaining at query time), and — in `materialize.rs` — the saturation SHORTCUTS: `probe_*` results are gated by `is_complete_for`, so a bogus or absent relation simply falls through to the ordinary search; `query_cone_has_negative_dependency` decides only whether to saturate EAGERLY, and declining it falls back to the lazy path; `is_edb`'s eligibility answer is re-decided authoritatively by `saturate`'s pass 1 and pass 3; the tuple budget and round counter are stop-loss/bookkeeping that cost time, not verdicts
 nibli-reason/src/kb.rs: delete match arm (Cow::Borrowed(_), Cow::Borrowed(_)) in substitute_term
 nibli-reason/src/kb.rs: delete match arm GroundTerm::DepPair(left, right) in term_contains_priority_term
 nibli-reason/src/kb.rs: delete match arm GroundTerm::PatternVar(_) in estimated_anchor_candidate_cost
 nibli-reason/src/kb.rs: delete match arm GroundTerm::SkolemFn(_, dependency) in term_contains_priority_term
+nibli-reason/src/kb.rs: replace && with || in anchor_other_arguments_match
 nibli-reason/src/kb.rs: replace && with || in record_direct_equality_fact
 nibli-reason/src/kb.rs: replace && with || in select_narrowest_anchor_candidates
 nibli-reason/src/kb.rs: replace < with <= in select_narrowest_anchor_candidates
@@ -126,8 +126,8 @@ nibli-reason/src/kb.rs: replace == with != in select_narrowest_anchor_candidates
 nibli-reason/src/kb.rs: replace == with != in term_contains_priority_term
 nibli-reason/src/kb.rs: replace >= with < in union_terms
 nibli-reason/src/kb.rs: replace anchor_other_arguments_match -> bool with true
+nibli-reason/src/kb.rs: replace collect_candidate_priority_terms with ()
 nibli-reason/src/kb.rs: replace default_rule_digest -> u64 with 0
-nibli-reason/src/kb.rs: replace default_rule_digest -> u64 with 1
 nibli-reason/src/kb.rs: replace enable_pred_cache with ()
 nibli-reason/src/kb.rs: replace invalidate_pred_cache with ()
 nibli-reason/src/kb.rs: replace match guard !is_abstraction_marker(buffer, *l) with true in all_conjuncts_reduce_to_negation
@@ -152,6 +152,7 @@ nibli-reason/src/materialize.rs: replace eligible_relations::is_edb -> bool with
 nibli-reason/src/materialize.rs: replace probe_negated_group -> Option<(String, Vec<GroundTerm>)> with None
 nibli-reason/src/materialize.rs: replace probe_negated_group -> Option<(String, Vec<GroundTerm>)> with Some(("xyzzy".into(), vec![]))
 nibli-reason/src/materialize.rs: replace probe_negated_group -> Option<(String, Vec<GroundTerm>)> with Some((String::new(), vec![]))
+nibli-reason/src/reasoning.rs: delete ! in bind_join_vars_from_index
 nibli-reason/src/reasoning.rs: delete ! in check_predicate_in_kb_typed
 nibli-reason/src/reasoning.rs: delete ! in cycle_key
 nibli-reason/src/reasoning.rs: delete ! in event_join_priority
@@ -166,16 +167,14 @@ nibli-reason/src/reasoning.rs: delete match arm GroundTerm::SkolemFn(_, dep) in 
 nibli-reason/src/reasoning.rs: delete match arm GroundTerm::SkolemFn(_, dependency) in event_join_priority::is_selective_ground
 nibli-reason/src/reasoning.rs: replace != with == in bind_join_vars_from_index
 nibli-reason/src/reasoning.rs: replace != with == in event_join_priority
-nibli-reason/src/reasoning.rs: replace != with == in try_backward_chain_core
+nibli-reason/src/reasoning.rs: replace != with == in leaf_search_incomplete
 nibli-reason/src/reasoning.rs: replace != with == in typed_fact_is_stored_with_equivalence
 nibli-reason/src/reasoning.rs: replace && with || in bind_join_vars_from_index
-nibli-reason/src/reasoning.rs: replace && with || in check_formula_holds_core
 nibli-reason/src/reasoning.rs: replace && with || in check_predicate_in_kb_typed
 nibli-reason/src/reasoning.rs: replace && with || in event_candidates_under_bindings
 nibli-reason/src/reasoning.rs: replace && with || in event_join_priority
 nibli-reason/src/reasoning.rs: replace && with || in event_join_priority::is_selective_ground
 nibli-reason/src/reasoning.rs: replace && with || in event_priority_is_better
-nibli-reason/src/reasoning.rs: replace && with || in filter_event_candidates
 nibli-reason/src/reasoning.rs: replace && with || in negate_result_tracked
 nibli-reason/src/reasoning.rs: replace && with || in process_phase
 nibli-reason/src/reasoning.rs: replace + with * in eval_negated_exists_group
@@ -206,7 +205,6 @@ nibli-reason/src/reasoning.rs: replace event_join_priority -> (bool, usize, usiz
 nibli-reason/src/reasoning.rs: replace event_join_priority -> (bool, usize, usize) with (false, 1, 0)
 nibli-reason/src/reasoning.rs: replace event_join_priority -> (bool, usize, usize) with (false, 1, 1)
 nibli-reason/src/reasoning.rs: replace event_join_priority -> (bool, usize, usize) with (true, 0, 0)
-nibli-reason/src/reasoning.rs: replace event_join_priority -> (bool, usize, usize) with (true, 0, 1)
 nibli-reason/src/reasoning.rs: replace event_join_priority -> (bool, usize, usize) with (true, 1, 0)
 nibli-reason/src/reasoning.rs: replace event_join_priority -> (bool, usize, usize) with (true, 1, 1)
 nibli-reason/src/reasoning.rs: replace event_join_priority::is_selective_ground -> bool with false
@@ -215,6 +213,8 @@ nibli-reason/src/reasoning.rs: replace event_priority_is_better -> bool with fal
 nibli-reason/src/reasoning.rs: replace event_priority_is_better -> bool with true
 nibli-reason/src/reasoning.rs: replace fact_has_unbound_pattern_var -> bool with true
 nibli-reason/src/reasoning.rs: replace is_event_skolem_term -> bool with false
+nibli-reason/src/reasoning.rs: replace relation_rule_heads_mint_events -> bool with false
+nibli-reason/src/reasoning.rs: replace relation_rule_heads_mint_events -> bool with true
 nibli-reason/src/reasoning.rs: replace sort_rule_bucket with ()
 nibli-reason/src/reasoning.rs: replace typed_fact_is_stored_with_equivalence -> Option<StoredFact> with None
 nibli-reason/src/reasoning.rs: replace || with && in bind_join_vars_from_index
@@ -235,18 +235,19 @@ nibli-semantics/src/semantic/compile.rs: replace < with > in SemanticCompiler::c
 nibli-semantics/src/semantic/compile.rs: replace == with != in SemanticCompiler::collect_named_exists_occurrences
 nibli-semantics/src/semantic/helpers.rs: replace < with <= in SemanticCompiler::close_quantifier
 
-# ── Category D: DEFENSIVE / UNREACHABLE-BY-INVARIANT — guards whose failing side no producer emits, wrapper match arms on pre-peeled nodes (tense/deontic under build_stored_fact/build_rule_template; the ExistsNode skip-wrapper legs), the tensed_body_hides_conditional detector's defense-in-depth walker arms beyond its killed load-bearing OrNode face, phase-1-skolemization invariants (subs.contains_key guards forced true), skdep filters feeding Constant-only filter_maps, the WithArgs merge leg tautological at runtime, place<=arity swap-guard forced-true branches (panic-on-reach), arity>=1 invariants, debug_assert-only internal checks (`RuleIdentityIndex::contains` has no other caller), and mutants that panic loudly on first reach. In `materialize.rs` this covers the projection's multi-atom and flat-leftover faces (`project_atoms_inner`, `project_negated_group`, `project_rule`, both positive probes) — each instrumented with a panic on the surviving face and never reached by the full suite — plus `saturate`'s unseedable skip, whose first disjunct cannot hold because the `wanted` closure already excludes unseedable relations, and `compute_strata`'s multi-pass relaxation, which is total on ANY graph by design but converges in ONE pass on every graph Tarjan produces (SCCs come out in reverse-topological order, so a dependency is always relaxed before its reader)
+# ── Category D: DEFENSIVE / UNREACHABLE-BY-INVARIANT — guards whose failing side no producer emits, wrapper match arms on pre-peeled nodes (tense/deontic under build_stored_fact/build_rule_template and the whole tense/deontic arm set of `collect_mandatory_anchors`; the ExistsNode skip-wrapper legs), the tensed_body_hides_conditional detector's defense-in-depth walker arms beyond its killed load-bearing OrNode face, phase-1-skolemization invariants (subs.contains_key guards forced true), skdep filters feeding Constant-only filter_maps, the WithArgs merge leg tautological at runtime (its multi-bei arithmetic and Unspecified-either-way padding faces — both branches push `args[i]` or `Unspecified` to the same effect; the pair/selector faces of the same normalized keys are KILLED), place<=arity swap-guard forced-true branches (panic-on-reach), arity>=1 invariants, debug_assert-only internal checks (`RuleIdentityIndex::contains` has no other caller), and mutants that panic loudly on first reach. In `materialize.rs` this covers the projection's multi-atom and flat-leftover faces (`project_atoms_inner`, `project_negated_group`, `project_rule`, both positive probes) — each instrumented with a panic on the surviving face and never reached by the full suite — plus `saturate`'s unseedable skip, whose first disjunct cannot hold because the `wanted` closure already excludes unseedable relations, and `compute_strata`'s multi-pass relaxation, which is total on ANY graph by design but converges in ONE pass on every graph Tarjan produces (SCCs come out in reverse-topological order, so a dependency is always relaxed before its reader)
 nibli-reason/src/kb.rs: delete match arm LogicNode::AndNode((l, r)) in tensed_body_hides_conditional
 nibli-reason/src/kb.rs: delete match arm LogicNode::ExistsNode((_, body)) in tensed_body_hides_conditional
+nibli-reason/src/kb.rs: delete match arm LogicNode::FutureNode(inner_id) in collect_mandatory_anchors
 nibli-reason/src/kb.rs: delete match arm LogicNode::ObligatoryNode(inner_id) in collect_mandatory_anchors
+nibli-reason/src/kb.rs: delete match arm LogicNode::PastNode(inner_id) in collect_mandatory_anchors
 nibli-reason/src/kb.rs: delete match arm LogicNode::PastNode(n) | LogicNode::PresentNode(n) | LogicNode::FutureNode(n) | LogicNode::ObligatoryNode(n) | LogicNode::PermittedNode(n) in negation_body_purely_representable
 nibli-reason/src/kb.rs: delete match arm LogicNode::PastNode(n) | LogicNode::PresentNode(n) | LogicNode::FutureNode(n) | LogicNode::ObligatoryNode(n) | LogicNode::PermittedNode(n) in tensed_body_hides_conditional
+nibli-reason/src/kb.rs: delete match arm LogicNode::PermittedNode(inner_id) in collect_mandatory_anchors
+nibli-reason/src/kb.rs: delete match arm LogicNode::PresentNode(inner_id) in collect_mandatory_anchors
 nibli-reason/src/kb.rs: replace && with || in KnowledgeBaseInner::fact_origin_invariant_holds
 nibli-reason/src/kb.rs: replace KnowledgeBaseInner::fact_origin_invariant_holds -> bool with true
 nibli-reason/src/kb.rs: replace RuleIdentityIndex::contains -> bool with true
-nibli-reason/src/kb.rs: replace RuleIdentityNormalizer::ground_skolem -> usize with 0
-nibli-reason/src/kb.rs: replace RuleIdentityNormalizer::ground_skolem -> usize with 1
-nibli-reason/src/kb.rs: replace RuleIdentityNormalizer::skolem_fn -> usize with 0
 nibli-reason/src/kb.rs: replace RuleIdentityNormalizer::skolem_fn -> usize with 1
 nibli-reason/src/kb.rs: replace match guard !is_skdep(gt) with true in leading_skolemized_exists_over_forall
 nibli-reason/src/kb.rs: replace match guard peeled with true in leading_skolemized_exists_over_forall
@@ -271,21 +272,15 @@ nibli-reason/src/materialize.rs: replace || with && in project_rule
 nibli-reason/src/materialize.rs: replace || with && in saturate
 nibli-reason/src/reasoning.rs: replace == with != in check_formula_holds_core
 nibli-reason/src/rules.rs: delete match arm 1 in build_skolem_fn_term
-nibli-reason/src/rules.rs: delete match arm LogicNode::ExistsNode((v, body)) in build_stored_fact_from_node
-nibli-reason/src/rules.rs: delete match arm LogicNode::FutureNode(inner) in build_stored_fact_from_node
-nibli-reason/src/rules.rs: delete match arm LogicNode::ObligatoryNode(inner) in build_stored_fact_from_node
 nibli-reason/src/rules.rs: delete match arm LogicNode::ObligatoryNode(inner) | LogicNode::PermittedNode(inner) in build_rule_template_fact
-nibli-reason/src/rules.rs: delete match arm LogicNode::PastNode(inner) in build_stored_fact_from_node
 nibli-reason/src/rules.rs: delete match arm LogicNode::PermittedNode(inner) in build_stored_fact_from_node
 nibli-reason/src/rules.rs: delete match arm LogicNode::PresentNode(inner) in build_stored_fact_from_node
-nibli-reason/src/rules.rs: replace == with != in flatten_group_leaves
 nibli-reason/src/rules.rs: replace is_skdep -> bool with false
 nibli-reason/src/rules.rs: replace match guard condition_exists.contains(v.as_str()) with true in flatten_conjuncts_through_exists
 nibli-reason/src/rules.rs: replace match guard skolem_subs.contains_key(v.as_str()) with true in flatten_consequent
 nibli-reason/src/rules.rs: replace match guard v.as_str() == ev with false in flatten_group_leaves
 nibli-reason/src/rules.rs: replace match guard v.as_str() == ev with true in flatten_group_leaves
 nibli-reason/src/rules.rs: replace || with && in build_rule_template_fact
-nibli-reason/src/rules.rs: replace || with && in detect_negated_exists_group
 nibli-semantics/src/semantic/compile.rs: replace += with -= in SemanticCompiler::compile_proposition
 nibli-semantics/src/semantic/compile.rs: replace match guard self.interner.resolve(&var).starts_with('$') with true in SemanticCompiler::strip_exposed_named_exists
 nibli-semantics/src/semantic/compile.rs: replace match guard self.interner.resolve(var).starts_with('$') with true in SemanticCompiler::collect_exposed_named_exists
@@ -298,7 +293,10 @@ nibli-semantics/src/semantic/helpers.rs: replace >= with < in SemanticCompiler::
 nibli-semantics/src/semantic/helpers.rs: replace >= with < in SemanticCompiler::inject_variable
 nibli-semantics/src/semantic/predicate.rs: delete ! in SemanticCompiler::apply_predicate
 nibli-semantics/src/semantic/predicate.rs: replace && with || in SemanticCompiler::apply_predicate
+nibli-semantics/src/semantic/predicate.rs: replace + with * in SemanticCompiler::apply_predicate
+nibli-semantics/src/semantic/predicate.rs: replace + with - in SemanticCompiler::apply_predicate
 nibli-semantics/src/semantic/predicate.rs: replace < with <= in SemanticCompiler::apply_predicate
+nibli-semantics/src/semantic/predicate.rs: replace < with == in SemanticCompiler::apply_predicate
 nibli-semantics/src/semantic/predicate.rs: replace < with > in SemanticCompiler::apply_predicate
 nibli-semantics/src/semantic/predicate.rs: replace > with >= in SemanticCompiler::apply_predicate
 nibli-semantics/src/semantic/predicate.rs: replace >= with < in SemanticCompiler::apply_predicate

@@ -105,19 +105,24 @@ that do not all invalidate, the 2026-08-01 lingering-member class. Either extend
 the at-the-mutation-point discipline to one logical-state epoch every mutation
 bumps, or leave the replay alone.)
 
-**Confirming `just mutants` run still owed** *(effort: low — one ~3 h run, no triage)*.
-The baseline was RE-CUT 2026-08-17 from a complete 1592-mutant sweep (1105 caught,
-50 timeouts, 142 unviable, 317 missed = 258 normalized survivors; 11 killed by new
-tests, 247 baselined with documented reasons — see the file's own header). The gate is
-green BY CONSTRUCTION, since the baseline is exactly the sweep's survivor set minus
-verified kills, but `just mutants` has not itself been run end-to-end against the final
-tree. Run it once and delete this entry; a NEW survivor would mean the render-corpus
-migration that landed alongside changed kill power, which is the only untested
-interaction. **Gotcha for whoever runs it:** `cargo mutants -f <path>` does NOT scope
-the sweep when `examine_globs` is set — the config wins and you get the full run. Check
-the "Found N mutants to test" line before walking away. (To scope a run, edit
-`examine_globs` temporarily; that is how the 2026-08-17 gap sweep closed its last 103
-mutants without repeating the whole thing.)
+**One more confirming `just mutants` run owed** *(effort: low — one ~4 h run, no triage
+expected)*. The baseline was re-cut 2026-08-17 from ONE COMPLETE run (1592 mutants in
+4 h: 1104 caught, 49 timeouts, 142 unviable, 297 missed = 241 normalized survivors), and
+the recipe's own diff against it is exactly clean — 0 survivors unlisted, 0 stale entries.
+Since that run the tree gained ONE test (`the_converted_duty_alias_compiles_and_reasons_in_every_corpus_shape`),
+which can only kill more, never fewer. Run it once to confirm and delete this entry.
+
+**Why a full run rather than a stitched one, learned the hard way:** the first attempt at
+this re-cut built the baseline from an interrupted sweep UNIONED with a scoped follow-up
+that closed its 103-mutant gap. That union recorded 13 mutants as CAUGHT which the
+confirming run found MISSED; re-testing them by hand showed they survive at both the pre-
+and post-change commits, so the union — not the tree — was wrong. A baseline is a claim
+about a whole sweep and has to come from one. **Gotcha for whoever runs it:**
+`cargo mutants -f <path>` does NOT scope the sweep when `examine_globs` is set (the config
+wins); edit `examine_globs` temporarily instead, and check the "Found N mutants to test"
+line before walking away. **Second gotcha:** when reproducing a survivor by hand, match the
+COLUMN — several of these functions carry two mutable faces on one line, and mutating the
+wrong one proves nothing (it cost two wrong conclusions during this re-cut).
 
 ---
 

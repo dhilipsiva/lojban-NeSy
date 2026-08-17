@@ -6658,6 +6658,92 @@ fn admits_closes_the_vocabulary_fail_closed() {
     );
 }
 
+/// THE CONVERTED DUTY ALIAS, in the shapes the corpora used to carry.
+///
+/// `obligated_by` swaps its first two places, so `obligated_by(P, event { … })`
+/// compiles to `obliged(x1 = <event referent>, x2 = P)` — the event lands in place 1.
+/// That is a structurally DIFFERENT decomposition from the plain spelling, and it
+/// exercises a different set of paths: the swap in `apply_predicate`'s place routing,
+/// the deontic/tense arms of `collect_mandatory_anchors`, the role-anchor matching in
+/// `anchor_other_arguments_match`, and the rule-head event minting that
+/// `relation_rule_heads_mint_events` gates.
+///
+/// Until 2026-08-17 that shape was covered INCIDENTALLY, because every duty in the
+/// GDPR and utopia corpora was written with this alias. Those corpora moved to the
+/// plain `obliged` spelling (the places put the bound party on x1, which is what the
+/// renderer must be able to trust), and the coverage went with them — caught by the
+/// mutation gate, which lost nine kills. The alias is still shipped and still
+/// supported, so the coverage is restored HERE, explicitly and by name, rather than
+/// depending on which spelling a corpus happens to prefer.
+#[test]
+fn the_converted_duty_alias_compiles_and_reasons_in_every_corpus_shape() {
+    let engine = engine_with_facts(&[
+        "person(Ruk).",
+        "person(Adam).",
+        "data governs(Akmes).",
+        "flaw(Akmes).",
+        "approves(Adam).",
+        // Plain relational form: the swap must invert the stored places.
+        "obligated_by(Bel, Ruk).",
+        // Deontic abstraction over a bare universal.
+        "obligated_by(every person, event { eats() }).",
+        // Restricted universal with a compound restrictor.
+        "obligated_by(every data governs where flaw, event { message() }).",
+        // Negated restrictor — the Article 17 erasure shape.
+        "obligated_by(every person where ~approves, event { removes() }).",
+        // Arity 1.
+        "obligated_by(every rule).",
+    ]);
+
+    // The converse holds: `obligated_by(Bel, Ruk)` IS `obliged(Ruk, Bel)`.
+    assert_true(
+        &engine.query_holds("obligated_by(Bel, Ruk).").unwrap(),
+        "the alias must still assert and answer",
+    );
+    assert_true(
+        &engine.query_holds("obliged(Ruk, Bel).").unwrap(),
+        "the same fact under the base spelling, arguments exchanged",
+    );
+    assert_false(
+        &engine.query_holds("obliged(Bel, Ruk).").unwrap(),
+        "the alias must still INVERT, not read as the same argument order",
+    );
+
+    // The deontic form derives for every person, through the swapped shape.
+    assert_true(
+        &engine
+            .query_holds("obligated_by(Ruk, event { eats() }).")
+            .unwrap(),
+        "the bare deontic universal must reach every person",
+    );
+    assert_true(
+        &engine
+            .query_holds("obligated_by(Adam, event { eats() }).")
+            .unwrap(),
+        "and not only the first one",
+    );
+
+    // The restricted and negated-restrictor universals both fire.
+    assert_true(
+        &engine
+            .query_holds("obligated_by(Akmes, event { message() }).")
+            .unwrap(),
+        "the compound restrictor `every data governs where flaw` must match Akmes",
+    );
+    assert_false(
+        &engine
+            .query_holds("obligated_by(Adam, event { removes() }).")
+            .unwrap(),
+        "Adam approves, so the negated-restrictor erasure duty must NOT attach",
+    );
+    assert_true(
+        &engine
+            .query_holds("obligated_by(Ruk, event { removes() }).")
+            .unwrap(),
+        "Ruk does not approve, so the erasure duty does attach",
+    );
+}
+
 /// The two meta-declarations do not count as "ordinary assertions".
 ///
 /// The ordering rule is that the vocabulary must close before any ordinary fact
