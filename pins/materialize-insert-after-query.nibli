@@ -1,0 +1,52 @@
+# MECHANISM PIN — an assert made AFTER a query must still answer the stratified model.
+#
+# Fixture INLINE (mechanism pin): the subject is the ENGINE's incremental
+# re-saturation, not any particular knowledge base.
+#
+# THE TRAP THIS CLOSES. Since 2026-08-16 a query builds a saturation, and an insert
+# inside that saturation's dependency cone is FOLDED IN rather than recomputed. A fold
+# can only ADD tuples, so it is sound only while nothing the delta reaches is read under
+# `~` — growth through a negated condition SHRINKS the model. The first version of that
+# refusal checked only the DELTA's own relations. That catches the one-hop case and
+# misses every longer one: below, `judge` is not read under `~` anywhere, but one
+# derivation step later `clean` is, and `free` must LOSE the conclusion the earlier query
+# gave it. The fold kept it, and `free(Ada)` answered TRUE where the model says FALSE —
+# a definitive wrong verdict, reported by a downstream pin suite on 2026-08-17.
+#
+# Ordering is the whole point: querying `free` BEFORE the insert is what puts it in the
+# saturation. Assert first and every build has always been correct, which is why this
+# needs to be a pin and not a comment.
+
+all $x: judge(Court, $x) -> clean($x).
+all $x: person($x) & ~clean($x) -> free($x).
+all $x: free($x) -> travel($x).
+person(Ada).
+
+# ── BEFORE THE INSERT ────────────────────────────────────────────────────────
+# Nothing derives `clean(Ada)`, so the negated guard passes.
+? free(Ada).
+# => TRUE
+
+? travel(Ada).
+# => TRUE
+
+# ── THE INSERT, TWO HOPS BELOW THE GUARD ─────────────────────────────────────
+judge(Court, Ada).
+
+? clean(Ada).
+# => TRUE
+
+# ── AFTER THE INSERT ─────────────────────────────────────────────────────────
+# `clean(Ada)` now holds, so `~clean($x)` fails and `free` is no longer derivable.
+# FALSE here is closed-world non-entailment, exactly as it would be on a KB loaded
+# in this order from the start.
+? free(Ada).
+# => FALSE
+
+# And the consumer of `free` must agree with it in the SAME process. A stale `free`
+# beside a recomputed `travel` is mutually inconsistent under `free -> travel`, which
+# is what rules out reading the stale answer as some intended monotone semantics.
+? travel(Ada).
+# => FALSE
+
+:expect-pins 5

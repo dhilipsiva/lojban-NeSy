@@ -2273,3 +2273,61 @@ fn a_four_stratum_negative_chain_agrees_with_backward_chaining() {
         assert_eq!(got, want, "{q}");
     }
 }
+
+/// AN INSERT TWO HOPS BELOW A NEGATED GUARD MUST NOT BE FOLDED IN.
+///
+/// Reported from a downstream `nibli-pin` suite, 2026-08-17, against the in-cone
+/// delta resume. `judge` is inserted after `free` has already been answered;
+/// `judge` is not itself read under `~`, so the old refusal (which looked only at
+/// the DELTA's own relations) let the fold proceed. One derivation step later
+/// `clean` grows, and `free` — which reads `~clean` — must LOSE the tuple it was
+/// given at the first query. A monotone fold can only add, so the stale `free`
+/// tuple survived and the second query answered TRUE where the stratified model
+/// says FALSE.
+///
+/// The refusal now closes FORWARD over the rules from the delta, so anything the
+/// delta can reach that is negatively read forces a full recompute. The `travel`
+/// leg is the same defect in its most visible form: with `free -> travel`, a
+/// stale `free` and a correctly-recomputed `travel` are mutually inconsistent
+/// inside one process, which no monotone-assert reading can explain away.
+#[test]
+fn an_insert_two_hops_below_a_negated_guard_is_not_folded_in() {
+    let run = |on: bool| -> Vec<QueryResult> {
+        let kb = new_kb();
+        kb.set_materialization(on);
+        for line in [
+            "all $x: judge(Court, $x) -> clean($x).",
+            "all $x: person($x) & ~clean($x) -> free($x).",
+            "all $x: free($x) -> travel($x).",
+            "person(Ada).",
+        ] {
+            assert_buf(&kb, compile_surface(line));
+        }
+        // Answer the guarded atom BEFORE the insert — this is what puts it in the
+        // saturation and makes the stale answer reachable.
+        let mut out = vec![
+            query_result(&kb, compile_surface("free(Ada).")),
+            query_result(&kb, compile_surface("travel(Ada).")),
+        ];
+        assert_buf(&kb, compile_surface("judge(Court, Ada)."));
+        out.push(query_result(&kb, compile_surface("clean(Ada).")));
+        out.push(query_result(&kb, compile_surface("free(Ada).")));
+        out.push(query_result(&kb, compile_surface("travel(Ada).")));
+        out
+    };
+    let (on, off) = (run(true), run(false));
+    assert_eq!(on, off, "materialisation must not change any of these verdicts");
+    assert_eq!(on[0], QueryResult::True, "nothing derives clean(Ada) yet");
+    assert_eq!(on[1], QueryResult::True, "so travel follows from free");
+    assert_eq!(on[2], QueryResult::True, "the insert derives clean(Ada)");
+    assert_eq!(
+        on[3],
+        QueryResult::False,
+        "clean(Ada) now holds, so `~clean` blocks free — the stale tuple must go"
+    );
+    assert_eq!(
+        on[4],
+        QueryResult::False,
+        "and travel must agree with free in the same process"
+    );
+}

@@ -1442,8 +1442,14 @@ fn semi_naive_stratum(
 /// fall-back to today's behaviour, never a weakened claim:
 ///
 /// * a `du` equivalence exists (the global equality guard),
-/// * a delta relation is read under NEGATION anywhere in the program — growth
-///   through a negated condition SHRINKS the model, so it is not monotone,
+/// * the delta can REACH a relation read under NEGATION anywhere in the program.
+///   Growth through a negated condition SHRINKS the model, so it is not monotone
+///   — and reachability is the load-bearing word: it is not enough to check the
+///   delta's own relations. `judge` inserted under
+///   `judge -> clean` / `person & ~clean -> free` is not itself negatively read,
+///   but one derivation step later `clean` is, and `free` must then LOSE a tuple
+///   that a monotone fold can only keep. So the refusal closes forward over the
+///   rules from the delta and refuses if that closure touches `negatively_read`,
 /// * a relation this saturation completed can no longer be seeded (a `past`
 ///   fact, a role gap, an arity clash arrived with the delta),
 /// * a delta tuple's arity disagrees with the projected arity, or
@@ -1480,9 +1486,6 @@ fn resume_with_delta(
             if m.ext.get(rel).is_some_and(|s| s.contains(tuple)) {
                 continue;
             }
-            if m.negatively_read.contains(rel) {
-                return false;
-            }
             if m.arity.get(rel).is_some_and(|a| *a != tuple.len()) {
                 return false;
             }
@@ -1496,6 +1499,42 @@ fn resume_with_delta(
         m.work.note_resume();
         return true;
     }
+
+    // NON-MONOTONE REACHABILITY. A fold may only ADD tuples, so it is sound only
+    // while nothing the delta can reach is read under `~`. Close forward over the
+    // rules — `dep -> heads that read dep` — starting from the delta's own
+    // relations, and refuse if that closure meets `negatively_read`. Checking only
+    // the delta relations (which is what this did until 2026-08-17) catches the
+    // one-hop case and misses every longer one: a delta that is not itself negated
+    // can still grow a relation that is, one derivation step later, and the rule
+    // reading `~` of it must then LOSE a conclusion the fold would keep.
+    if !m.negatively_read.is_empty() {
+        let mut readers: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (head, rules) in &elig.rules {
+            for pr in rules {
+                for dep in pr.positive.iter().chain(pr.negative.iter()) {
+                    readers
+                        .entry(dep.relation.as_str())
+                        .or_default()
+                        .push(head.as_str());
+                }
+            }
+        }
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = delta.keys().map(String::as_str).collect();
+        while let Some(rel) = stack.pop() {
+            if !seen.insert(rel) {
+                continue;
+            }
+            if m.negatively_read.contains(rel) {
+                return false;
+            }
+            for next in readers.get(rel).into_iter().flatten() {
+                stack.push(next);
+            }
+        }
+    }
+
     for (rel, tuples) in &delta {
         m.ext
             .entry(rel.clone())
