@@ -1927,6 +1927,17 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "ready", source_gismu: "bredi", swap: None, places: &["ready", "object"], gloss: "ready", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:generic] — lensisku: "$x_{1}$ (event/state) is a reason/justification/explanation for/causing/…"
     PredicateEntry { name: "reason", source_gismu: "krinu", swap: None, places: &["subject", "outcome"], gloss: "reason", template: Some("{x1} is the reason for {x2}"), tier: CorpusTier::Generic },
+    // Curated 2026-08-18 on downstream request: the RECIPIENT-side mirror of `gives`
+    // (dunda). Deliberately NOT a `Swap` alias of it — a converse alias compiles to the
+    // same stored relation, so the giver's assertion would by itself make the recipient
+    // fact true, which is the one thing the requesting rule forbids. Independent
+    // relation, independent evidence.
+    //
+    // Provenance is the LUJVO `terdu'a` (the converse of dunda), not the gismu `cpacu`,
+    // which already sources `get` at this arity: cpacu is VOLITIONAL (gets/procures/
+    // accepts) and would assert that the recipient acted. This entry must stay true of
+    // an infant, an unconscious patient, or someone held incommunicado, so it is STATIVE.
+    PredicateEntry { name: "receives", source_gismu: "terdu'a", swap: None, places: &["recipient", "gift", "donor"], gloss: "receive", template: Some("{x1} receives {x2} from {x3}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:generic] — lensisku: "$x_{1}$ lies/rests/reclines/reposes on $x_{2}$; $x_{1}$ is reclining/rec…"
     PredicateEntry { name: "reclining", source_gismu: "vreta", swap: None, places: &["subject", "object"], gloss: "reclining", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:generic, x3:prose, x4:prose] — lensisku: "$x_{1}$ is a record of $x_{2}$ (data/facts/du'u) about $x_{3}$ (object/e…"

@@ -109,7 +109,7 @@ FULL/FALLBACK split; local, CI, and deployed builds are identical and need no ne
   the source LEMMA survives as provenance metadata via `by_provenance(lemma)` — a gismu
   for almost every row, a synthetic `zz*` id for engine-invented vocabulary (the auth
   heads, `derived_only`/`admits`), and since 2026-08-17 a LUJVO where no gismu carries
-  the sense (`ratifies`/`endorses`, split out of `approves` on downstream request). The
+  the sense (`ratifies`/`endorses`, split out of `approves`; `receives`, the stative recipient mirror of `gives`, kept independent of it rather than a converse alias so a giver's assertion cannot establish receipt — all on downstream request). The
   field is never validated for shape and is never input; Predilex simply misses a lemma
   it does not carry — the
   permanent bridge the Predilex gates and lexigen key through. Compounds (`a+b`) resolve
