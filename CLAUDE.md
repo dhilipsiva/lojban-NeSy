@@ -106,7 +106,12 @@ FULL/FALLBACK split; local, CI, and deployed builds are identical and need no ne
   carry a greppable `// TODO(corpus): guessed places …` comment; a count ratchet
   (`TODO_BASELINE` in predicates.rs) forces conscious adjustment as rows are refined.
 - **English-only input:** gismu spellings never resolve (`klama(…)` is a compile error);
-  the source gismu survives as provenance metadata via `by_provenance(gismu)` — the
+  the source LEMMA survives as provenance metadata via `by_provenance(lemma)` — a gismu
+  for almost every row, a synthetic `zz*` id for engine-invented vocabulary (the auth
+  heads, `derived_only`/`admits`), and since 2026-08-17 a LUJVO where no gismu carries
+  the sense (`ratifies`/`endorses`, split out of `approves` on downstream request). The
+  field is never validated for shape and is never input; Predilex simply misses a lemma
+  it does not carry — the
   permanent bridge the Predilex gates and lexigen key through. Compounds (`a+b`) resolve
   only via committed CompoundEntries and emit their relation ident (`computer_user`);
   uncurated compounds fail closed (NIBLI_KR §5).

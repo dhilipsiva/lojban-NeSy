@@ -2316,7 +2316,10 @@ fn an_insert_two_hops_below_a_negated_guard_is_not_folded_in() {
         out
     };
     let (on, off) = (run(true), run(false));
-    assert_eq!(on, off, "materialisation must not change any of these verdicts");
+    assert_eq!(
+        on, off,
+        "materialisation must not change any of these verdicts"
+    );
     assert_eq!(on[0], QueryResult::True, "nothing derives clean(Ada) yet");
     assert_eq!(on[1], QueryResult::True, "so travel follows from free");
     assert_eq!(on[2], QueryResult::True, "the insert derives clean(Ada)");

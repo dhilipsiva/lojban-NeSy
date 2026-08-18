@@ -798,6 +798,10 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "empty", source_gismu: "kunti", swap: None, places: &["subject", "material"], gloss: "empty", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:prose] — lensisku: "$x_{1}$ is an end/finish/termination of thing/process $x_{2}$; [not nece…"
     PredicateEntry { name: "end", source_gismu: "fanmo", swap: None, places: &["end", "thing"], gloss: "end", template: None, tier: CorpusTier::GlossDerived },
+    // Curated 2026-08-17 on downstream request; see `ratifies` for the split this
+    // completes. Two places, not the source lujvo's three: the offerer place is not
+    // part of the endorsement itself.
+    PredicateEntry { name: "endorses", source_gismu: "fitytu'i", swap: None, places: &["reviewer", "decision"], gloss: "endorse", template: Some("{x1} endorses {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:gloss, x2:generic, x3:prose] — lensisku: "$x_{1}$ is an enemy/opponent/adversary/foe of $x_{2}$ in struggle $x_{3}…"
     PredicateEntry { name: "enemy", source_gismu: "bradi", swap: None, places: &["enemy", "object", "struggle"], gloss: "enemy", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:prose, x3:prose] — lensisku: "$x_{1}$ is energy of type $x_{2}$ in form $x_{3}$."
@@ -1909,6 +1913,11 @@ pub(crate) static PREDICATES: &[PredicateEntry] = &[
     PredicateEntry { name: "rare", source_gismu: "rirci", swap: None, places: &["subject", "object", "place3"], gloss: "rare", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:gloss, x2:prose] — lensisku: "$x_{1}$ is a rat of species/breed $x_{2}$."
     PredicateEntry { name: "rat", source_gismu: "ratcu", swap: None, places: &["rat", "species"], gloss: "rat", template: None, tier: CorpusTier::GlossDerived },
+    // Curated 2026-08-17 on downstream request: `approves` (zanru) fuses a tally
+    // outcome with a case-bound review decision, and nothing but the x1 constant told
+    // them apart. Provenance is a LUJVO, the first in this table — the field records
+    // the Lojban source lemma, and no gismu carries this narrower sense.
+    PredicateEntry { name: "ratifies", source_gismu: "ca'irzau", swap: None, places: &["authority", "instrument"], gloss: "ratify", template: Some("{x1} ratifies {x2}"), tier: CorpusTier::Curated },
     // TODO(corpus): guessed places [x1:generic, x2:generic, x3:generic] — lensisku: "$x_{1}$ (me'o, fraction) is a ratio/rate of $x_{2}$ (quantity) with resp…"
     PredicateEntry { name: "ratio", source_gismu: "parbi", swap: None, places: &["subject", "object", "place3"], gloss: "ratio", template: None, tier: CorpusTier::Generic },
     // TODO(corpus): guessed places [x1:generic, x2:prose, x3:prose, x4:prose] — lensisku: "$x_{1}$ reacts/responds/answers with action $x_{2}$ to stimulus $x_{3}$ …"
