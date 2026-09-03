@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════════════
+# CONTENT PINS for policy.nibli — the POLICY is the subject, so the
+# fixture is the LIVE file, loaded with `--kb`. Inlining it would let the
+# copy drift and the pins would start certifying fiction.
+# ═══════════════════════════════════════════════════════════════════
+:expect-pins 9
+
+# ─── The trust boundary actually bites ───────────────────────────────
+
+# The analyzer cannot hand us a verdict.
+:refuse reasoning /derived/
+authorized("flow:1", Release, "src/routes/user.js:42").
+
+# The analyzer cannot smuggle in unreviewed vocabulary.
+:refuse reasoning /admit/
+owns("flow:1", "src/routes/user.js:42").
+
+# An admitted relation still loads. Scoped, so the KB is put back and the
+# queries below do not run against a widened base.
+:accept-scoped
+carries("flow:9", "x", "y", "z", "w").
+
+# ─── The policy decides ──────────────────────────────────────────────
+
+# flow 1 — dangerous, unsanitized, unwaived. NOT authorized: this is the finding.
+? authorized("flow:1", Release, "src/routes/user.js:42").
+# => FALSE
+
+# The violation query, stated positively.
+? ~authorized("flow:1", Release, "src/routes/user.js:42").
+# => TRUE
+
+# flow 2 — a sanitizer on the path clears it.
+? authorized("flow:2", Release, "src/routes/user.js:42").
+# => TRUE
+
+# flow 3 — a recorded human waiver clears it.
+? authorized("flow:3", Release, "src/routes/admin.js:88").
+# => TRUE
+
+# flow 4 — FAIL-CLOSED. The sink was never classified, so there is no
+# positive evidence of safety and the flow is NOT cleared. If this ever
+# flips to TRUE, the policy has grown a "not known to be dangerous" path
+# and auto-clears everything the analyzer failed to classify.
+? authorized("flow:4", Release, "src/routes/list.js:17").
+# => FALSE
+
+# flow 5 — KR INJECTION. The route field is an attacker-chosen identifier that
+# tries to terminate the quoted term and append a waiver for itself. extract.py
+# escapes it into one inert term, so the injected `permits` never becomes a
+# statement and the flow stays a finding. If this flips to TRUE the extractor's
+# escaping has regressed and analyzer-controlled bytes are executing as policy.
+? authorized("flow:5", Release, "src/routes/user.js:42").
+# => FALSE

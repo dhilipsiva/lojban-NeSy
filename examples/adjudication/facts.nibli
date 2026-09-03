@@ -1,0 +1,34 @@
+# ═══════════════════════════════════════════════════════════════════
+# GENERATED — do not hand-edit. Produced by extract.awk from analyzer output.
+# ═══════════════════════════════════════════════════════════════════
+#
+# Committed as a small representative sample so `just verify-adjudication`
+# runs with no analyzer installed. Regenerate with:
+#   awk -f extract.awk -v rel=carries souffle-out/TaintFlow.csv > facts.nibli
+#
+# Analyzer identifiers are QUOTED terms, so file paths, line numbers and
+# path-strings survive verbatim (a bare Name would have to be a capitalized
+# identifier). Backslash and double-quote are escaped by the extractor.
+
+# ── flow 1: unsanitized reflected XSS — dangerous, no sanitizer, no waiver ──
+carries("flow:1", "req.query.name", "src/routes/user.js:42", "src/app.js:11", "app>router>render").
+dangerous("src/routes/user.js:42", "req.query.name", Exploit).
+
+# ── flow 2: same sink, but an escaper sits on the path ──
+carries("flow:2", "req.body.bio", "src/routes/user.js:42", "src/app.js:11", "app>router>escape>render").
+dangerous("src/routes/user.js:42", "req.body.bio", Exploit).
+prevents(Sanitizer, "flow:2").
+
+# ── flow 3: dangerous and unsanitized, but reviewed and waived ──
+carries("flow:3", "req.headers.referer", "src/routes/admin.js:88", "src/app.js:11", "app>router>log").
+dangerous("src/routes/admin.js:88", "req.headers.referer", Exploit).
+permits(Review, "flow:3", Waiver).
+
+# ── flow 4: reaches a sink the analyzer never classified as dangerous ──
+carries("flow:4", "req.query.page", "src/routes/list.js:17", "src/app.js:11", "app>router>paginate").
+
+# ── flow 5: an attacker-chosen identifier that tries to close the quoted
+# term and append `permits(Review, "flow:5", Waiver).` to clear its own
+# finding. This is what extract.py emits for it — one inert fact.
+carries("flow:5", "req.query.q", "src/routes/user.js:42", "src/app.js:11", "x\").\\npermits(Review, \"flow:5\", Waiver").
+dangerous("src/routes/user.js:42", "req.query.q", Exploit).

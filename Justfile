@@ -543,7 +543,7 @@ test-all: test test-engine test-store test-backend test-validate
 
 # CI gate for the hardened runtime surface (fast; native only — no WASM build).
 # For the WASM behavioral smokes too, run `just ci-all`.
-ci: fmt-check release-check clippy-runtime test test-engine test-host test-validate test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-proofs verify-grammar-parity verify-doc-fences verify-book-vocab
+ci: fmt-check release-check clippy-runtime test test-engine test-host test-validate test-ui test-formalize test-backend test-store test-persistence-replay verify-harness verify-soundness verify-alias-map verify-nibli-kr-seam verify-dict verify-pins verify-adjudication verify-proofs verify-grammar-parity verify-doc-fences verify-book-vocab
 
 # WASM behavioral gate (pre-push, NOT part of `ci` — needs the WASM build, like
 # verify-book-capture). Bundles the gasnu smokes; each depends on
@@ -790,6 +790,20 @@ verify-pins:
         else \
             ./target/debug/nibli-pin $files; \
         fi
+
+# Adjudication-layer example gate (`examples/adjudication/`): nibli as the
+# POLICY layer over an external analyzer (Souffle/CodeQL), pinned by CONTENT
+# pins — the live `policy.nibli` is the fixture, loaded with `--kb`, so the
+# copy cannot drift and start certifying fiction. Guards the two trust-boundary
+# refusals (`derived_only` verdict, `admits` closed vocabulary), the fail-closed
+# reading (an unclassified sink is NOT cleared), and the extractor's KR-injection
+# escaping. A tracked, public example pinned by nothing is how examples rot.
+verify-adjudication:
+    @cargo build --quiet -p nibli --bin nibli-pin
+    ./target/debug/nibli-pin \
+        --kb examples/adjudication/policy.nibli \
+        --kb examples/adjudication/facts.nibli \
+        examples/adjudication/policy.pins.nibli
 
 # ── Fuzz testing (libFuzzer via the Nix shell's pinned nightly) ──
 #

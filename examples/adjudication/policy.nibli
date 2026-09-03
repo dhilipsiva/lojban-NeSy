@@ -1,0 +1,43 @@
+# ═══════════════════════════════════════════════════════════════════
+# ADJUDICATION LAYER — the reviewed half of a vulnerability pipeline
+# ═══════════════════════════════════════════════════════════════════
+#
+# Soufflé / CodeQL compute the flows. This file decides what they MEAN.
+# The split is not stylistic: nibli must never be handed a relation that
+# needs recursion to derive (see README.md § Why the seam is here).
+#
+# Everything below is meant to be read in a pull request by someone who
+# does not write Datalog.
+
+# ─── The trust boundary ──────────────────────────────────────────────
+#
+# `admits` closes the base vocabulary. The analyzer may state THESE four
+# relations and nothing else; a new Soufflé output relation that nobody
+# reviewed fails the load instead of quietly widening the record.
+# ORDERING IS ENFORCED — this block must precede every ordinary
+# assertion, or a late `admits` would grandfather everything above it.
+admits("carries").
+admits("dangerous").
+admits("prevents").
+admits("permits").
+
+# `derived_only` is the other half: the verdict is not assertable. The
+# analyzer supplies evidence and can never hand us a conclusion.
+derived_only("authorized").
+
+# ─── The policy ──────────────────────────────────────────────────────
+#
+# FAIL-CLOSED BY CONSTRUCTION. A dangerous flow is authorized only on
+# POSITIVE evidence — a sanitizer on the path, or a recorded human
+# waiver. There is deliberately no "not known to be dangerous" rule:
+# under the closed-world assumption that would auto-clear every sink the
+# analyzer failed to classify, which is precisely the bug this layer exists
+# to prevent.
+#
+# `carries(carrier, cargo, destination, origin, route)` — a taint flow.
+# `dangerous(danger, victim, conditions)`               — sink classification.
+# `prevents(preventer, prevented)`                      — sanitizer on the path.
+# `permits(permitter, act, conditions)`                 — recorded review waiver.
+
+all $f, $d, $s, $o, $r: carries($f, $d, $s, $o, $r) & dangerous($s, $d, Exploit) & prevents(Sanitizer, $f) -> authorized($f, Release, $s).
+all $f, $d, $s, $o, $r: carries($f, $d, $s, $o, $r) & dangerous($s, $d, Exploit) & permits(Review, $f, Waiver) -> authorized($f, Release, $s).
