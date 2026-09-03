@@ -61,3 +61,13 @@ required-features = ["bench-bins"]
 name = "nibli-bench-naf"
 path = "src/bin/bench_naf.rs"
 required-features = ["bench-bins"]
+
+# nibli-bench-closure: release-profile timing for recursive rule evaluation (the
+# transitive-closure cost cliff). Unlike its two siblings this bin generates its
+# own knowledge bases and `include_str!`s nothing, so the tarball argument above
+# does not apply to it — it stays behind `bench-bins` because a bench bin is
+# repo-only dev tooling and has no business in a published package.
+[[bin]]
+name = "nibli-bench-closure"
+path = "src/bin/bench_closure.rs"
+required-features = ["bench-bins"]

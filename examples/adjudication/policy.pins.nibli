@@ -3,7 +3,7 @@
 # fixture is the LIVE file, loaded with `--kb`. Inlining it would let the
 # copy drift and the pins would start certifying fiction.
 # ═══════════════════════════════════════════════════════════════════
-:expect-pins 9
+:expect-pins 14
 
 # ─── The trust boundary actually bites ───────────────────────────────
 
@@ -52,3 +52,25 @@ carries("flow:9", "x", "y", "z", "w").
 # escaping has regressed and analyzer-controlled bytes are executing as policy.
 ? authorized("flow:5", Release, "src/routes/user.js:42").
 # => FALSE
+
+# ─── The finding relation — the query a pipeline actually runs ───────
+#
+# Same five verdicts as above, read as findings instead of clearances. This
+# is the form to use at scale: it is materialised, where the `authorized`
+# queries above are not (see the rule's comment in policy.nibli).
+? warns(Gate, "flow:1", "src/routes/user.js:42").
+# => TRUE
+? warns(Gate, "flow:2", "src/routes/user.js:42").
+# => FALSE
+? warns(Gate, "flow:3", "src/routes/admin.js:88").
+# => FALSE
+
+# FAIL-CLOSED, stated positively: the analyzer never classified this sink, so
+# the flow was never cleared, so it warns. If this flips to FALSE the policy
+# has grown a path that silently passes everything the analyzer missed.
+? warns(Gate, "flow:4", "src/routes/list.js:17").
+# => TRUE
+
+# The injection attempt is still a finding.
+? warns(Gate, "flow:5", "src/routes/user.js:42").
+# => TRUE

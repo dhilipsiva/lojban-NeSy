@@ -924,6 +924,20 @@ bench-book:
 bench-naf:
     cargo run --release -p nibli --features bench-bins --bin nibli-bench-naf
 
+# Timing for RECURSIVE rule evaluation — the transitive-closure cost cliff, and
+# its non-recursive echo. Release-profile native bench, self-generating KBs (no
+# corpus dependency). Three families: FORWARD `earlier(N0,Nn)` TRUE (definitive,
+# so never materialised — the backward-chaining cost, growing ~3-4x per two
+# edges); BACKWARD `earlier(Nn,N0)` FALSE on the SAME KB (non-definitive, so the
+# cone IS saturated — the same rule the fast way); and the ADJUDICATION legs,
+# where a purely positive clearance query and its `~`-read finding twin differ
+# ~190x on the same question with no recursion involved. The source for any
+# recursion-cost figure — never hand-write these. `NIBLI_BENCH_CLOSURE_FWD` /
+# `..._BWD` (comma lists) resize the chains; the forward default stops at n=10
+# because n=12 costs ~18 s and n=15 does not finish in a minute.
+bench-closure:
+    cargo run --release -p nibli --features bench-bins --bin nibli-bench-closure
+
 # Count the test suite: unit = workspace lib targets; plus the native
 # integration/bin test binaries (nibli-engine, gasnu, nibli-verify — the ones
 # CI links and runs; lasna's cdylib test target cannot link). The derivation

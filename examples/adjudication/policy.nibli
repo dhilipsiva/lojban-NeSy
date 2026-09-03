@@ -24,6 +24,7 @@ admits("permits").
 # `derived_only` is the other half: the verdict is not assertable. The
 # analyzer supplies evidence and can never hand us a conclusion.
 derived_only("authorized").
+derived_only("warns").
 
 # ─── The policy ──────────────────────────────────────────────────────
 #
@@ -41,3 +42,20 @@ derived_only("authorized").
 
 all $f, $d, $s, $o, $r: carries($f, $d, $s, $o, $r) & dangerous($s, $d, Exploit) & prevents(Sanitizer, $f) -> authorized($f, Release, $s).
 all $f, $d, $s, $o, $r: carries($f, $d, $s, $o, $r) & dangerous($s, $d, Exploit) & permits(Review, $f, Waiver) -> authorized($f, Release, $s).
+
+# ─── Ask for the FINDING, not the clearance ──────────────────────────
+#
+# `warns(Gate, flow, sink)` — this flow was not cleared, so it is a finding.
+#
+# This rule is not sugar. The two rules above are PURELY POSITIVE, and a
+# purely positive cone that resolves definitively is never materialised
+# (GUARANTEES §Completeness) — so `? authorized(...)` returning FALSE is an
+# exhaustive backward-chaining search, and it goes quadratic: measured 0.9 s
+# at 500 flows and 19.2 s at 2,000. Reading the finding under `~` requests
+# the cone, the whole clearance relation is saturated bottom-up, and the same
+# question answers in 0.2 s at 2,000 flows and 1.2 s at 10,000.
+#
+# The fail-closed reading is UNCHANGED and is why this is stated over
+# clearance rather than over evidence: a flow whose sink the analyzer never
+# classified is not cleared, so it warns.
+all $f, $d, $s, $o, $r: carries($f, $d, $s, $o, $r) & ~authorized($f, Release, $s) -> warns(Gate, $f, $s).

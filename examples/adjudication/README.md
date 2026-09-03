@@ -34,8 +34,9 @@ resolves definitively stays lazy (`NIBLI_MATERIALIZE=1` vs `=0` at n=12 measured
 17.69 s vs 17.25 s). Even when saturation *is* forced, the derivation rate is
 ~100–200 tuples/s; Soufflé is 10^6–10^7.
 
-**Non-recursive adjudication is comfortable.** The same engine, on the shape
-this directory demonstrates — non-recursive rules, no closure:
+**Non-recursive adjudication is comfortable — if you ask the right question.**
+The same engine, on the shape this directory demonstrates, querying the *finding*
+relation (see below):
 
 | analyzer flows | facts | time | peak RSS |
 |---|---|---|---|
@@ -46,6 +47,36 @@ this directory demonstrates — non-recursive rules, no closure:
 | 60,000 | 150,006 | 8.31 s | 1.5 GB |
 
 Linear in time, roughly 10 KB per fact — **memory binds before time does**.
+
+## Ask for the finding, not the clearance
+
+The two clearance rules are purely **positive**, and a purely positive query cone
+that resolves definitively is never materialised (GUARANTEES § Completeness). So
+`? authorized(F, Release, S).` returning FALSE — the case you care about, the
+finding — is an exhaustive backward-chaining search, and it degrades badly:
+
+| flows | `authorized(...)` FALSE | `warns(Gate, ...)` TRUE |
+|---|---|---|
+| 500 | 0.90 s | 0.10 s |
+| 2,000 | 19.2 s | 0.20 s |
+| 10,000 | — | 1.20 s |
+
+Same knowledge base, same verdict, ~190x apart at 500 flows (`just bench-closure`
+measures both legs). The finding rule reads clearance under `~`, which requests
+the cone, saturates the whole `authorized` relation bottom-up, and answers from a
+complete set:
+
+```
+all $f, $d, $s, $o, $r: carries($f, $d, $s, $o, $r) & ~authorized($f, Release, $s) -> warns(Gate, $f, $s).
+```
+
+**This does not weaken the fail-closed reading** — that is exactly why the rule is
+stated over *clearance* rather than over evidence. A flow whose sink the analyzer
+never classified is not cleared, so it warns. `flow:4` pins that in both forms.
+
+This is the same trigger policy as the recursion cliff above, showing up with no
+recursion at all. Run the finding query at scale; keep the clearance query for
+single-flow explanations.
 
 So the rule for any pipeline built this way: **never hand nibli a relation that
 needs recursion to derive.** Reachability, def-use chains, points-to and taint
@@ -132,7 +163,9 @@ than a silently reshaped fact.
   `pred` declarations (NIBLI_KR §14.1) are a v2 feature and a compile error today
   — this is the single change that would most help this use case.
 - **Enumeration is not shown here.** The pin language has no find/count form, so
-  "list every unauthorized flow" needs `NibliEngine::query_find_text` from a
-  native embedding. The scaling table above measures ground queries.
+  "list every flow that warns" needs `NibliEngine::query_find_text` from a native
+  embedding. The scaling tables above measure ground queries.
+- **Which query you write is a performance decision**, and the engine gives no
+  warning when you write the slow one. See "Ask for the finding" above.
 - **Files are line-oriented.** A rule wrapped across two lines is a syntax error
   in `:load` and in `--kb` fixtures.
